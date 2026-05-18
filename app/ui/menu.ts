@@ -7,8 +7,11 @@ const DEFAULT_MENU_X = 8;
 const DEFAULT_MENU_Y = 8;
 const DEFAULT_MENU_WIDTH = 272;
 const DEFAULT_MENU_HEIGHT = 128;
-const MENU_TITLE_HEIGHT = 20;
+const MENU_TITLE_HEIGHT = 16;
 const MENU_ROW_HEIGHT = 20;
+const MENU_HIGHLIGHT_Y_OFFSET = 0;
+const MENU_TOGGLE_SWITCH_Y_OFFSET = -1;
+const MENU_HIGHLIGHT_HEIGHT = MENU_ROW_HEIGHT - 1;
 
 export type MenuLayout = {
   x: number;
@@ -47,7 +50,7 @@ export function drawToggleMenuItem(
   const switchWidth = 34;
   const switchHeight = 16;
   const switchX = x + width - switchWidth - 2;
-  const switchY = y + 2;
+  const switchY = y + MENU_TOGGLE_SWITCH_Y_OFFSET;
   image.drawText(font, x, y + 3, label, 200);
   const offFill = selected ? 0 : 18;
   image.fillRoundedRect(switchX, switchY, switchWidth, switchHeight, enabled ? 70 : offFill, 8);
@@ -75,7 +78,7 @@ export class MenuLayer implements Layer {
   private selectedIndex = 0;
 
   constructor(
-    private readonly title: string,
+    private readonly title: string | null,
     private readonly items: MenuItem[],
     private readonly layout: MenuLayout = {
       x: DEFAULT_MENU_X,
@@ -91,16 +94,18 @@ export class MenuLayer implements Layer {
     const image = paintBelow();
     image.fillRoundedRect(x, y, width, height, 0);
     image.drawRoundedRect(x, y, width, height, 72);
-    image.drawText(ctx.font, x + 18, y + 10, this.title, 220);
+    if (this.title) {
+      image.drawText(ctx.font, x + 12, y + 8, this.title, 220);
+    }
 
-    const bodyY = y + MENU_TITLE_HEIGHT + 8;
+    const bodyY = y + (this.title ? MENU_TITLE_HEIGHT : 0) + 8;
     for (let index = 0; index < this.items.length; index++) {
       const item = this.items[index]!;
       const y = bodyY + index * MENU_ROW_HEIGHT;
       const selected = index === this.selectedIndex;
       if (selected) {
-        image.fillRoundedRect(x + 12, y - 1, width - 24, MENU_ROW_HEIGHT - 3, 18);
-        image.drawRoundedRect(x + 12, y - 1, width - 24, MENU_ROW_HEIGHT - 3, 45);
+        image.fillRoundedRect(x + 12, y + MENU_HIGHLIGHT_Y_OFFSET, width - 24, MENU_HIGHLIGHT_HEIGHT, 18);
+        image.drawRoundedRect(x + 12, y + MENU_HIGHLIGHT_Y_OFFSET, width - 24, MENU_HIGHLIGHT_HEIGHT, 45);
       }
       if (item.render) {
         item.render({

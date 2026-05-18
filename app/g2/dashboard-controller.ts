@@ -18,6 +18,7 @@ import {
   getDashboardSystemCardName,
   isDashboardVoiceControlEnabled,
   noteDashboardPhoneTextInput,
+  openTelepromptDocument,
   receiveInput,
   resetDashboardSleepTimerAndWake,
   setDashboardBatteryLevels,
@@ -481,6 +482,17 @@ class DashboardController {
   async injectSyntheticRingInput(kind: "click" | "double-click" | "scroll-up" | "scroll-down"): Promise<void> {
     const event = this.buildSyntheticRingInput(kind);
     await this.handleInputEvent(event);
+  }
+
+  async openTelepromptDocument(text: string): Promise<void> {
+    openTelepromptDocument(text);
+    this.appendLog(`teleprompt document received (${text.length} chars)`);
+    if (this.phase === "connected" && this.communicator) {
+      await this.requestRender("interval");
+      return;
+    }
+    const image = drawDashboard();
+    this.updateDisplayPreviewFromImage(image);
   }
 
   private startSystemNameEdit(): void {

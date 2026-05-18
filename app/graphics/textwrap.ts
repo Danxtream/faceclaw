@@ -1,5 +1,10 @@
 import { BdfFont } from "./bdffont";
 
+export type WrapTextOptions = {
+  preserveLeadingWhitespace?: boolean;
+  breakLongWords?: boolean;
+};
+
 export function findWrapOpportunities(text: string): number[] {
   const offsets: number[] = [];
   for (let i = 0; i < text.length; ) {
@@ -29,7 +34,7 @@ export function findWrapOpportunities(text: string): number[] {
   return offsets;
 }
 
-export function wrapText(font: BdfFont, text: string, targetWidth: number): string[] {
+export function wrapText(font: BdfFont, text: string, targetWidth: number, opts: WrapTextOptions = {}): string[] {
   if (targetWidth <= 0) {
     return text.length ? text.split("\n") : [""];
   }
@@ -37,20 +42,23 @@ export function wrapText(font: BdfFont, text: string, targetWidth: number): stri
   const paragraphs = text.replace(/\r/g, "").split("\n");
   const lines: string[] = [];
   for (const paragraph of paragraphs) {
-    lines.push(...wrapParagraph(font, paragraph, targetWidth));
+    lines.push(...wrapParagraph(font, paragraph, targetWidth, opts));
   }
   return lines.length ? lines : [""];
 }
 
-function wrapParagraph(font: BdfFont, paragraph: string, targetWidth: number): string[] {
+function wrapParagraph(font: BdfFont, paragraph: string, targetWidth: number, opts: WrapTextOptions): string[] {
   if (paragraph.length === 0) {
     return [""];
   }
 
   const widths = measureOffsets(font, paragraph);
   const wrapOffsets = findWrapOpportunities(paragraph);
+  if (wrapOffsets[wrapOffsets.length - 1] !== paragraph.length) {
+    wrapOffsets.push(paragraph.length);
+  }
   const lines: string[] = [];
-  let start = skipLeadingWhitespace(paragraph, 0);
+  let start = opts.preserveLeadingWhitespace ? 0 : skipLeadingWhitespace(paragraph, 0);
 
   while (start < paragraph.length) {
     let best = -1;
@@ -63,16 +71,21 @@ function wrapParagraph(font: BdfFont, paragraph: string, targetWidth: number): s
       break;
     }
 
+    const splitOffset = furthestFittingOffset(widths, start, targetWidth);
+    if (opts.breakLongWords && splitOffset > start && (best < 0 || splitOffset > trimEndOffset(paragraph, best))) {
+      best = splitOffset;
+    }
     if (best < 0) {
-      best = furthestFittingOffset(widths, start, targetWidth);
+      best = splitOffset;
     }
     if (best <= start) {
       best = nextOffset(widths, start);
     }
 
-    const line = paragraph.slice(start, best).trimEnd();
+    const lineEnd = trimEndOffset(paragraph, best);
+    const line = paragraph.slice(start, lineEnd);
     lines.push(line);
-    start = skipLeadingWhitespace(paragraph, best);
+    start = opts.preserveLeadingWhitespace && lines.length === 1 ? best : skipLeadingWhitespace(paragraph, best);
   }
 
   return lines.length ? lines : [""];
@@ -128,6 +141,30 @@ function skipLeadingWhitespace(text: string, offset: number): number {
     cursor += char.length;
   }
   return cursor;
+}
+
+function trimEndOffset(text: string, offset: number): number {
+  let cursor = offset;
+  while (cursor > 0) {
+    const previous = previousOffset(text, cursor);
+    const char = text.slice(previous, cursor);
+    if (!isWhitespace(char) || char === "\n") {
+      break;
+    }
+    cursor = previous;
+  }
+  return cursor;
+}
+
+function previousOffset(text: string, offset: number): number {
+  let cursor = 0;
+  let previous = 0;
+  while (cursor < offset) {
+    previous = cursor;
+    const codePoint = text.codePointAt(cursor) ?? 0;
+    cursor += String.fromCodePoint(codePoint).length;
+  }
+  return previous;
 }
 
 function isWhitespace(char: string): boolean {

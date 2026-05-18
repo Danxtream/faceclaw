@@ -50,7 +50,9 @@ import {
 import { Layer, LayerActions, LayerStack, type DashboardInputEvent, type LayerContext } from "./layers";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuLayer } from "./menu";
 import { StopwatchLayer } from "./apps/stopwatch";
+import { NotificationsListLayer } from "./notifications";
 import { TranscribeLayer } from "./apps/transcribe";
+import { TelepromptLayer } from "./apps/teleprompt";
 
 type DashboardCardId = "system" | DashboardSlotId;
 export type DashboardBatteryLevels = {
@@ -70,6 +72,7 @@ let dashboardState = {
   wakeMode: loadWakeModeSetting(),
   voiceControlEnabled: loadVoiceControlEnabled(),
   tiledWakePaintPending: false,
+  telepromptDocumentText: null as string | null,
   nightscoutSettings: loadNightscoutSettings(),
   battery: {
     headset: null,
@@ -251,6 +254,17 @@ export function applyDashboardScreenTimeout(nowMs = Date.now()): boolean {
 
 export function noteDashboardPhoneTextInput(nowMs = Date.now()): void {
   dashboardState.lastInputAtMs = nowMs;
+}
+
+export function openTelepromptDocument(text?: string): void {
+  if (text !== undefined) {
+    dashboardState.telepromptDocumentText = text;
+  }
+  dashboardState.lastInputAtMs = Date.now();
+  dashboardState.screenOn = true;
+  dashboardLayers.clearToBase();
+  dashboardLayers.push(createRootMenuLayer());
+  dashboardLayers.push(new TelepromptLayer(dashboardState.telepromptDocumentText));
 }
 
 export function resetDashboardSleepTimerAndWake(nowMs = Date.now()): boolean {
@@ -448,12 +462,21 @@ class RootMenuLayer extends MenuLayer {
 
 function createRootMenuLayer(): MenuLayer {
   return new RootMenuLayer(
-    "Menu",
+    null,
     [
       {
         label: "Apps",
         onSelect: (ctx) => {
           ctx.stack.push(createAppsMenuLayer());
+        },
+      },
+      {
+        label: "Notifications",
+        onSelect: (ctx) => {
+          ctx.stack.push(new NotificationsListLayer((ctx) => {
+            ctx.stack.clearToBase();
+            ctx.stack.push(createRootMenuLayer());
+          }));
         },
       },
       {
@@ -488,6 +511,12 @@ function createAppsMenuLayer(): MenuLayer {
   return new MenuLayer(
     "Apps",
     [
+      {
+        label: "Teleprompt",
+        onSelect: (ctx) => {
+          ctx.stack.push(new TelepromptLayer(dashboardState.telepromptDocumentText));
+        },
+      },
       {
         label: "Stopwatch",
         onSelect: (ctx) => {
@@ -580,7 +609,7 @@ function createSettingsMenuLayer(): MenuLayer {
 
 function createDisplaySettingsMenuLayer(): MenuLayer {
   return new MenuLayer(
-    "Display",
+    "Settings > Display",
     [
       {
         label: "Screen timeout",
@@ -616,7 +645,7 @@ function setWakeMode(value: WakeModeSetting): void {
 
 function createVoiceSettingsMenuLayer(): MenuLayer {
   return new MenuLayer(
-    "Voice",
+    "Settings > Voice",
     [
       {
         label: "Enable",
@@ -634,7 +663,7 @@ function createVoiceSettingsMenuLayer(): MenuLayer {
 
 function createDashboardSettingsMenuLayer(): MenuLayer {
   return new MenuLayer(
-    "Dashboard",
+    "Settings > Dashboard",
     [
       {
         label: "System Card",
@@ -658,7 +687,7 @@ function createDashboardSettingsMenuLayer(): MenuLayer {
 
 function createSystemCardSettingsMenuLayer(): MenuLayer {
   return new MenuLayer(
-    "System Card",
+    "Settings > Dashboard > System Card",
     [
       {
         label: "Name",
@@ -693,7 +722,7 @@ function createSystemCardToggleItem(label: string, key: SystemCardSettingKey) {
 
 function createIntegrationsMenuLayer(): MenuLayer {
   return new MenuLayer(
-    "Integrations",
+    "Settings > Integrations",
     [
       {
         label: "Nightscout",
@@ -708,7 +737,7 @@ function createIntegrationsMenuLayer(): MenuLayer {
 
 function createNightscoutSettingsMenuLayer(): MenuLayer {
   return new MenuLayer(
-    "Nightscout",
+    "Settings > Integrations > Nightscout",
     [
       {
         label: "Site URL",
@@ -783,7 +812,7 @@ class EditTextSettingLayer implements Layer {
 
 function createSlotPickerMenu(slot: DashboardSlotId): MenuLayer {
   return new MenuLayer(
-    slotMenuLabel(slot),
+    `Settings > Dashboard > ${slotMenuLabel(slot)}`,
     listDashboardPlugins().map((plugin) => ({
       label: plugin.label,
       onSelect: (ctx) => {

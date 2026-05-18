@@ -2,8 +2,6 @@ import { Utils } from "@nativescript/core";
 
 declare const com: any;
 
-const FRAME_METRICS_LISTENER_MIN_INTERVAL_MS = 5_000;
-
 export type CommunicatorPhase =
   | "disconnected"
   | "connecting"
@@ -75,7 +73,6 @@ export class FaceclawCommunicatorBridge {
   private readonly batteryListeners = new Set<(state: HeadsetBatteryState) => void>();
   private readonly evenAppConflictListeners = new Set<(message: string) => void>();
   private readonly frameMetricsListeners = new Set<(metrics: FrameMetrics) => void>();
-  private lastFrameMetricsListenerEmitAtMs = 0;
 
   constructor(addresses: { right: string; left: string; ring?: string }) {
     const context = Utils.android.getApplicationContext();
@@ -135,14 +132,7 @@ export class FaceclawCommunicatorBridge {
         for (const waiter of waiters) {
           setTimeout(() => waiter(metrics), 0);
         }
-        const now = Date.now();
-        if (
-          this.lastFrameMetricsListenerEmitAtMs === 0 ||
-          now - this.lastFrameMetricsListenerEmitAtMs >= FRAME_METRICS_LISTENER_MIN_INTERVAL_MS
-        ) {
-          this.lastFrameMetricsListenerEmitAtMs = now;
-          this.emitAsync(this.frameMetricsListeners, metrics);
-        }
+        this.emitAsync(this.frameMetricsListeners, metrics);
       },
     });
     this.communicator.setListener(this.listenerProxy);
