@@ -251,7 +251,7 @@ export class GrayImage {
           y: ty,
           width,
           height,
-          bmp: buildEvenHubBmp(width, height, (x, y) => this.getPixel(tx + x, ty + y) >> 4),
+          bmp: buildEvenHubBmp(width, height, (x, y) => grayToEvenHubNibble(this.getPixel(tx + x, ty + y))),
         });
       }
     }
@@ -325,6 +325,11 @@ function buildEvenHubBmp(
   }
 
   return buf;
+}
+
+function grayToEvenHubNibble(value: number): number {
+  const clamped = clampByte(value);
+  return clamped === 0 ? 0 : Math.min(15, (clamped + 15) >> 4);
 }
 
 function clampByte(value: number): number {

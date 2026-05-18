@@ -1,10 +1,13 @@
-import { Frame, ImageSource, Observable, Screen } from "@nativescript/core";
+import { Application, Frame, ImageSource, Observable, Screen } from "@nativescript/core";
 import { dashboardController, type TextSettingEditorKind } from "../g2/dashboard-controller";
+
+type LayoutOrientation = "portrait" | "landscape";
 
 export class MainViewModel extends Observable {
   private _status = "Disconnected.";
   private _log = "";
   private _displayPreview: ImageSource | null = null;
+  private _layoutOrientation: LayoutOrientation = this.readLayoutOrientation();
   private _systemCardName = "Faceclaw";
   private _editingSystemCardName = false;
   private _activeTextSettingEditorKind: TextSettingEditorKind | null = null;
@@ -77,6 +80,36 @@ export class MainViewModel extends Observable {
 
   get displayPreviewHeight(): number {
     return Screen.mainScreen.widthDIPs / 2;
+  }
+
+  get landscapeDisplayPreviewWidth(): number {
+    const screenWidth = Screen.mainScreen.widthDIPs;
+    const sidePanelWidth = 260;
+    return Math.max(240, Math.floor(screenWidth - sidePanelWidth - 56));
+  }
+
+  get landscapeDisplayPreviewHeight(): number {
+    return Math.floor(this.landscapeDisplayPreviewWidth / 2);
+  }
+
+  get portraitLayoutVisibility(): "visible" | "collapse" {
+    return this._layoutOrientation === "portrait" ? "visible" : "collapse";
+  }
+
+  get landscapeLayoutVisibility(): "visible" | "collapse" {
+    return this._layoutOrientation === "landscape" ? "visible" : "collapse";
+  }
+
+  refreshLayoutMetrics(): void {
+    const nextOrientation = this.readLayoutOrientation();
+    if (this._layoutOrientation !== nextOrientation) {
+      this._layoutOrientation = nextOrientation;
+      this.notifyPropertyChange("portraitLayoutVisibility", this.portraitLayoutVisibility);
+      this.notifyPropertyChange("landscapeLayoutVisibility", this.landscapeLayoutVisibility);
+    }
+    this.notifyPropertyChange("displayPreviewHeight", this.displayPreviewHeight);
+    this.notifyPropertyChange("landscapeDisplayPreviewWidth", this.landscapeDisplayPreviewWidth);
+    this.notifyPropertyChange("landscapeDisplayPreviewHeight", this.landscapeDisplayPreviewHeight);
   }
 
   get showLog(): boolean {
@@ -285,6 +318,14 @@ export class MainViewModel extends Observable {
   private appendLog(line: string): void {
     const stamp = new Date().toISOString().slice(11, 19);
     this.log = this.log ? `${this.log}\n[${stamp}] ${line}` : `[${stamp}] ${line}`;
+  }
+
+  private readLayoutOrientation(): LayoutOrientation {
+    const applicationOrientation = Application.orientation();
+    if (applicationOrientation === "landscape" || applicationOrientation === "portrait") {
+      return applicationOrientation;
+    }
+    return Screen.mainScreen.widthDIPs > Screen.mainScreen.heightDIPs ? "landscape" : "portrait";
   }
 
   private formatError(error: unknown): string {

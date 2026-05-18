@@ -10,8 +10,10 @@ const DEFAULT_MENU_HEIGHT = 128;
 const MENU_TITLE_HEIGHT = 16;
 const MENU_ROW_HEIGHT = 20;
 const MENU_HIGHLIGHT_Y_OFFSET = 0;
-const MENU_TOGGLE_SWITCH_Y_OFFSET = -1;
+const MENU_TOGGLE_SWITCH_Y_OFFSET = 1;
 const MENU_HIGHLIGHT_HEIGHT = MENU_ROW_HEIGHT - 1;
+const MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL = 15;
+const MENU_HIGHLIGHT_SELECTED_BORDER_STROKE = 45;
 
 export type MenuLayout = {
   x: number;
@@ -104,8 +106,8 @@ export class MenuLayer implements Layer {
       const y = bodyY + index * MENU_ROW_HEIGHT;
       const selected = index === this.selectedIndex;
       if (selected) {
-        image.fillRoundedRect(x + 12, y + MENU_HIGHLIGHT_Y_OFFSET, width - 24, MENU_HIGHLIGHT_HEIGHT, 18);
-        image.drawRoundedRect(x + 12, y + MENU_HIGHLIGHT_Y_OFFSET, width - 24, MENU_HIGHLIGHT_HEIGHT, 45);
+        image.fillRoundedRect(x + 12, y + MENU_HIGHLIGHT_Y_OFFSET, width - 24, MENU_HIGHLIGHT_HEIGHT, MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL);
+        image.drawRoundedRect(x + 12, y + MENU_HIGHLIGHT_Y_OFFSET, width - 24, MENU_HIGHLIGHT_HEIGHT, MENU_HIGHLIGHT_SELECTED_BORDER_STROKE);
       }
       if (item.render) {
         item.render({

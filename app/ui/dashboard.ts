@@ -53,6 +53,7 @@ import { StopwatchLayer } from "./apps/stopwatch";
 import { NotificationsListLayer } from "./notifications";
 import { TranscribeLayer } from "./apps/transcribe";
 import { TelepromptLayer } from "./apps/teleprompt";
+import { ScreenTestLayer } from "./apps/screen-test";
 
 type DashboardCardId = "system" | DashboardSlotId;
 export type DashboardBatteryLevels = {
@@ -530,6 +531,12 @@ function createAppsMenuLayer(): MenuLayer {
           const layer = new TranscribeLayer();
           ctx.stack.push(layer);
           layer.start(ctx);
+        },
+      },
+      {
+        label: "Screen test",
+        onSelect: (ctx) => {
+          ctx.stack.push(new ScreenTestLayer());
         },
       },
     ],

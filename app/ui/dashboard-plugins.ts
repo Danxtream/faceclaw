@@ -379,7 +379,7 @@ function drawNightscoutBasalOverlay(
     const leftX = timeToGraphX(bounds, windowStartMs, startMs);
     const rightX = timeToGraphX(bounds, windowStartMs, endMs);
     const height = Math.max(1, Math.round((event.rate / maxRate) * overlayHeight));
-    image.fillRect(leftX, bottomY - height + 1, Math.max(1, rightX - leftX + 1), height, 18);
+    image.fillRect(leftX, bottomY - height + 1, Math.max(1, rightX - leftX + 1), height, 15);
   }
 }
 

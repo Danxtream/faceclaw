@@ -1,4 +1,4 @@
-import { Color, EventData, isAndroid, Observable, Page, ScrollView, TextField } from '@nativescript/core'
+import { Application, Color, EventData, isAndroid, Observable, Page, ScrollView, TextField } from '@nativescript/core'
 import { MainViewModel } from './main-view-model'
 import { dashboardController } from '../g2/dashboard-controller'
 
@@ -12,9 +12,12 @@ export function navigatingTo(args: EventData) {
 }
 
 type MainPageState = {
+  model: MainViewModel
   isPinnedToBottom: boolean
-  scrollHandler: () => void
+  scrollViews: ScrollView[]
+  scrollHandler: (args: EventData) => void
   propertyChangeHandler: (args: EventData & { propertyName?: string }) => void
+  orientationHandler: () => void
 }
 
 function getPageState(page: Page): MainPageState | undefined {
@@ -27,14 +30,15 @@ function setPageState(page: Page, state?: MainPageState): void {
 
 function cleanupPage(page: Page): void {
   const state = getPageState(page)
-  const model = page.bindingContext as MainViewModel | null
-  const scrollView = page.getViewById<ScrollView>('logScrollView')
-  if (!state || !model || !scrollView) {
+  if (!state) {
     setPageState(page, undefined)
     return
   }
-  scrollView.off(ScrollView.scrollEvent, state.scrollHandler)
-  model.off(Observable.propertyChangeEvent, state.propertyChangeHandler)
+  for (const scrollView of state.scrollViews) {
+    scrollView.off(ScrollView.scrollEvent, state.scrollHandler)
+  }
+  state.model.off(Observable.propertyChangeEvent, state.propertyChangeHandler)
+  Application.off(Application.orientationChangedEvent, state.orientationHandler)
   setPageState(page, undefined)
 }
 
@@ -46,6 +50,12 @@ function scrollToBottom(scrollView: ScrollView): void {
   setTimeout(() => {
     scrollView.scrollToVerticalOffset(scrollView.scrollableHeight, false)
   }, 0)
+}
+
+function scrollLogsToBottom(scrollViews: ScrollView[]): void {
+  for (const scrollView of scrollViews) {
+    scrollToBottom(scrollView)
+  }
 }
 
 function applySettingsTextFieldContrast(textField: TextField): void {
@@ -82,25 +92,39 @@ export function loaded(args: EventData) {
   dashboardController.refreshEvenAppStatus()
 
   const model = page.bindingContext as MainViewModel | null
-  const scrollView = page.getViewById<ScrollView>('logScrollView')
+  const scrollViews = [
+    page.getViewById<ScrollView>('logScrollView'),
+    page.getViewById<ScrollView>('logScrollViewLandscape'),
+  ].filter((scrollView): scrollView is ScrollView => !!scrollView)
   const settingsTextField = page.getViewById<TextField>('settingsTextField')
+  model?.refreshLayoutMetrics()
   if (settingsTextField) {
     applySettingsTextFieldContrast(settingsTextField)
   }
-  if (!model || !scrollView) {
+  if (!model || scrollViews.length === 0) {
     return
   }
 
   const state: MainPageState = {
+    model,
     isPinnedToBottom: true,
-    scrollHandler: () => {
-      state.isPinnedToBottom = isAtBottom(scrollView)
+    scrollViews,
+    scrollHandler: (scrollArgs) => {
+      state.isPinnedToBottom = isAtBottom(scrollArgs.object as ScrollView)
+    },
+    orientationHandler: () => {
+      setTimeout(() => {
+        model.refreshLayoutMetrics()
+        if (state.isPinnedToBottom) {
+          scrollLogsToBottom(scrollViews)
+        }
+      }, 0)
     },
     propertyChangeHandler: (propertyArgs) => {
       if (propertyArgs.propertyName === 'showLog') {
         if (model.showLog) {
           state.isPinnedToBottom = true
-          scrollToBottom(scrollView)
+          scrollLogsToBottom(scrollViews)
         }
         return
       }
@@ -114,15 +138,18 @@ export function loaded(args: EventData) {
         return
       }
       if (state.isPinnedToBottom) {
-        scrollToBottom(scrollView)
+        scrollLogsToBottom(scrollViews)
       }
     },
   }
 
-  scrollView.on(ScrollView.scrollEvent, state.scrollHandler)
+  for (const scrollView of scrollViews) {
+    scrollView.on(ScrollView.scrollEvent, state.scrollHandler)
+  }
   model.on(Observable.propertyChangeEvent, state.propertyChangeHandler)
+  Application.on(Application.orientationChangedEvent, state.orientationHandler)
   setPageState(page, state)
-  scrollToBottom(scrollView)
+  scrollLogsToBottom(scrollViews)
   if (model.isTextSettingEditorActive) {
     focusSystemNameField(page)
   }
