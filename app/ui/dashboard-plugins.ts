@@ -2,10 +2,10 @@ import { GrayImage } from "../graphics/image";
 import { type MediaControllerState } from "../native/media-controller";
 import { type DashboardPluginId } from "./dashboard-settings";
 import { Layer } from "./layers";
-import { nightscoutDashboardPlugin } from "./apps/nightscout";
+import { NightscoutDashboardPlugin } from "./apps/nightscout";
 import { NightscoutState } from "~/native/nightscout-bridge";
-import { musicControllerDashboardPlugin } from "./apps/music-controller";
-import { debugLogDashboardPlugin } from "./apps/debug-log";
+import { MusicControllerDashboardPlugin } from "./apps/music-controller";
+import { DebugLogDashboardPlugin } from "./apps/debug-log";
 
 export type DashboardPluginState = {
   logLines: string[];
@@ -28,11 +28,23 @@ export type DashboardPluginCardRenderArgs = {
   state: DashboardPluginState;
 };
 
-export interface DashboardPlugin {
+export abstract class DashboardPlugin {
   readonly id: DashboardPluginId;
   readonly label: string;
-  renderCard(args: DashboardPluginCardRenderArgs): void;
-  createFullscreenLayer?(getState: () => DashboardPluginState): Layer | null;
+
+  constructor(config: {
+    id: DashboardPluginId;
+    label: string;
+  }) {
+    this.id = config.id;
+    this.label = config.label;
+  }
+
+  abstract renderCard(args: DashboardPluginCardRenderArgs): void;
+
+  createFullscreenLayer(getState: () => DashboardPluginState): Layer | null {
+    return null;
+  }
 }
 
 const DASHBOARD_PLUGINS: DashboardPlugin[] = [
@@ -42,9 +54,9 @@ const DASHBOARD_PLUGINS: DashboardPlugin[] = [
     renderCard: () => {},
     createFullscreenLayer: () => null,
   },
-  debugLogDashboardPlugin,
-  musicControllerDashboardPlugin,
-  nightscoutDashboardPlugin,
+  new DebugLogDashboardPlugin(),
+  new MusicControllerDashboardPlugin(),
+  new NightscoutDashboardPlugin(),
 ];
 
 const PLUGIN_MAP = new Map<DashboardPluginId, DashboardPlugin>(

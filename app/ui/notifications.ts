@@ -1,3 +1,5 @@
+import { clamp } from "~/util/numeric-util";
+import { formatRelativeTime } from "~/util/date-util";
 import { BdfFont, getDefaultSmallFont } from "../graphics/bdffont";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
@@ -163,33 +165,30 @@ export class SingleNotificationLayer implements Layer {
   }
 }
 
+
 function buildNotificationCardLayout(font: BdfFont, notification: AndroidNotification, selected: boolean): CardLayout {
   const lines: string[] = [];
   const time = formatRelativeTime(notification.postTime);
   const title = notificationTitle(notification);
   const timeSuffix = time ? `  ${time}` : "";
-  lines.push(fitLine(font, `${title}${timeSuffix}`, CARD_TEXT_WIDTH));
+  lines.push(truncateToWidth(font, `${title}${timeSuffix}`, CARD_TEXT_WIDTH));
 
   const appName = notification.appName || notification.packageName;
   const body = primaryNotificationBody(notification);
 
   if (selected) {
     if (appName && appName !== title) {
-      lines.push(fitLine(font, appName, CARD_TEXT_WIDTH));
+      lines.push(truncateToWidth(font, appName, CARD_TEXT_WIDTH));
     }
     if (body) {
       lines.push(...wrapText(font, body, CARD_TEXT_WIDTH).slice(0, 4));
     }
   } else if (body) {
-    console.log(`buildNotificationCardLayout: CARD_TEXT_WIDTH=${CARD_TEXT_WIDTH}`);
-    console.log(`buildNotificationCardLayout: wrapText(...) = ${JSON.stringify(wrapText(font, body, CARD_TEXT_WIDTH))}`);
-    console.log(`buildNotificationCardLayout: fitLine(...) = ${fitLine(font, wrapText(font, body, CARD_TEXT_WIDTH)[0]!, CARD_TEXT_WIDTH)}`);
-    lines.push(fitLine(font, wrapText(font, body, CARD_TEXT_WIDTH)[0]!, CARD_TEXT_WIDTH));
+    lines.push(truncateToWidth(font, wrapText(font, body, CARD_TEXT_WIDTH)[0]!, CARD_TEXT_WIDTH));
   }
   if (notification.actions.length) {
     lines.push(`${notification.actions.length} quick action${notification.actions.length === 1 ? "" : "s"}`);
   }
-  console.log(`buildNotificationCardLayout: title=${title}, appName=${appName}, body=${body}, lines=${JSON.stringify(lines)}`);
   return {
     notification,
     lines,
@@ -296,17 +295,6 @@ function detailNotificationBody(notification: AndroidNotification): string {
   return [notification.bigText || notification.text, lines].filter(Boolean).join("\n");
 }
 
-function formatRelativeTime(timestamp: number): string {
-  if (!timestamp) return "";
-  const ageMs = Math.max(0, Date.now() - timestamp);
-  const minutes = Math.floor(ageMs / 60_000);
-  if (minutes < 1) return "now";
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
-}
-
 function truncateToWidth(font: BdfFont, text: string, width: number): string {
   if (font.measureText(text) <= width) return text;
   let out = text;
@@ -318,12 +306,4 @@ function truncateToWidth(font: BdfFont, text: string, width: number): string {
 
 function notificationTitle(notification: AndroidNotification): string {
   return notification.title || notification.text || notification.summaryText || notification.appName || notification.packageName || "(untitled)";
-}
-
-function fitLine(font: BdfFont, text: string, width: number): string {
-  return truncateToWidth(font, text, width);
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
 }

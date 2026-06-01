@@ -1,14 +1,20 @@
-import { DashboardPlugin, DashboardPluginState } from "../dashboard-plugins";
+import { DashboardPlugin, DashboardPluginCardRenderArgs, DashboardPluginState } from "../dashboard-plugins";
 import { getDefaultSmallFont } from "../../graphics/bdffont";
 import { GrayImage } from "../../graphics/image";
 import { wrapText } from "../../graphics/textwrap";
 import { mediaControllerBridge, type MediaControllerState } from "../../native/media-controller";
 import { Layer, type DashboardInputEvent, type LayerContext } from "../layers";
 
-export const musicControllerDashboardPlugin: DashboardPlugin = {
-  id: "music-controller",
-  label: "Music controller",
-  renderCard: ({ image, bounds, state }) => {
+
+export class MusicControllerDashboardPlugin extends DashboardPlugin {
+  constructor() {
+    super({
+      id: "music-controller",
+      label: "Music controller",
+    });
+  }
+
+  override renderCard({ image, bounds, state }: DashboardPluginCardRenderArgs): void {
     const font = getDefaultSmallFont();
     const media = state.media;
     image.drawText(font, bounds.x + 10, bounds.y + 14, "Now playing", 180);
@@ -30,24 +36,10 @@ export const musicControllerDashboardPlugin: DashboardPlugin = {
     }
     image.drawText(font, bounds.x + 10, bounds.y + 62, artistLine, 160);
     image.drawText(font, bounds.x + 10, bounds.y + bounds.height - 18, playbackLabel(media), 130);
-  },
-  createFullscreenLayer: (getState) => new MusicControllerLayer(getState),
-};
+  }
 
-function playbackLabel(media: MediaControllerState): string {
-  switch (media.playbackState) {
-    case "playing":
-      return "Playing";
-    case "paused":
-      return "Paused";
-    case "buffering":
-      return "Buffering";
-    case "stopped":
-      return "Stopped";
-    case "notification-access-required":
-      return "Access required";
-    default:
-      return media.status || "Idle";
+  override createFullscreenLayer(getState: () => DashboardPluginState): Layer {
+    return new MusicControllerLayer(getState);
   }
 }
 
@@ -121,3 +113,21 @@ class MusicControllerLayer implements Layer {
     }
   }
 }
+
+function playbackLabel(media: MediaControllerState): string {
+  switch (media.playbackState) {
+    case "playing":
+      return "Playing";
+    case "paused":
+      return "Paused";
+    case "buffering":
+      return "Buffering";
+    case "stopped":
+      return "Stopped";
+    case "notification-access-required":
+      return "Access required";
+    default:
+      return media.status || "Idle";
+  }
+}
+

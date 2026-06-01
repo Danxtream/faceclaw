@@ -1,8 +1,9 @@
 import { BdfFont, getDefaultLargeFont, getDefaultSmallFont } from "../../graphics/bdffont";
 import { GrayImage, imageFromAsciiArt } from "../../graphics/image";
-import { DashboardPlugin, DashboardPluginState } from "../dashboard-plugins";
+import { DashboardPlugin, DashboardPluginCardRenderArgs, DashboardPluginState } from "../dashboard-plugins";
 import { DashboardInputEvent, Layer, LayerContext } from "../layers";
 import { nightscoutBridge, type NightscoutState } from "../../native/nightscout-bridge";
+import { formatAgeShortFromTimestamp, formatTimestamp } from "~/util/date-util";
 
 const nightscoutLargeFont = getDefaultLargeFont();
 const NIGHTSCOUT_STALE_MS = 15 * 60 * 1000;
@@ -10,10 +11,15 @@ const NIGHTSCOUT_GRAPH_WINDOW_MS = 2 * 60 * 60 * 1000;
 const NIGHTSCOUT_GRAPH_TIME_QUANTUM_MS = 60 * 1000;
 
 
-export const nightscoutDashboardPlugin: DashboardPlugin = {
-  id: "nightscout",
-  label: "Nightscout",
-  renderCard: ({ image, bounds, state }) => {
+export class NightscoutDashboardPlugin extends DashboardPlugin {
+  constructor() {
+    super({
+      id: "nightscout",
+      label: "Nightscout",
+    });
+  }
+
+  override renderCard({ image, bounds, state }: DashboardPluginCardRenderArgs): void {
     const font = getDefaultSmallFont();
     const nightscout = state.nightscout;
     const nowMs = Date.now();
@@ -64,8 +70,11 @@ export const nightscoutDashboardPlugin: DashboardPlugin = {
       nowMs,
       font,
     );
-  },
-  createFullscreenLayer: (getState) => new NightscoutLayer(getState),
+  }
+
+  override createFullscreenLayer(getState: () => DashboardPluginState): Layer {
+    return new NightscoutLayer(getState);
+  }
 }
 
 function drawNightscoutDelta(
@@ -155,21 +164,6 @@ function formatWholeNumber(value: number): string {
 
 function formatBolusLabel(value: number): string {
   return Number.isInteger(value) ? `${value}` : value.toFixed(1);
-}
-
-function formatAgeShortFromTimestamp(timestampMs: number | null, nowMs: number): string {
-  if (!timestampMs) {
-    return "--";
-  }
-  const elapsedMinutes = Math.max(0, Math.round((nowMs - timestampMs) / 60_000));
-  if (elapsedMinutes < 60) {
-    return `${elapsedMinutes}m`;
-  }
-  const elapsedHours = Math.round(elapsedMinutes / 60);
-  if (elapsedHours < 48) {
-    return `${elapsedHours}h`;
-  }
-  return `${Math.round(elapsedHours / 24)}d`;
 }
 
 function drawNightscoutGraph(
@@ -371,6 +365,7 @@ function drawNightscoutReferenceLine(
   image.drawLine(bounds.x + 1, y, bounds.x + bounds.width - 2, y, shade);
 }
 
+
 class NightscoutLayer implements Layer {
   constructor(private readonly getState: () => DashboardPluginState) {}
 
@@ -441,11 +436,6 @@ class NightscoutLayer implements Layer {
         return;
     }
   }
-}
-
-function formatTimestamp(timestampMs: number): string {
-  const date = new Date(timestampMs);
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 function isNightscoutPointStale(point: NightscoutState["latest"], nowMs: number): boolean {

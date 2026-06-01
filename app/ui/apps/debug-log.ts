@@ -1,13 +1,18 @@
 import takeRight from "lodash/takeRight";
 import { getDefaultSmallFont } from "~/graphics/bdffont";
-import { DashboardPlugin, DashboardPluginState } from "../dashboard-plugins";
+import { DashboardPlugin, DashboardPluginCardRenderArgs, DashboardPluginState } from "../dashboard-plugins";
 import { Layer, LayerContext, type DashboardInputEvent } from "../layers";
 import { GrayImage } from "~/graphics/image";
 
-export const debugLogDashboardPlugin: DashboardPlugin = {
-  id: "input-debug-log",
-  label: "Input debug log",
-  renderCard: ({ image, bounds, state }) => {
+export class DebugLogDashboardPlugin extends DashboardPlugin {
+  constructor() {
+    super({
+      id: "input-debug-log",
+      label: "Input debug log",
+    });
+  }
+
+  override renderCard({ image, bounds, state }: DashboardPluginCardRenderArgs): void {
     const font = getDefaultSmallFont();
     image.drawText(font, bounds.x + 10, bounds.y + 14, "Input log", 180);
     const lineHeight = 14;
@@ -16,9 +21,12 @@ export const debugLogDashboardPlugin: DashboardPlugin = {
     for (let i = 0; i < visibleLines.length; i++) {
       image.drawText(font, bounds.x + 8, bounds.y + 26 + i * lineHeight, visibleLines[i]!, 190);
     }
-  },
-  createFullscreenLayer: (getState) => new DebugLogLayer(getState),
-};
+  }
+
+  override createFullscreenLayer(getState: () => DashboardPluginState): Layer {
+    return new DebugLogLayer(getState);
+  }
+}
 
 class DebugLogLayer implements Layer {
   private scrollOffset = 0;
