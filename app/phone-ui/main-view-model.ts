@@ -1,5 +1,5 @@
 import { Application, Frame, ImageSource, Observable, Screen } from "@nativescript/core";
-import { dashboardController, type TextSettingEditorKind } from "../g2/dashboard-controller";
+import { dashboardController } from "../g2/dashboard-controller";
 
 type LayoutOrientation = "portrait" | "landscape";
 
@@ -8,9 +8,7 @@ export class MainViewModel extends Observable {
   private _log = "";
   private _displayPreview: ImageSource | null = null;
   private _layoutOrientation: LayoutOrientation = this.readLayoutOrientation();
-  private _systemCardName = "Faceclaw";
-  private _editingSystemCardName = false;
-  private _activeTextSettingEditorKind: TextSettingEditorKind | null = null;
+  private _activeTextSettingId: string | null = null;
   private _activeTextSettingTitle = "";
   private _activeTextSettingValue = "";
   private _evenAppConflictMessage = "";
@@ -25,9 +23,7 @@ export class MainViewModel extends Observable {
       this.log = snapshot.log;
       this.displayPreview = snapshot.displayPreview;
       this.phase = snapshot.phase;
-      this.systemCardName = snapshot.systemCardName;
-      this.editingSystemCardName = snapshot.editingSystemCardName;
-      this.activeTextSettingEditorKind = snapshot.activeTextSettingEditorKind;
+      this.activeTextSettingId = snapshot.activeTextSettingId;
       this.activeTextSettingTitle = snapshot.activeTextSettingTitle;
       this.activeTextSettingValue = snapshot.activeTextSettingValue;
       this.evenAppConflictMessage = snapshot.evenAppConflictMessage;
@@ -133,41 +129,14 @@ export class MainViewModel extends Observable {
     return this._showLog ? "Hide Log" : "Show Log";
   }
 
-  get systemCardName(): string {
-    return this._systemCardName;
+  get activeTextSettingId(): string | null {
+    return this._activeTextSettingId;
   }
 
-  set systemCardName(value: string) {
-    if (this._systemCardName !== value) {
-      this._systemCardName = value;
-      this.notifyPropertyChange("systemCardName", value);
-    }
-  }
-
-  get editingSystemCardName(): boolean {
-    return this._editingSystemCardName;
-  }
-
-  set editingSystemCardName(value: boolean) {
-    if (this._editingSystemCardName !== value) {
-      this._editingSystemCardName = value;
-      this.notifyPropertyChange("editingSystemCardName", value);
-      this.notifyPropertyChange("systemCardNameEditorVisibility", this.systemCardNameEditorVisibility);
-    }
-  }
-
-  get systemCardNameEditorVisibility(): "visible" | "collapse" {
-    return this._editingSystemCardName ? "visible" : "collapse";
-  }
-
-  get activeTextSettingEditorKind(): TextSettingEditorKind | null {
-    return this._activeTextSettingEditorKind;
-  }
-
-  set activeTextSettingEditorKind(value: TextSettingEditorKind | null) {
-    if (this._activeTextSettingEditorKind !== value) {
-      this._activeTextSettingEditorKind = value;
-      this.notifyPropertyChange("activeTextSettingEditorKind", value);
+  set activeTextSettingId(value: string | null) {
+    if (this._activeTextSettingId !== value) {
+      this._activeTextSettingId = value;
+      this.notifyPropertyChange("activeTextSettingId", value);
       this.notifyPropertyChange("textSettingEditorVisibility", this.textSettingEditorVisibility);
       this.notifyPropertyChange("isTextSettingEditorActive", this.isTextSettingEditorActive);
     }
@@ -196,7 +165,7 @@ export class MainViewModel extends Observable {
   }
 
   get isTextSettingEditorActive(): boolean {
-    return this._activeTextSettingEditorKind !== null;
+    return this._activeTextSettingId !== null;
   }
 
   get textSettingEditorVisibility(): "visible" | "collapse" {

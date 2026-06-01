@@ -1,6 +1,6 @@
 import { BdfFont, getDefaultLargeFont, getDefaultSmallFont } from "../../graphics/bdffont";
 import { GrayImage, imageFromAsciiArt } from "../../graphics/image";
-import { DashboardPlugin, DashboardPluginCardRenderArgs, DashboardPluginState } from "../dashboard-plugins";
+import { DashboardPlugin, type DashboardPluginCardRenderArgs, type DashboardPluginState } from "../dashboard-plugin";
 import { DashboardInputEvent, Layer, LayerContext } from "../layers";
 import { nightscoutBridge, type NightscoutState } from "../../native/nightscout-bridge";
 import { formatAgeShortFromTimestamp, formatTimestamp } from "~/util/date-util";

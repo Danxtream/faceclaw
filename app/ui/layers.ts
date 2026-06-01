@@ -1,5 +1,6 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { BdfFont } from "../graphics/bdffont";
+import { type ConfigSettingString } from "./dashboard-settings";
 
 export type DashboardInputEvent =
   | { type: "click"; source: "ring" | "left-arm" | "right-arm" }
@@ -10,10 +11,7 @@ export type DashboardInputEvent =
 
 export type LayerActions = {
   disconnect: () => Promise<void> | void;
-  startSystemNameEdit: () => Promise<void> | void;
-  endSystemNameEdit: () => Promise<void> | void;
-  startNightscoutSiteUrlEdit: () => Promise<void> | void;
-  startNightscoutApiTokenEdit: () => Promise<void> | void;
+  startTextSettingEdit: (setting: ConfigSettingString) => Promise<void> | void;
   endTextSettingEdit: () => Promise<void> | void;
   setVoiceControlEnabled: (enabled: boolean) => Promise<void> | void;
   setStopwatchRenderActive: (active: boolean) => Promise<void> | void;

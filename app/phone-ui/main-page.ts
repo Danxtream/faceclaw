@@ -128,7 +128,7 @@ export function loaded(args: EventData) {
         }
         return
       }
-      if (propertyArgs.propertyName === 'activeTextSettingEditorKind') {
+      if (propertyArgs.propertyName === 'activeTextSettingId') {
         if (model.isTextSettingEditorActive) {
           focusSystemNameField(page)
         }

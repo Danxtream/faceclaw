@@ -1,4 +1,4 @@
-import { DashboardPlugin, DashboardPluginCardRenderArgs, DashboardPluginState } from "../dashboard-plugins";
+import { DashboardPlugin, type DashboardPluginCardRenderArgs, type DashboardPluginState } from "../dashboard-plugin";
 import { getDefaultSmallFont } from "../../graphics/bdffont";
 import { GrayImage } from "../../graphics/image";
 import { wrapText } from "../../graphics/textwrap";

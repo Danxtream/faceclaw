@@ -16,10 +16,6 @@ import {
   applyDashboardScreenTimeout,
   consumeDashboardTiledWakePaint,
   drawDashboard,
-  getDashboardNightscoutSettings,
-  getDashboardSystemCardName,
-  isDashboardCompressionRatioEstimationEnabled,
-  isDashboardVoiceControlEnabled,
   noteDashboardPhoneTextInput,
   openAndroidNotificationFromSleep,
   openTelepromptDocument,
@@ -27,23 +23,24 @@ import {
   resetDashboardSleepTimerAndWake,
   setDashboardBatteryLevels,
   setDashboardActions,
-  setDashboardNightscoutApiToken,
-  setDashboardNightscoutSiteUrl,
-  setDashboardSystemCardName,
-  setDashboardVoiceControlEnabled,
 } from "../ui/dashboard";
+import {
+  estimateCompressionRatiosSetting,
+  nightscoutApiTokenSetting,
+  nightscoutSiteUrlSetting,
+  systemCardNameSetting,
+  voiceControlEnabledSetting,
+  type ConfigSettingString,
+} from "../ui/dashboard-settings";
 
 type ConnectionPhase = "disconnected" | "connecting" | "connected" | "disconnecting";
-export type TextSettingEditorKind = "dashboard-name" | "nightscout-site-url" | "nightscout-api-token";
 
 export type DashboardSnapshot = {
   phase: ConnectionPhase;
   status: string;
   log: string;
   displayPreview: ImageSource | null;
-  systemCardName: string;
-  editingSystemCardName: boolean;
-  activeTextSettingEditorKind: TextSettingEditorKind | null;
+  activeTextSettingId: string | null;
   activeTextSettingTitle: string;
   activeTextSettingValue: string;
   evenAppConflictMessage: string;
@@ -119,8 +116,7 @@ class DashboardController {
   private phase: ConnectionPhase = "disconnected";
   private status = "Disconnected.";
   private log = "";
-  private editingSystemCardName = false;
-  private activeTextSettingEditorKind: TextSettingEditorKind | null = null;
+  private activeTextSetting: ConfigSettingString | null = null;
   private evenNotificationActive = false;
   private evenAppConflictMessage = "";
   private displayPreview: ImageSource | null = createInitialDisplayPreview();
@@ -154,10 +150,7 @@ class DashboardController {
   constructor() {
     setDashboardActions({
       disconnect: () => this.disconnect(),
-      startSystemNameEdit: () => this.startSystemNameEdit(),
-      endSystemNameEdit: () => this.endSystemNameEdit(),
-      startNightscoutSiteUrlEdit: () => this.startNightscoutSiteUrlEdit(),
-      startNightscoutApiTokenEdit: () => this.startNightscoutApiTokenEdit(),
+      startTextSettingEdit: (setting) => this.startTextSettingEdit(setting),
       endTextSettingEdit: () => this.endTextSettingEdit(),
       setVoiceControlEnabled: (enabled) => this.setVoiceControlEnabled(enabled),
       setStopwatchRenderActive: (active) => this.setStopwatchRenderActive(active),
@@ -186,11 +179,9 @@ class DashboardController {
       status: this.status,
       log: this.log,
       displayPreview: this.displayPreview,
-      systemCardName: getDashboardSystemCardName(),
-      editingSystemCardName: this.editingSystemCardName,
-      activeTextSettingEditorKind: this.activeTextSettingEditorKind,
-      activeTextSettingTitle: this.getActiveTextSettingTitle(),
-      activeTextSettingValue: this.getActiveTextSettingValue(),
+      activeTextSettingId: this.activeTextSetting?.id ?? null,
+      activeTextSettingTitle: this.activeTextSetting?.editorTitle ?? "",
+      activeTextSettingValue: this.activeTextSetting?.get() ?? "",
       evenAppConflictMessage: this.evenAppConflictMessage,
       evenAppConflictWarningVisible: this.evenAppConflictMessage.length > 0,
     };
@@ -218,49 +209,13 @@ class DashboardController {
   }
 
   setSystemCardName(name: string): void {
-    const savedName = setDashboardSystemCardName(name);
-    this.emit();
-    if (this.phase === "connected" && this.communicator) {
-      void this.requestRender("interval").catch((error) => {
-        this.appendLog(`dashboard name update failed: ${this.formatError(error)}`);
-      });
-    } else {
-      const image = drawDashboard();
-      this.updateDisplayPreviewFromImage(image);
-    }
-    if (savedName !== name) {
-      this.emit();
-    }
+    this.updateTextSetting(systemCardNameSetting, name);
   }
 
   setActiveTextSettingValue(value: string): void {
     noteDashboardPhoneTextInput();
-    switch (this.activeTextSettingEditorKind) {
-      case "dashboard-name":
-        this.setSystemCardName(value);
-        return;
-      case "nightscout-site-url":
-        setDashboardNightscoutSiteUrl(value);
-        this.emit();
-        this.previewOrRenderAfterTextSettingChange("nightscout site URL");
-        return;
-      case "nightscout-api-token":
-        setDashboardNightscoutApiToken(value);
-        this.emit();
-        this.previewOrRenderAfterTextSettingChange("nightscout API token");
-        return;
-      default:
-        return;
-    }
-  }
-
-  endSystemNameEdit(): void {
-    if (!this.editingSystemCardName) return;
-    this.editingSystemCardName = false;
-    if (this.activeTextSettingEditorKind === "dashboard-name") {
-      this.activeTextSettingEditorKind = null;
-    }
-    this.emit();
+    if (!this.activeTextSetting) return;
+    this.updateTextSetting(this.activeTextSetting, value);
   }
 
   async connect(): Promise<void> {
@@ -505,21 +460,8 @@ class DashboardController {
     this.updateDisplayPreviewFromImage(image);
   }
 
-  private startSystemNameEdit(): void {
-    this.editingSystemCardName = true;
-    this.activeTextSettingEditorKind = "dashboard-name";
-    this.emit();
-  }
-
-  private startNightscoutSiteUrlEdit(): void {
-    this.editingSystemCardName = false;
-    this.activeTextSettingEditorKind = "nightscout-site-url";
-    this.emit();
-  }
-
-  private startNightscoutApiTokenEdit(): void {
-    this.editingSystemCardName = false;
-    this.activeTextSettingEditorKind = "nightscout-api-token";
+  private startTextSettingEdit(setting: ConfigSettingString): void {
+    this.activeTextSetting = setting;
     this.emit();
   }
 
@@ -535,7 +477,7 @@ class DashboardController {
       }
     }
 
-    setDashboardVoiceControlEnabled(enabled);
+    voiceControlEnabledSetting.set(enabled);
     this.appendLog(`Voice control ${enabled ? "enabled" : "disabled"}.`);
     if (enabled) {
       this.startVoiceControlIfEnabled();
@@ -550,39 +492,19 @@ class DashboardController {
   }
 
   private endTextSettingEdit(): void {
-    const finishedKind = this.activeTextSettingEditorKind;
-    this.editingSystemCardName = false;
-    this.activeTextSettingEditorKind = null;
+    const finishedSetting = this.activeTextSetting;
+    this.activeTextSetting = null;
     this.emit();
-    if (finishedKind === "nightscout-site-url" || finishedKind === "nightscout-api-token") {
+    if (finishedSetting === nightscoutSiteUrlSetting || finishedSetting === nightscoutApiTokenSetting) {
       void this.refreshNightscoutAfterSettingsChange();
     }
   }
 
-  private getActiveTextSettingTitle(): string {
-    switch (this.activeTextSettingEditorKind) {
-      case "dashboard-name":
-        return "Dashboard name";
-      case "nightscout-site-url":
-        return "Nightscout site URL";
-      case "nightscout-api-token":
-        return "Nightscout API token";
-      default:
-        return "";
-    }
-  }
-
-  private getActiveTextSettingValue(): string {
-    const nightscoutSettings = getDashboardNightscoutSettings();
-    switch (this.activeTextSettingEditorKind) {
-      case "dashboard-name":
-        return getDashboardSystemCardName();
-      case "nightscout-site-url":
-        return nightscoutSettings.siteUrl;
-      case "nightscout-api-token":
-        return nightscoutSettings.apiToken;
-      default:
-        return "";
+  private updateTextSetting(setting: ConfigSettingString, value: string): void {
+    if (setting.get() !== value) {
+      setting.set(value);
+      this.emit();
+      this.previewOrRenderAfterTextSettingChange(setting.label);
     }
   }
 
@@ -639,7 +561,7 @@ class DashboardController {
     const forceTiledCommit = consumeDashboardTiledWakePaint();
     const fingerprint = image.fingerprint();
     const imageTiles = image.toEvenHubTiles();
-    if (isDashboardCompressionRatioEstimationEnabled()) {
+    if (estimateCompressionRatiosSetting.get()) {
       this.logCompressionEstimate(imageTiles);
     }
     const tiles = imageTiles.map((tile) => tile.bmp);
@@ -735,7 +657,7 @@ class DashboardController {
 
   private startVoiceControlIfEnabled(): void {
     if (!this.communicator) return;
-    if (!isDashboardVoiceControlEnabled()) return;
+    if (!voiceControlEnabledSetting.get()) return;
     this.updateConnectedForegroundNotification();
     voiceControlBridge.start(this.communicator.getNativeCommunicator(), "wakeword");
   }

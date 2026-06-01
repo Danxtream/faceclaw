@@ -1,6 +1,6 @@
 import takeRight from "lodash/takeRight";
 import { getDefaultSmallFont } from "~/graphics/bdffont";
-import { DashboardPlugin, DashboardPluginCardRenderArgs, DashboardPluginState } from "../dashboard-plugins";
+import { DashboardPlugin, type DashboardPluginCardRenderArgs, type DashboardPluginState } from "../dashboard-plugin";
 import { Layer, LayerContext, type DashboardInputEvent } from "../layers";
 import { GrayImage } from "~/graphics/image";
 

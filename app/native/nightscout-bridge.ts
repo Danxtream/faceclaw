@@ -1,4 +1,4 @@
-import { loadNightscoutSettings } from "../ui/dashboard-settings";
+import { loadNightscoutSettings, nightscoutApiTokenSetting, nightscoutSiteUrlSetting } from "../ui/dashboard-settings";
 
 export type NightscoutPoint = {
   timestampMs: number;
@@ -181,8 +181,9 @@ export class NightscoutBridge {
   private async refresh(): Promise<void> {
     try {
       const nowMs = Date.now();
-      const settings = loadNightscoutSettings();
-      if (!settings.siteUrl || !settings.apiToken) {
+      const siteUrl = nightscoutSiteUrlSetting.get();
+      const apiToken = nightscoutApiTokenSetting.get();
+      if (!siteUrl || !apiToken) {
         this.state = {
           ...DEFAULT_NIGHTSCOUT_STATE,
           status: "Configure Nightscout site URL and API token.",
@@ -192,22 +193,22 @@ export class NightscoutBridge {
         return;
       }
       const treatmentStartIso = new Date(nowMs - NIGHTSCOUT_TREATMENT_LOOKBACK_MS).toISOString();
-      const tokenQuery = `token=${encodeURIComponent(settings.apiToken)}`;
+      const tokenQuery = `token=${encodeURIComponent(apiToken)}`;
       const [entries, deviceStatus, status, treatments, siteChanges] = await Promise.all([
         fetchJson<NightscoutEntryResponse[]>(
-          `${settings.siteUrl}/api/v1/entries.json?count=${NIGHTSCOUT_HISTORY_COUNT}&${tokenQuery}`,
+          `${siteUrl}/api/v1/entries.json?count=${NIGHTSCOUT_HISTORY_COUNT}&${tokenQuery}`,
         ),
         fetchJson<NightscoutDeviceStatusResponse[]>(
-          `${settings.siteUrl}/api/v1/devicestatus.json?count=1&${tokenQuery}`,
+          `${siteUrl}/api/v1/devicestatus.json?count=1&${tokenQuery}`,
         ),
         fetchJson<NightscoutStatusResponse>(
-          `${settings.siteUrl}/api/v1/status.json?${tokenQuery}`,
+          `${siteUrl}/api/v1/status.json?${tokenQuery}`,
         ),
         fetchJson<NightscoutTreatmentResponse[]>(
-          `${settings.siteUrl}/api/v1/treatments.json?find%5Bcreated_at%5D%5B%24gte%5D=${encodeURIComponent(treatmentStartIso)}&${tokenQuery}`,
+          `${siteUrl}/api/v1/treatments.json?find%5Bcreated_at%5D%5B%24gte%5D=${encodeURIComponent(treatmentStartIso)}&${tokenQuery}`,
         ),
         fetchJson<NightscoutTreatmentResponse[]>(
-          `${settings.siteUrl}/api/v1/treatments.json?find%5BeventType%5D=Site%20Change&count=1&${tokenQuery}`,
+          `${siteUrl}/api/v1/treatments.json?find%5BeventType%5D=Site%20Change&count=1&${tokenQuery}`,
         ),
       ]);
 

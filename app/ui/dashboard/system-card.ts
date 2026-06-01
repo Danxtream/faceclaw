@@ -7,7 +7,7 @@ import { type DashboardPluginCardBounds } from "../dashboard-plugins";
 import { dashboardState } from "../dashboard";
 import { getDefaultMediumFont, getDefaultSmallFont } from "~/graphics/bdffont";
 import { getDashboardLogo } from "~/graphics/logo";
-import { DEFAULT_SYSTEM_CARD_NAME } from "../dashboard-settings";
+import { showAndroidNotificationsSetting, showBatteryIndicatorsSetting, showFaceclawLogoSetting, showSignalStrengthSetting, systemCardNameSetting } from "../dashboard-settings";
 
 const NOTIFICATION_ICON_SIZE = 24;
 const SYSTEM_CARD_ITEM_HEIGHT = 38;
@@ -29,14 +29,14 @@ function drawSystemCardFlowItems(image: GrayImage, bounds: DashboardPluginCardBo
   const right = bounds.x + bounds.width - 10;
   const bottom = bounds.y + bounds.height - 6;
   const items: SystemCardFlowItem[] = [];
-  if (dashboardState.systemCardSettings.showAndroidNotifications) {
+  if (showAndroidNotificationsSetting.get()) {
     const maxNotificationIcons = Math.max(0, ((right - left) / Math.max(1, NOTIFICATION_ICON_SIZE + SYSTEM_CARD_ITEM_GAP)) | 0) * 2;
     for (const icon of readActiveNotificationIcons(maxNotificationIcons)) {
       items.push({ type: "notification", icon });
     }
   }
   items.push(...collectBatteryItems());
-  if (dashboardState.systemCardSettings.showSignalStrength) {
+  if (showSignalStrengthSetting.get()) {
     for (const icon of readSystemStatusIcons()) {
       items.push({ type: "notification", icon });
     }
@@ -74,7 +74,7 @@ function systemCardFlowItemWidth(item: SystemCardFlowItem): number {
 }
 
 function collectBatteryItems(): SystemCardFlowItem[] {
-  if (!dashboardState.systemCardSettings.showBatteryIndicators) return [];
+  if (!showBatteryIndicatorsSetting.get()) return [];
   const phone = readPhoneBatteryState();
   const items: SystemCardFlowItem[] = [];
   addBatteryItem(items, "Phone", phone.battery, phone.charging);
@@ -114,20 +114,15 @@ function pad2(value: number): string {
   return String(value).padStart(2, "0");
 }
 
-export function getDisplayedSystemCardName(): string {
-  return dashboardState.systemCardName || DEFAULT_SYSTEM_CARD_NAME;
-}
-
-
 export function drawSystemCard(image: GrayImage, bounds: DashboardPluginCardBounds): void {
     const now = new Date();
     const logo = getDashboardLogo();
 
-    if (logo && dashboardState.systemCardSettings.showFaceclawLogo) {
+    if (logo && showFaceclawLogoSetting.get()) {
       image.bitBlt(logo, bounds.x + 10, bounds.y + 10);
     }
-    const infoX = logo && dashboardState.systemCardSettings.showFaceclawLogo ? bounds.x + 92 : bounds.x + 10;
-    image.drawText(mediumFont, infoX, bounds.y + 10, getDisplayedSystemCardName(), 200);
+    const infoX = logo && showFaceclawLogoSetting.get() ? bounds.x + 92 : bounds.x + 10;
+    image.drawText(mediumFont, infoX, bounds.y + 10, systemCardNameSetting.get(), 200);
     image.drawText(mediumFont, infoX, bounds.y + 32, formatDashboardDate(now), 200);
     drawSystemCardFlowItems(image, bounds);
 }

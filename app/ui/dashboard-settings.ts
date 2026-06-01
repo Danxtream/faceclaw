@@ -1,6 +1,12 @@
 import { ApplicationSettings } from "@nativescript/core";
+import { getDefaultSmallFont } from "~/graphics/bdffont";
+import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, MenuLayer } from "./menu";
+import { DashboardInputEvent, Layer, type LayerContext } from "./layers";
+import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "~/graphics/image";
+import { GrayImage } from "~/graphics/image";
 
 export type DashboardSlotId = "bottom-left" | "bottom-right";
+export const dashboardSlotIds: DashboardSlotId[] = ["bottom-left", "bottom-right"];
 export type DashboardPluginId = "blank" | "input-debug-log" | "music-controller" | "nightscout";
 
 export type DashboardSlotConfig = Record<DashboardSlotId, DashboardPluginId>;
@@ -18,28 +24,125 @@ export type SystemCardSettingKey = keyof SystemCardSettings;
 export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "never";
 export type WakeModeSetting = "tiled" | "synchronized";
 
-export const DEFAULT_SYSTEM_CARD_NAME = "Faceclaw";
-export const DEFAULT_SCREEN_TIMEOUT: ScreenTimeoutSetting = "30s";
-export const DEFAULT_WAKE_MODE: WakeModeSetting = "tiled";
-export const DEFAULT_VOICE_CONTROL_ENABLED = false;
-export const DEFAULT_ESTIMATE_COMPRESSION_RATIOS_ENABLED = false;
-const SYSTEM_CARD_NAME_KEY = "dashboard.systemCardName";
-const SCREEN_TIMEOUT_KEY = "display.screenTimeout";
-const WAKE_MODE_KEY = "display.wakeMode";
-const VOICE_CONTROL_ENABLED_KEY = "voice.enabled";
-const ESTIMATE_COMPRESSION_RATIOS_ENABLED_KEY = "debug.estimateCompressionRatios";
-const SYSTEM_CARD_SETTING_KEYS: Record<SystemCardSettingKey, string> = {
-  showFaceclawLogo: "dashboard.systemCard.showFaceclawLogo",
-  showBatteryIndicators: "dashboard.systemCard.showBatteryIndicators",
-  showAndroidNotifications: "dashboard.systemCard.showAndroidNotifications",
-  showSignalStrength: "dashboard.systemCard.showSignalStrength",
+type ConfigSettingOptions<TValue, TId extends string> = {
+  id: TId;
+  label: string;
+  storageKey: string;
+  defaultValue: TValue;
+  formatValue?: (value: TValue) => string;
 };
-const NIGHTSCOUT_SITE_URL_KEY = "integrations.nightscout.siteUrl";
-const NIGHTSCOUT_API_TOKEN_KEY = "integrations.nightscout.apiToken";
-const SLOT_KEYS: Record<DashboardSlotId, string> = {
-  "bottom-left": "dashboard.slot.bottomLeft",
-  "bottom-right": "dashboard.slot.bottomRight",
+
+export abstract class ConfigSetting<TValue, TId extends string = string> {
+  readonly id: TId;
+  readonly label: string;
+  protected readonly storageKey: string;
+  protected readonly defaultValue: TValue;
+  private readonly valueFormatter: (value: TValue) => string;
+
+  protected constructor(options: ConfigSettingOptions<TValue, TId>) {
+    this.id = options.id;
+    this.label = options.label;
+    this.storageKey = options.storageKey;
+    this.defaultValue = options.defaultValue;
+    this.valueFormatter = options.formatValue ?? ((value) => String(value));
+  }
+
+  abstract get(): TValue;
+  abstract set(value: TValue): TValue;
+
+  displayValue(value?: TValue): string {
+    const displayValue = arguments.length > 0 ? value as TValue : this.get();
+    return this.valueFormatter(displayValue);
+  }
+}
+
+export class ConfigSettingBoolean<TId extends string = string> extends ConfigSetting<boolean, TId> {
+  constructor(options: ConfigSettingOptions<boolean, TId>) {
+    super(options);
+  }
+
+  get(): boolean {
+    return ApplicationSettings.getBoolean(this.storageKey, this.defaultValue);
+  }
+
+  set(value: boolean): boolean {
+    ApplicationSettings.setBoolean(this.storageKey, value);
+    return value;
+  }
+
+  toggle(value = this.get()): boolean {
+    return this.set(!value);
+  }
+}
+
+type ConfigSettingEnumOptions<TValue extends string, TId extends string> = ConfigSettingOptions<TValue, TId> & {
+  values: readonly TValue[];
+  normalize?: (value: string | null | undefined) => TValue;
 };
+
+export class ConfigSettingEnum<TValue extends string, TId extends string = string> extends ConfigSetting<TValue, TId> {
+  readonly values: readonly TValue[];
+  private readonly normalizer: (value: string | null | undefined) => TValue;
+
+  constructor(options: ConfigSettingEnumOptions<TValue, TId>) {
+    super(options);
+    this.values = options.values;
+    if (options.normalize) {
+      this.normalizer = (value: string | null | undefined) => {
+        const normalized = options.normalize(value) as TValue|undefined;
+        if (normalized === undefined) return this.defaultValue;
+        return normalized;
+      }
+    } else {
+      this.normalizer = (value) => this.values.includes(value as TValue) ? value as TValue : this.defaultValue;
+    }
+  }
+
+  get(): TValue {
+    return this.normalizer(ApplicationSettings.getString(this.storageKey, this.defaultValue));
+  }
+
+  set(value: TValue): TValue {
+    const normalized = this.normalizer(value);
+    ApplicationSettings.setString(this.storageKey, normalized);
+    return normalized;
+  }
+
+  next(value = this.get()): TValue {
+    const index = this.values.indexOf(value);
+    return this.values[(index + 1) % this.values.length] ?? this.defaultValue;
+  }
+}
+
+type ConfigSettingStringOptions<TId extends string> = ConfigSettingOptions<string, TId> & {
+  editorTitle?: string;
+  glassesEditTitle?: string;
+  normalize?: (value: string | null | undefined) => string;
+};
+
+export class ConfigSettingString<TId extends string = string> extends ConfigSetting<string, TId> {
+  readonly editorTitle: string;
+  readonly glassesEditTitle: string;
+  private readonly normalizer: (value: string | null | undefined) => string;
+
+  constructor(options: ConfigSettingStringOptions<TId>) {
+    super(options);
+    this.editorTitle = options.editorTitle ?? options.label;
+    this.glassesEditTitle = options.glassesEditTitle ?? `Edit ${options.label}`;
+    this.normalizer = options.normalize ?? ((value) => value ?? "");
+  }
+
+  get(): string {
+    return this.normalizer(ApplicationSettings.getString(this.storageKey, this.defaultValue));
+  }
+
+  set(value: string): string {
+    const normalized = this.normalizer(value);
+    ApplicationSettings.setString(this.storageKey, normalized);
+    return normalized;
+  }
+}
+
 
 const KNOWN_PLUGIN_IDS = new Set<DashboardPluginId>([
   "blank",
@@ -48,136 +151,123 @@ const KNOWN_PLUGIN_IDS = new Set<DashboardPluginId>([
   "nightscout",
 ]);
 
-const DEFAULT_SLOT_CONFIG: DashboardSlotConfig = {
-  "bottom-left": "input-debug-log",
-  "bottom-right": "blank",
+
+export const bottomLeftSlotSetting = new ConfigSettingEnum<DashboardPluginId>({
+  id: "bottom-left-slot",
+  label: "Bottom left slot",
+  storageKey: "dashboard.slot.bottomLeft",
+  defaultValue: "blank",
+  values: Array.from(KNOWN_PLUGIN_IDS),
+});
+
+export const bottomRightSlotSetting = new ConfigSettingEnum<DashboardPluginId>({
+  id: "bottom-right-slot",
+  label: "Bottom right slot",
+  storageKey: "dashboard.slot.bottomRight",
+  defaultValue: "blank",
+  values: Array.from(KNOWN_PLUGIN_IDS),
+});
+
+export const dashboardSlotSettings: Record<DashboardSlotId, ConfigSettingEnum<DashboardPluginId>> = {
+  "bottom-left": bottomLeftSlotSetting,
+  "bottom-right": bottomRightSlotSetting,
 };
 
-const DEFAULT_SYSTEM_CARD_SETTINGS: SystemCardSettings = {
-  showFaceclawLogo: true,
-  showBatteryIndicators: true,
-  showAndroidNotifications: true,
-  showSignalStrength: true,
-};
+export const systemCardNameSetting = new ConfigSettingString({
+  id: "dashboard-name",
+  label: "Dashboard name",
+  storageKey: "dashboard.systemCardName",
+  defaultValue: "Faceclaw",
+  editorTitle: "Dashboard name",
+  glassesEditTitle: "Edit dashboard name",
+  normalize: normalizeSystemCardName,
+  formatValue: (value) => value || "Faceclaw",
+});
 
-export function getDashboardSlotIds(): DashboardSlotId[] {
-  return ["bottom-left", "bottom-right"];
-}
+export const showFaceclawLogoSetting = new ConfigSettingBoolean({
+  id: "showFaceclawLogo",
+  label: "Show Faceclaw Logo",
+  storageKey: "dashboard.systemCard.showFaceclawLogo",
+  defaultValue: true,
+});
 
-export function getDefaultDashboardSlotConfig(): DashboardSlotConfig {
-  return { ...DEFAULT_SLOT_CONFIG };
-}
+export const showBatteryIndicatorsSetting = new ConfigSettingBoolean({
+  id: "showBatteryIndicators",
+  label: "Show Battery Indicators",
+  storageKey: "dashboard.systemCard.showBatteryIndicators",
+  defaultValue: true,
+});
 
-export function loadDashboardSlotConfig(): DashboardSlotConfig {
-  const config = getDefaultDashboardSlotConfig();
-  for (const slot of getDashboardSlotIds()) {
-    const stored = ApplicationSettings.getString(SLOT_KEYS[slot], config[slot]);
-    config[slot] = normalizePluginId(stored, config[slot]);
-  }
-  return config;
-}
+export const showAndroidNotificationsSetting = new ConfigSettingBoolean({
+  id: "showAndroidNotifications",
+  label: "Show Android Notifications",
+  storageKey: "dashboard.systemCard.showAndroidNotifications",
+  defaultValue: true,
+});
 
-export function saveDashboardSlotPlugin(slot: DashboardSlotId, pluginId: DashboardPluginId): void {
-  ApplicationSettings.setString(SLOT_KEYS[slot], pluginId);
-}
+export const showSignalStrengthSetting = new ConfigSettingBoolean({
+  id: "showSignalStrength",
+  label: "Show Signal Strength",
+  storageKey: "dashboard.systemCard.showSignalStrength",
+  defaultValue: true,
+});
 
-export function saveDashboardSlotConfig(config: DashboardSlotConfig): void {
-  for (const slot of getDashboardSlotIds()) {
-    saveDashboardSlotPlugin(slot, config[slot]);
-  }
-}
+export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>({
+  id: "screen-timeout",
+  label: "Screen timeout",
+  storageKey: "display.screenTimeout",
+  defaultValue: "30s",
+  values: ["15s", "30s", "1m", "never"],
+  formatValue: screenTimeoutLabel,
+});
 
-export function loadSystemCardName(): string {
-  return normalizeSystemCardName(ApplicationSettings.getString(SYSTEM_CARD_NAME_KEY, DEFAULT_SYSTEM_CARD_NAME));
-}
+export const wakeModeSetting = new ConfigSettingEnum<WakeModeSetting>({
+  id: "wake-mode",
+  label: "Wake mode",
+  storageKey: "display.wakeMode",
+  defaultValue: "tiled",
+  values: ["tiled", "synchronized"],
+  formatValue: (value) => value === "tiled" ? "Tiled" : "Synchronized",
+});
 
-export function saveSystemCardName(name: string): string {
-  const normalized = normalizeSystemCardName(name);
-  ApplicationSettings.setString(SYSTEM_CARD_NAME_KEY, normalized);
-  return normalized;
-}
+export const voiceControlEnabledSetting = new ConfigSettingBoolean({
+  id: "voice-control-enabled",
+  label: "Enable",
+  storageKey: "voice.enabled",
+  defaultValue: false,
+});
 
-export function loadSystemCardSettings(): SystemCardSettings {
-  return {
-    showFaceclawLogo: ApplicationSettings.getBoolean(
-      SYSTEM_CARD_SETTING_KEYS.showFaceclawLogo,
-      DEFAULT_SYSTEM_CARD_SETTINGS.showFaceclawLogo,
-    ),
-    showBatteryIndicators: ApplicationSettings.getBoolean(
-      SYSTEM_CARD_SETTING_KEYS.showBatteryIndicators,
-      DEFAULT_SYSTEM_CARD_SETTINGS.showBatteryIndicators,
-    ),
-    showAndroidNotifications: ApplicationSettings.getBoolean(
-      SYSTEM_CARD_SETTING_KEYS.showAndroidNotifications,
-      DEFAULT_SYSTEM_CARD_SETTINGS.showAndroidNotifications,
-    ),
-    showSignalStrength: ApplicationSettings.getBoolean(
-      SYSTEM_CARD_SETTING_KEYS.showSignalStrength,
-      DEFAULT_SYSTEM_CARD_SETTINGS.showSignalStrength,
-    ),
-  };
-}
+export const estimateCompressionRatiosSetting = new ConfigSettingBoolean({
+  id: "estimate-compression-ratios",
+  label: "Estimate compression ratios",
+  storageKey: "debug.estimateCompressionRatios",
+  defaultValue: false,
+});
 
-export function saveSystemCardSetting(key: SystemCardSettingKey, value: boolean): void {
-  ApplicationSettings.setBoolean(SYSTEM_CARD_SETTING_KEYS[key], value);
-}
+export const nightscoutSiteUrlSetting = new ConfigSettingString({
+  id: "nightscout-site-url",
+  label: "Nightscout site URL",
+  storageKey: "integrations.nightscout.siteUrl",
+  defaultValue: "",
+  editorTitle: "Nightscout site URL",
+  glassesEditTitle: "Edit Nightscout URL",
+  normalize: normalizeNightscoutSiteUrl,
+  formatValue: emptySettingDisplay,
+});
 
-export function loadScreenTimeoutSetting(): ScreenTimeoutSetting {
-  return normalizeScreenTimeoutSetting(ApplicationSettings.getString(SCREEN_TIMEOUT_KEY, DEFAULT_SCREEN_TIMEOUT));
-}
+export const nightscoutApiTokenSetting = new ConfigSettingString({
+  id: "nightscout-api-token",
+  label: "Nightscout API token",
+  storageKey: "integrations.nightscout.apiToken",
+  defaultValue: "",
+  editorTitle: "Nightscout API token",
+  glassesEditTitle: "Edit API token",
+  normalize: normalizeNightscoutApiToken,
+  formatValue: maskToken,
+});
 
-export function saveScreenTimeoutSetting(value: ScreenTimeoutSetting): ScreenTimeoutSetting {
-  const normalized = normalizeScreenTimeoutSetting(value);
-  ApplicationSettings.setString(SCREEN_TIMEOUT_KEY, normalized);
-  return normalized;
-}
 
-export function loadWakeModeSetting(): WakeModeSetting {
-  return normalizeWakeModeSetting(ApplicationSettings.getString(WAKE_MODE_KEY, DEFAULT_WAKE_MODE));
-}
-
-export function saveWakeModeSetting(value: WakeModeSetting): WakeModeSetting {
-  const normalized = normalizeWakeModeSetting(value);
-  ApplicationSettings.setString(WAKE_MODE_KEY, normalized);
-  return normalized;
-}
-
-export function loadVoiceControlEnabled(): boolean {
-  return ApplicationSettings.getBoolean(VOICE_CONTROL_ENABLED_KEY, DEFAULT_VOICE_CONTROL_ENABLED);
-}
-
-export function saveVoiceControlEnabled(value: boolean): boolean {
-  ApplicationSettings.setBoolean(VOICE_CONTROL_ENABLED_KEY, value);
-  return value;
-}
-
-export function loadEstimateCompressionRatiosEnabled(): boolean {
-  return ApplicationSettings.getBoolean(
-    ESTIMATE_COMPRESSION_RATIOS_ENABLED_KEY,
-    DEFAULT_ESTIMATE_COMPRESSION_RATIOS_ENABLED,
-  );
-}
-
-export function saveEstimateCompressionRatiosEnabled(value: boolean): boolean {
-  ApplicationSettings.setBoolean(ESTIMATE_COMPRESSION_RATIOS_ENABLED_KEY, value);
-  return value;
-}
-
-export function nextScreenTimeoutSetting(value: ScreenTimeoutSetting): ScreenTimeoutSetting {
-  switch (value) {
-    case "15s":
-      return "30s";
-    case "30s":
-      return "1m";
-    case "1m":
-      return "never";
-    case "never":
-    default:
-      return "15s";
-  }
-}
-
-export function screenTimeoutMs(value: ScreenTimeoutSetting): number | null {
+export function screenTimeoutSettingToMs(value: ScreenTimeoutSetting): number | null {
   switch (value) {
     case "15s":
       return 15_000;
@@ -194,35 +284,15 @@ export function screenTimeoutLabel(value: ScreenTimeoutSetting): string {
   return value === "never" ? "Never" : value;
 }
 
-export function nextWakeModeSetting(value: WakeModeSetting): WakeModeSetting {
-  return value === "tiled" ? "synchronized" : "tiled";
-}
-
-export function wakeModeLabel(value: WakeModeSetting): string {
-  return value === "tiled" ? "Tiled" : "Synchronized";
-}
-
 export function loadNightscoutSettings(): NightscoutSettings {
   return {
-    siteUrl: normalizeNightscoutSiteUrl(ApplicationSettings.getString(NIGHTSCOUT_SITE_URL_KEY, "")),
-    apiToken: normalizeNightscoutApiToken(ApplicationSettings.getString(NIGHTSCOUT_API_TOKEN_KEY, "")),
+    siteUrl: nightscoutSiteUrlSetting.get(),
+    apiToken: nightscoutApiTokenSetting.get(),
   };
 }
 
-export function saveNightscoutSiteUrl(siteUrl: string): string {
-  const normalized = normalizeNightscoutSiteUrl(siteUrl);
-  ApplicationSettings.setString(NIGHTSCOUT_SITE_URL_KEY, normalized);
-  return normalized;
-}
-
-export function saveNightscoutApiToken(apiToken: string): string {
-  const normalized = normalizeNightscoutApiToken(apiToken);
-  ApplicationSettings.setString(NIGHTSCOUT_API_TOKEN_KEY, normalized);
-  return normalized;
-}
-
-export function isNightscoutSettingsConfigured(settings = loadNightscoutSettings()): boolean {
-  return settings.siteUrl.length > 0 && settings.apiToken.length > 0;
+export function isNightscoutSettingsConfigured(): boolean {
+  return nightscoutSiteUrlSetting.get().length > 0 && nightscoutApiTokenSetting.get().length > 0;
 }
 
 export function normalizePluginId(
@@ -248,24 +318,112 @@ function normalizeNightscoutApiToken(apiToken: string | null | undefined): strin
   return (apiToken ?? "").replace(/[\x00-\x1f]+/g, "").trim();
 }
 
-function normalizeScreenTimeoutSetting(value: string | null | undefined): ScreenTimeoutSetting {
-  switch (value) {
-    case "15s":
-    case "30s":
-    case "1m":
-    case "never":
-      return value;
-    default:
-      return DEFAULT_SCREEN_TIMEOUT;
-  }
+function emptySettingDisplay(value: string): string {
+  return value || "(empty)";
 }
 
-function normalizeWakeModeSetting(value: string | null | undefined): WakeModeSetting {
-  switch (value) {
-    case "tiled":
-    case "synchronized":
-      return value;
-    default:
-      return DEFAULT_WAKE_MODE;
+function maskToken(token: string): string {
+  if (!token) return "(empty)";
+  return token.length <= 6 ? "******" : `${token.slice(0, 2)}...${token.slice(-4)}`;
+}
+
+
+type SettingsMenuOptions<T> = {
+  style?: "cycle"|"submenu"
+  onChange?: (newValue: T, oldValue: T) => void
+}
+
+export function enumSettingMenuItem<TValue extends string, TId extends string = string>(
+  setting: ConfigSettingEnum<TValue, TId>,
+  opts?: SettingsMenuOptions<TValue>
+): MenuItem {
+  const style = opts?.style ?? "cycle";
+  return {
+    label: setting.label,
+      onSelect: (ctx) => {
+        if (style === "cycle") {
+        const oldValue = setting.get();
+          const newValue = setting.next(oldValue);
+          setting.set(newValue);
+          opts?.onChange?.(newValue, oldValue);
+        } else {
+          const submenu = new MenuLayer(setting.label, setting.values.map((value) => ({
+            label: value,
+            onSelect: () => {
+              setting.set(value);
+              opts?.onChange?.(value, setting.get());
+              ctx.stack.pop();
+            },
+            render: ({ image, x, y }) => {
+              const selected = setting.get() === value ? " *" : "";
+              image.drawText(getDefaultSmallFont(), x, y + 3, `${value}${selected}`, 200);
+            }
+          })));
+          ctx.stack.push(submenu);
+        }
+      },
+      render: ({ image, x, y, width }) => {
+        drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, setting.label, setting.displayValue(setting.get()));
+      },
+  };
+}
+
+export function toggleSettingMenuItem<TId extends string = string>(
+  setting: ConfigSettingBoolean<TId>,
+   opts?: SettingsMenuOptions<boolean>
+): MenuItem {
+  return {
+    label: setting.label,
+    onSelect: () => {
+      setting.set(!setting.get());
+      opts?.onChange?.(setting.get(), !setting.get());
+    },
+    render: ({ image, x, y, width, selected }) => {
+      drawToggleMenuItem(image, getDefaultSmallFont(), x, y, width, setting.label, setting.get(), selected);
+    },
+  };
+}
+
+export function textSettingMenuItem<TId extends string = string>(
+  setting: ConfigSettingString<TId>,
+  opts?: SettingsMenuOptions<string>
+): MenuItem {
+  return {
+    label: setting.label,
+    onSelect: (ctx: LayerContext) => {
+      void ctx.actions.startTextSettingEdit(setting);
+      ctx.stack.push(new EditTextSettingLayer(setting));
+    },
+    render: ({ image, x, y, width, selected }) => {
+      image.drawText(getDefaultSmallFont(), x, y + 3, `${setting.label}: ${truncateSetting(setting.get())}`, 200);
+    }
+  };
+}
+
+function truncateSetting(value: string, maxLength = 22): string {
+  const text = value || "(empty)";
+  return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+class EditTextSettingLayer implements Layer {
+  constructor(private readonly setting: ConfigSettingString) {}
+
+  paint(): GrayImage {
+    const font = getDefaultSmallFont();
+    const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+    image.drawRect(12, 12, G2_LENS_WIDTH - 24, G2_LENS_HEIGHT - 24, 52);
+    image.drawText(font, 22, 16, this.setting.glassesEditTitle, 220);
+    image.drawText(font, 22, 52, "Look at the phone app", 200);
+    image.drawText(font, 22, 70, "to type a value.", 200);
+    image.drawText(font, 22, 110, truncateSetting(this.setting.get(), 52), 220);
+    image.drawText(font, 22, 252, "Double-click to go back", 110);
+    return image;
+  }
+
+  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+    if (event.type === "double-click") {
+      void ctx.actions.endTextSettingEdit();
+      ctx.stack.pop();
+    }
   }
 }

@@ -1,57 +1,43 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
-import { getDefaultMediumFont, getDefaultSmallFont } from "../graphics/bdffont";
-import { loadPngAsGrayImage } from "../graphics/imagefile";
+import { getDefaultSmallFont } from "../graphics/bdffont";
 import { type RawInputEvent } from "../native/faceclaw-communicator";
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
 import { EventSourceType, OsEventTypeList } from "../g2/events";
+import { getDashboardPlugin, isBlankDashboardPlugin, type DashboardPluginCardBounds, type DashboardPluginState } from "./dashboard-plugins";
 import {
-  getDashboardPlugin,
-  isBlankDashboardPlugin,
-  listDashboardPlugins,
-  type DashboardPluginCardBounds,
-  type DashboardPluginState,
-} from "./dashboard-plugins";
-import {
-  getDashboardSlotIds,
+  estimateCompressionRatiosSetting,
   isNightscoutSettingsConfigured,
-  loadDashboardSlotConfig,
-  loadEstimateCompressionRatiosEnabled,
-  loadNightscoutSettings,
-  loadScreenTimeoutSetting,
-  loadSystemCardSettings,
-  loadSystemCardName,
-  loadVoiceControlEnabled,
-  loadWakeModeSetting,
-  nextScreenTimeoutSetting,
-  nextWakeModeSetting,
-  saveDashboardSlotPlugin,
-  saveEstimateCompressionRatiosEnabled,
-  saveNightscoutApiToken,
-  saveNightscoutSiteUrl,
-  saveScreenTimeoutSetting,
-  saveWakeModeSetting,
-  screenTimeoutLabel,
-  screenTimeoutMs,
-  saveSystemCardSetting,
-  saveSystemCardName,
-  saveVoiceControlEnabled,
-  wakeModeLabel,
+  nightscoutApiTokenSetting,
+  nightscoutSiteUrlSetting,
+  screenTimeoutSettingToMs,
+  screenTimeoutSetting,
+  systemCardNameSetting,
+  voiceControlEnabledSetting,
+  wakeModeSetting,
   type DashboardSlotId,
-  type NightscoutSettings,
-  type ScreenTimeoutSetting,
-  type SystemCardSettingKey,
-  type WakeModeSetting,
+  DashboardPluginId,
+  bottomRightSlotSetting,
+  bottomLeftSlotSetting,
+  dashboardSlotSettings,
+  dashboardSlotIds,
+  enumSettingMenuItem,
+  toggleSettingMenuItem,
+  showFaceclawLogoSetting,
+  showBatteryIndicatorsSetting,
+  showAndroidNotificationsSetting,
+  showSignalStrengthSetting,
+  textSettingMenuItem,
 } from "./dashboard-settings";
 import { Layer, LayerActions, LayerStack, type DashboardInputEvent, type LayerContext } from "./layers";
-import { drawRightValueMenuItem, drawToggleMenuItem, MenuLayer } from "./menu";
+import { MenuLayer } from "./menu";
 import { StopwatchLayer } from "./apps/stopwatch";
 import { NotificationsListLayer, SingleNotificationLayer } from "./notifications";
 import { TranscribeLayer } from "./apps/transcribe";
 import { TelepromptLayer } from "./apps/teleprompt";
 import { ScreenTestLayer } from "./apps/screen-test";
 import { getDashboardLogo } from "~/graphics/logo";
-import { drawSystemCard, getDisplayedSystemCardName } from "./dashboard/system-card";
+import { drawSystemCard } from "./dashboard/system-card";
 
 type DashboardCardId = "system" | DashboardSlotId;
 export type DashboardBatteryLevels = {
@@ -60,20 +46,21 @@ export type DashboardBatteryLevels = {
   ring: number | null;
 };
 
-export let dashboardState = {
+type DashboardState = {
+  logLines: string[];
+  screenOn: boolean;
+  lastInputAtMs: number;
+  tiledWakePaintPending: boolean;
+  telepromptDocumentText: string | null;
+  battery: DashboardBatteryLevels;
+};
+
+export let dashboardState: DashboardState = {
   logLines: [] as string[],
   screenOn: true,
   lastInputAtMs: Date.now(),
-  slotConfig: loadDashboardSlotConfig(),
-  systemCardName: loadSystemCardName(),
-  systemCardSettings: loadSystemCardSettings(),
-  screenTimeout: loadScreenTimeoutSetting(),
-  wakeMode: loadWakeModeSetting(),
-  voiceControlEnabled: loadVoiceControlEnabled(),
-  estimateCompressionRatiosEnabled: loadEstimateCompressionRatiosEnabled(),
   tiledWakePaintPending: false,
   telepromptDocumentText: null as string | null,
-  nightscoutSettings: loadNightscoutSettings(),
   battery: {
     headset: null,
     headsetCharging: null,
@@ -83,10 +70,7 @@ export let dashboardState = {
 
 const dashboardActions: LayerActions = {
   disconnect: () => {},
-  startSystemNameEdit: () => {},
-  endSystemNameEdit: () => {},
-  startNightscoutSiteUrlEdit: () => {},
-  startNightscoutApiTokenEdit: () => {},
+  startTextSettingEdit: () => {},
   endTextSettingEdit: () => {},
   setVoiceControlEnabled: () => {},
   setStopwatchRenderActive: () => {},
@@ -143,7 +127,7 @@ export async function receiveInput(event: RawInputEvent): Promise<void> {
   if (!dashboardState.screenOn) {
     if (inputEvent.type === "double-click") {
       dashboardState.screenOn = true;
-      dashboardState.tiledWakePaintPending = dashboardState.wakeMode === "tiled";
+      dashboardState.tiledWakePaintPending = wakeModeSetting.get() === "tiled";
       if (dashboardLayers.isAtBase()) {
         dashboardLayers.push(createRootMenuLayer());
       }
@@ -190,60 +174,8 @@ export function consumeDashboardTiledWakePaint(): boolean {
   return value;
 }
 
-export function setDashboardSystemCardName(name: string): string {
-  const savedName = saveSystemCardName(name);
-  dashboardState.systemCardName = savedName;
-  return savedName;
-}
-
-export function getDashboardSystemCardName(): string {
-  return dashboardState.systemCardName;
-}
-
-export function setDashboardNightscoutSiteUrl(siteUrl: string): string {
-  const savedUrl = saveNightscoutSiteUrl(siteUrl);
-  dashboardState.nightscoutSettings = {
-    ...dashboardState.nightscoutSettings,
-    siteUrl: savedUrl,
-  };
-  return savedUrl;
-}
-
-export function setDashboardNightscoutApiToken(apiToken: string): string {
-  const savedToken = saveNightscoutApiToken(apiToken);
-  dashboardState.nightscoutSettings = {
-    ...dashboardState.nightscoutSettings,
-    apiToken: savedToken,
-  };
-  return savedToken;
-}
-
-export function getDashboardNightscoutSettings(): NightscoutSettings {
-  return { ...dashboardState.nightscoutSettings };
-}
-
-export function setDashboardSystemCardSetting(key: SystemCardSettingKey, value: boolean): void {
-  dashboardState.systemCardSettings = {
-    ...dashboardState.systemCardSettings,
-    [key]: value,
-  };
-  saveSystemCardSetting(key, value);
-}
-
-export function isDashboardVoiceControlEnabled(): boolean {
-  return dashboardState.voiceControlEnabled;
-}
-
-export function setDashboardVoiceControlEnabled(value: boolean): void {
-  dashboardState.voiceControlEnabled = saveVoiceControlEnabled(value);
-}
-
-export function isDashboardCompressionRatioEstimationEnabled(): boolean {
-  return dashboardState.estimateCompressionRatiosEnabled;
-}
-
 export function applyDashboardScreenTimeout(nowMs = Date.now()): boolean {
-  const timeoutMs = screenTimeoutMs(dashboardState.screenTimeout);
+  const timeoutMs = screenTimeoutSettingToMs(screenTimeoutSetting.get());
   if (timeoutMs === null || !dashboardState.screenOn) return false;
   if (nowMs - dashboardState.lastInputAtMs < timeoutMs) return false;
   dashboardState.screenOn = false;
@@ -270,7 +202,7 @@ export function openAndroidNotificationFromSleep(notificationKey: string, nowMs 
 
   dashboardState.lastInputAtMs = nowMs;
   dashboardState.screenOn = true;
-  dashboardState.tiledWakePaintPending = dashboardState.wakeMode === "tiled";
+  dashboardState.tiledWakePaintPending = wakeModeSetting.get() === "tiled";
   dashboardLayers.clearToBase();
   dashboardLayers.push(createRootMenuLayer());
   dashboardLayers.push(new SingleNotificationLayer(notificationKey));
@@ -282,7 +214,7 @@ export function resetDashboardSleepTimerAndWake(nowMs = Date.now()): boolean {
   if (dashboardState.screenOn) return false;
 
   dashboardState.screenOn = true;
-  dashboardState.tiledWakePaintPending = dashboardState.wakeMode === "tiled";
+  dashboardState.tiledWakePaintPending = wakeModeSetting.get() === "tiled";
   dashboardLayers.clearToBase();
   dashboardLayers.push(createRootMenuLayer());
   return true;
@@ -293,6 +225,15 @@ export function setDashboardBatteryLevels(levels: Partial<DashboardBatteryLevels
     ...dashboardState.battery,
     ...levels,
   };
+}
+
+function getPluginIdForSlot(slot: DashboardSlotId): DashboardPluginId {
+  switch (slot) {
+    case "bottom-left":
+      return bottomLeftSlotSetting.get();
+    case "bottom-right":
+      return bottomRightSlotSetting.get();
+  }
 }
 
 
@@ -306,9 +247,9 @@ class DashboardLayer implements Layer {
     const pluginState = getPluginState();
     drawSystemCard(image, getCardBounds("system"));
 
-    for (const slot of getDashboardSlotIds()) {
+    for (const slot of dashboardSlotIds) {
       const bounds = getCardBounds(slot);
-      const pluginId = dashboardState.slotConfig[slot];
+      const pluginId = getPluginIdForSlot(slot);
       getDashboardPlugin(pluginId).renderCard({
         image,
         bounds,
@@ -371,8 +312,8 @@ function createRootMenuLayer(): MenuLayer {
           ctx.stack.push(createSettingsMenuLayer());
         },
       },
-      ...getDashboardSlotIds()
-        .filter((slot) => !isBlankDashboardPlugin(dashboardState.slotConfig[slot]))
+      ...dashboardSlotIds
+        .filter((slot) => !isBlankDashboardPlugin(getPluginIdForSlot(slot)))
         .map((slot) => ({
           label: pluginLabelForSlot(slot),
           onSelect: (ctx: LayerContext) => {
@@ -452,11 +393,11 @@ function createSystemMenuLayer(): MenuLayer {
 }
 
 function openDashboardSlot(slot: DashboardSlotId, ctx: LayerContext): void {
-  const pluginId = dashboardState.slotConfig[slot];
+  const pluginId = getPluginIdForSlot(slot);
   if (isBlankDashboardPlugin(pluginId)) {
     return;
   }
-  if (pluginId === "nightscout" && !isNightscoutSettingsConfigured(dashboardState.nightscoutSettings)) {
+  if (pluginId === "nightscout" && !isNightscoutSettingsConfigured()) {
     ctx.stack.push(createNightscoutSettingsMenuLayer());
     return;
   }
@@ -503,73 +444,23 @@ function createDisplaySettingsMenuLayer(): MenuLayer {
   return new MenuLayer(
     "Settings > Display",
     [
-      {
-        label: "Screen timeout",
-        onSelect: () => {
-          setScreenTimeout(nextScreenTimeoutSetting(dashboardState.screenTimeout));
+      enumSettingMenuItem(screenTimeoutSetting, {
+        onChange: (newValue, oldValue) => {
+          dashboardState.lastInputAtMs = Date.now();
         },
-        render: ({ image, x, y, width }) => {
-          drawRightValueMenuItem(image, dashboardFont, x, y, width, "Screen timeout", screenTimeoutLabel(dashboardState.screenTimeout));
-        },
-      },
-      {
-        label: "Wake mode",
-        onSelect: () => {
-          setWakeMode(nextWakeModeSetting(dashboardState.wakeMode));
-        },
-        render: ({ image, x, y, width }) => {
-          drawRightValueMenuItem(image, dashboardFont, x, y, width, "Wake mode", wakeModeLabel(dashboardState.wakeMode));
-        },
-      },
-      {
-        label: "Estimate compression ratios",
-        onSelect: () => {
-          setEstimateCompressionRatiosEnabled(!dashboardState.estimateCompressionRatiosEnabled);
-        },
-        render: ({ image, x, y, width, selected }) => {
-          drawToggleMenuItem(
-            image,
-            dashboardFont,
-            x,
-            y,
-            width,
-            "Estimate compression ratios",
-            dashboardState.estimateCompressionRatiosEnabled,
-            selected,
-          );
-        },
-      },
+      }),
+      enumSettingMenuItem(wakeModeSetting),
+      toggleSettingMenuItem(estimateCompressionRatiosSetting),
     ],
     TOP_LEFT_MENU_LAYOUT,
   );
-}
-
-function setScreenTimeout(value: ScreenTimeoutSetting): void {
-  dashboardState.screenTimeout = saveScreenTimeoutSetting(value);
-  dashboardState.lastInputAtMs = Date.now();
-}
-
-function setWakeMode(value: WakeModeSetting): void {
-  dashboardState.wakeMode = saveWakeModeSetting(value);
-}
-
-function setEstimateCompressionRatiosEnabled(value: boolean): void {
-  dashboardState.estimateCompressionRatiosEnabled = saveEstimateCompressionRatiosEnabled(value);
 }
 
 function createVoiceSettingsMenuLayer(): MenuLayer {
   return new MenuLayer(
     "Settings > Voice",
     [
-      {
-        label: "Enable",
-        onSelect: async (ctx) => {
-          await ctx.actions.setVoiceControlEnabled(!dashboardState.voiceControlEnabled);
-        },
-        render: ({ image, x, y, width, selected }) => {
-          drawToggleMenuItem(image, dashboardFont, x, y, width, "Enable", dashboardState.voiceControlEnabled, selected);
-        },
-      },
+      toggleSettingMenuItem(voiceControlEnabledSetting),
     ],
     TOP_LEFT_MENU_LAYOUT,
   );
@@ -585,14 +476,8 @@ function createDashboardSettingsMenuLayer(): MenuLayer {
           ctx.stack.push(createSystemCardSettingsMenuLayer());
         },
       },
-      ...getDashboardSlotIds().map((slot) => ({
-        label: slotMenuLabel(slot),
-        onSelect: (ctx) => {
-          ctx.stack.push(createSlotPickerMenu(slot));
-        },
-        render: ({ image, x, y }) => {
-          image.drawText(dashboardFont, x, y + 3, `${slotMenuLabel(slot)}: ${pluginLabelForSlot(slot)}`, 200);
-        },
+      ...dashboardSlotIds.map((slot) => enumSettingMenuItem(dashboardSlotSettings[slot], {
+        style: "submenu",
       })),
     ],
     TOP_LEFT_MENU_LAYOUT,
@@ -603,35 +488,14 @@ function createSystemCardSettingsMenuLayer(): MenuLayer {
   return new MenuLayer(
     "Settings > Dashboard > System Card",
     [
-      {
-        label: "Name",
-        onSelect: (ctx) => {
-          void ctx.actions.startSystemNameEdit();
-          ctx.stack.push(new EditSystemNameLayer());
-        },
-        render: ({ image, x, y }) => {
-          image.drawText(dashboardFont, x, y + 3, `Name: ${getDisplayedSystemCardName()}`, 200);
-        },
-      },
-      createSystemCardToggleItem("Show Faceclaw Logo", "showFaceclawLogo"),
-      createSystemCardToggleItem("Show Battery Indicators", "showBatteryIndicators"),
-      createSystemCardToggleItem("Show Android Notifications", "showAndroidNotifications"),
-      createSystemCardToggleItem("Show Signal Strength", "showSignalStrength"),
+      textSettingMenuItem(systemCardNameSetting),
+      toggleSettingMenuItem(showFaceclawLogoSetting),
+      toggleSettingMenuItem(showBatteryIndicatorsSetting),
+      toggleSettingMenuItem(showAndroidNotificationsSetting),
+      toggleSettingMenuItem(showSignalStrengthSetting),
     ],
     TOP_LEFT_MENU_LAYOUT,
   );
-}
-
-function createSystemCardToggleItem(label: string, key: SystemCardSettingKey) {
-  return {
-    label,
-    onSelect: () => {
-      setDashboardSystemCardSetting(key, !dashboardState.systemCardSettings[key]);
-    },
-    render: ({ image, x, y, width, selected }: { image: GrayImage; x: number; y: number; width: number; selected: boolean }) => {
-      drawToggleMenuItem(image, dashboardFont, x, y, width, label, dashboardState.systemCardSettings[key], selected);
-    },
-  };
 }
 
 function createIntegrationsMenuLayer(): MenuLayer {
@@ -653,95 +517,13 @@ function createNightscoutSettingsMenuLayer(): MenuLayer {
   return new MenuLayer(
     "Settings > Integrations > Nightscout",
     [
-      {
-        label: "Site URL",
-        onSelect: (ctx) => {
-          void ctx.actions.startNightscoutSiteUrlEdit();
-          ctx.stack.push(new EditTextSettingLayer("Edit Nightscout URL", () => dashboardState.nightscoutSettings.siteUrl || "(empty)"));
-        },
-        render: ({ image, x, y }) => {
-          image.drawText(dashboardFont, x, y + 3, `URL: ${truncateSetting(dashboardState.nightscoutSettings.siteUrl)}`, 200);
-        },
-      },
-      {
-        label: "API token",
-        onSelect: (ctx) => {
-          void ctx.actions.startNightscoutApiTokenEdit();
-          ctx.stack.push(new EditTextSettingLayer("Edit API token", () => maskToken(dashboardState.nightscoutSettings.apiToken)));
-        },
-        render: ({ image, x, y }) => {
-          image.drawText(dashboardFont, x, y + 3, `Token: ${maskToken(dashboardState.nightscoutSettings.apiToken)}`, 200);
-        },
-      },
+      textSettingMenuItem(nightscoutSiteUrlSetting),
+      textSettingMenuItem(nightscoutApiTokenSetting),
     ],
     TOP_LEFT_MENU_LAYOUT,
   );
 }
 
-class EditSystemNameLayer implements Layer {
-  paint(): GrayImage {
-    const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
-    image.drawRect(12, 12, G2_LENS_WIDTH - 24, G2_LENS_HEIGHT - 24, 52);
-    image.drawText(dashboardFont, 22, 16, "Edit dashboard name", 220);
-    image.drawText(dashboardFont, 22, 52, "Look at the phone app", 200);
-    image.drawText(dashboardFont, 22, 70, "to type a new name.", 200);
-    image.drawText(getDefaultMediumFont(), 22, 110, getDisplayedSystemCardName(), 220);
-    image.drawText(dashboardFont, 22, 252, "Double-click to go back", 110);
-    return image;
-  }
-
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
-    if (event.type === "double-click") {
-      void ctx.actions.endSystemNameEdit();
-      void ctx.actions.endTextSettingEdit();
-      ctx.stack.pop();
-    }
-  }
-}
-
-class EditTextSettingLayer implements Layer {
-  constructor(
-    private readonly title: string,
-    private readonly value: () => string,
-  ) {}
-
-  paint(): GrayImage {
-    const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
-    image.drawRect(12, 12, G2_LENS_WIDTH - 24, G2_LENS_HEIGHT - 24, 52);
-    image.drawText(dashboardFont, 22, 16, this.title, 220);
-    image.drawText(dashboardFont, 22, 52, "Look at the phone app", 200);
-    image.drawText(dashboardFont, 22, 70, "to type a value.", 200);
-    image.drawText(dashboardFont, 22, 110, truncateSetting(this.value(), 52), 220);
-    image.drawText(dashboardFont, 22, 252, "Double-click to go back", 110);
-    return image;
-  }
-
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
-    if (event.type === "double-click") {
-      void ctx.actions.endTextSettingEdit();
-      ctx.stack.pop();
-    }
-  }
-}
-
-function createSlotPickerMenu(slot: DashboardSlotId): MenuLayer {
-  return new MenuLayer(
-    `Settings > Dashboard > ${slotMenuLabel(slot)}`,
-    listDashboardPlugins().map((plugin) => ({
-      label: plugin.label,
-      onSelect: (ctx) => {
-        dashboardState.slotConfig[slot] = plugin.id;
-        saveDashboardSlotPlugin(slot, plugin.id);
-        ctx.stack.pop();
-      },
-      render: ({ image, x, y }) => {
-        const selected = dashboardState.slotConfig[slot] === plugin.id ? " *" : "";
-        image.drawText(dashboardFont, x, y + 3, `${plugin.label}${selected}`, 200);
-      },
-    })),
-    TOP_LEFT_MENU_LAYOUT,
-  );
-}
 
 class AboutLayer implements Layer {
   paint(): GrayImage {
@@ -776,7 +558,7 @@ function getPluginState(): DashboardPluginState {
     logLines: dashboardState.logLines,
     media: mediaControllerBridge.snapshot(),
     nightscout: nightscoutBridge.snapshot(),
-    nightscoutConfigured: isNightscoutSettingsConfigured(dashboardState.nightscoutSettings),
+    nightscoutConfigured: isNightscoutSettingsConfigured(),
   };
 }
 
@@ -806,27 +588,8 @@ function getCardBounds(card: DashboardCardId): DashboardPluginCardBounds {
   }
 }
 
-function slotMenuLabel(slot: DashboardSlotId): string {
-  switch (slot) {
-    case "bottom-left":
-      return "Bottom-left";
-    case "bottom-right":
-      return "Bottom-right";
-  }
-}
-
 function pluginLabelForSlot(slot: DashboardSlotId): string {
-  return getDashboardPlugin(dashboardState.slotConfig[slot]).label;
-}
-
-function truncateSetting(value: string, maxLength = 22): string {
-  const text = value || "(empty)";
-  return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 3))}...`;
-}
-
-function maskToken(token: string): string {
-  if (!token) return "(empty)";
-  return token.length <= 6 ? "******" : `${token.slice(0, 2)}...${token.slice(-4)}`;
+  return getDashboardPlugin(getPluginIdForSlot(slot)).label;
 }
 
 const dashboardLayers = new LayerStack(new DashboardLayer(), dashboardActions);
