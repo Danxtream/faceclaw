@@ -330,7 +330,7 @@ function maskToken(token: string): string {
 
 type SettingsMenuOptions<T> = {
   style?: "cycle"|"submenu"
-  onChange?: (newValue: T, oldValue: T) => void
+  onChange?: (ctx: LayerContext, newValue: T, oldValue: T) => void
 }
 
 export function enumSettingMenuItem<TValue extends string, TId extends string = string>(
@@ -345,13 +345,13 @@ export function enumSettingMenuItem<TValue extends string, TId extends string = 
         const oldValue = setting.get();
           const newValue = setting.next(oldValue);
           setting.set(newValue);
-          opts?.onChange?.(newValue, oldValue);
+          opts?.onChange?.(ctx, newValue, oldValue);
         } else {
           const submenu = new MenuLayer(setting.label, setting.values.map((value) => ({
             label: value,
             onSelect: () => {
               setting.set(value);
-              opts?.onChange?.(value, setting.get());
+              opts?.onChange?.(ctx, value, setting.get());
               ctx.stack.pop();
             },
             render: ({ image, x, y }) => {
@@ -374,9 +374,9 @@ export function toggleSettingMenuItem<TId extends string = string>(
 ): MenuItem {
   return {
     label: setting.label,
-    onSelect: () => {
+    onSelect: (ctx) => {
       setting.set(!setting.get());
-      opts?.onChange?.(setting.get(), !setting.get());
+      opts?.onChange?.(ctx, setting.get(), !setting.get());
     },
     render: ({ image, x, y, width, selected }) => {
       drawToggleMenuItem(image, getDefaultSmallFont(), x, y, width, setting.label, setting.get(), selected);
