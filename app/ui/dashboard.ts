@@ -4,7 +4,7 @@ import { BATTERY_ICON_WIDTH, drawBattery } from "../graphics/battery";
 import { loadPngAsGrayImage } from "../graphics/imagefile";
 import { type RawInputEvent } from "../native/faceclaw-communicator";
 import { mediaControllerBridge } from "../native/media-controller";
-import { nightscoutBridge } from "../native/nightscout";
+import { nightscoutBridge } from "../native/nightscout-bridge";
 import { readActiveNotificationIcons } from "../native/notification-icons";
 import { readPhoneBatteryState } from "../native/phone-battery";
 import { readSystemStatusIcons } from "../native/system-status-icons";
