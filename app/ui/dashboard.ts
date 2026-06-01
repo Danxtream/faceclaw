@@ -50,7 +50,7 @@ import {
 import { Layer, LayerActions, LayerStack, type DashboardInputEvent, type LayerContext } from "./layers";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuLayer } from "./menu";
 import { StopwatchLayer } from "./apps/stopwatch";
-import { NotificationsListLayer } from "./notifications";
+import { NotificationsListLayer, SingleNotificationLayer } from "./notifications";
 import { TranscribeLayer } from "./apps/transcribe";
 import { TelepromptLayer } from "./apps/teleprompt";
 import { ScreenTestLayer } from "./apps/screen-test";
@@ -266,6 +266,18 @@ export function openTelepromptDocument(text?: string): void {
   dashboardLayers.clearToBase();
   dashboardLayers.push(createRootMenuLayer());
   dashboardLayers.push(new TelepromptLayer(dashboardState.telepromptDocumentText));
+}
+
+export function openAndroidNotificationFromSleep(notificationKey: string, nowMs = Date.now()): boolean {
+  if (!notificationKey || dashboardState.screenOn) return false;
+
+  dashboardState.lastInputAtMs = nowMs;
+  dashboardState.screenOn = true;
+  dashboardState.tiledWakePaintPending = dashboardState.wakeMode === "tiled";
+  dashboardLayers.clearToBase();
+  dashboardLayers.push(createRootMenuLayer());
+  dashboardLayers.push(new SingleNotificationLayer(notificationKey));
+  return true;
 }
 
 export function resetDashboardSleepTimerAndWake(nowMs = Date.now()): boolean {

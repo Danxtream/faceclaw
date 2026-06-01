@@ -6,6 +6,7 @@ import { FaceclawCommunicatorBridge, type FrameMetrics, type RawInputEvent } fro
 import { startForegroundNotification, stopForegroundNotification, updateForegroundNotification } from "../native/foreground-service";
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout";
+import { onAndroidNotificationPosted } from "../native/notification-icons";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource, grayImageToPreviewSourceWithBitmapFactory } from "../native/gray-image-preview";
 import { voiceControlBridge } from "../native/voice-control";
@@ -18,6 +19,7 @@ import {
   getDashboardSystemCardName,
   isDashboardVoiceControlEnabled,
   noteDashboardPhoneTextInput,
+  openAndroidNotificationFromSleep,
   openTelepromptDocument,
   receiveInput,
   resetDashboardSleepTimerAndWake,
@@ -137,6 +139,7 @@ class DashboardController {
   private offNightscout: (() => void) | null = null;
   private offVoiceStatus: (() => void) | null = null;
   private offVoiceWakeWord: (() => void) | null = null;
+  private offAndroidNotification: (() => void) | null = null;
   private lastInput = "waiting...";
   private lastSys = "none yet";
   private renderInProgress = false;
@@ -159,6 +162,11 @@ class DashboardController {
       setTranscribeRenderActive: (active) => this.setTranscribeRenderActive(active),
       startDedicatedVoiceInput: (mode) => this.startDedicatedVoiceInput(mode),
       stopDedicatedVoiceInput: () => this.stopDedicatedVoiceInput(),
+    });
+    this.offAndroidNotification = onAndroidNotificationPosted((notificationKey) => {
+      void this.handleAndroidNotificationPosted(notificationKey).catch((error) => {
+        this.appendLog(`notification wake failed: ${this.formatError(error)}`);
+      });
     });
   }
 
@@ -699,6 +707,24 @@ class DashboardController {
       const image = drawDashboard();
       this.updateDisplayPreviewFromImage(image);
     }
+  }
+
+  private async handleAndroidNotificationPosted(notificationKey: string): Promise<void> {
+    const changed = openAndroidNotificationFromSleep(notificationKey);
+    if (!changed) {
+      if (this.phase === "connected" && this.communicator) {
+        await this.requestRender("interval");
+      }
+      return;
+    }
+
+    this.appendLog("android notification woke dashboard");
+    if (this.phase === "connected" && this.communicator) {
+      await this.requestRender("initial");
+      return;
+    }
+    const image = drawDashboard();
+    this.updateDisplayPreviewFromImage(image);
   }
 
   private startVoiceControlIfEnabled(): void {

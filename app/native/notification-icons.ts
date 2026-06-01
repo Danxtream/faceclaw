@@ -8,6 +8,8 @@ const ICON_CACHE_MS = 5_000;
 
 let cachedIcons: GrayImage[] = [];
 let cachedAtMs = 0;
+let notificationListenerProxy: any | null = null;
+const notificationPostedListeners = new Set<(notificationKey: string) => void>();
 
 export type AndroidNotificationAction = {
   index: number;
@@ -95,6 +97,17 @@ export function dismissNotification(notificationKey: string): boolean {
   );
 }
 
+export function onAndroidNotificationPosted(listener: (notificationKey: string) => void): () => void {
+  notificationPostedListeners.add(listener);
+  ensureNotificationPostedListener();
+  return () => {
+    notificationPostedListeners.delete(listener);
+    if (notificationPostedListeners.size === 0) {
+      removeNotificationPostedListener();
+    }
+  };
+}
+
 function normalizeNotification(value: any): AndroidNotification | null {
   if (!value || typeof value !== "object") return null;
   const key = String(value.key ?? "");
@@ -118,6 +131,33 @@ function normalizeNotification(value: any): AndroidNotification | null {
     when: Number(value.when) || 0,
     actions,
   };
+}
+
+function ensureNotificationPostedListener(): void {
+  if (!global.isAndroid || notificationListenerProxy) return;
+  notificationListenerProxy = new com.faceclaw.app.FaceclawNotificationListener({
+    onNotificationPosted: (notificationKey: string) => {
+      cachedAtMs = 0;
+      const key = String(notificationKey);
+      const listeners = Array.from(notificationPostedListeners);
+      setTimeout(() => {
+        for (const listener of listeners) {
+          listener(key);
+        }
+      }, 0);
+    },
+  });
+  com.faceclaw.app.FaceclawMediaNotificationListenerService.addNotificationListener(
+    notificationListenerProxy,
+  );
+}
+
+function removeNotificationPostedListener(): void {
+  if (!global.isAndroid || !notificationListenerProxy) return;
+  com.faceclaw.app.FaceclawMediaNotificationListenerService.removeNotificationListener(
+    notificationListenerProxy,
+  );
+  notificationListenerProxy = null;
 }
 
 function normalizeAction(value: any): AndroidNotificationAction | null {

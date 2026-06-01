@@ -113,7 +113,7 @@ export class NotificationsListLayer implements Layer {
   }
 }
 
-class SingleNotificationLayer implements Layer {
+export class SingleNotificationLayer implements Layer {
   private selectedMenuIndex = 0;
 
   constructor(private readonly notificationKey: string) {}

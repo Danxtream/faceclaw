@@ -9,6 +9,8 @@ import android.graphics.Color;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 import android.util.Log;
@@ -18,6 +20,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArraySet;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -29,6 +32,9 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
     private static final String EXTRA_SUBSTITUTE_APP_NAME = "android.substName";
 
     private static volatile FaceclawMediaNotificationListenerService activeService;
+    private static final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private static final Set<FaceclawNotificationListener> notificationListeners = new CopyOnWriteArraySet<>();
+    private static final Set<String> activeNotificationWakeKeys = new HashSet<>();
 
     @Override
     public void onCreate() {
@@ -48,6 +54,7 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
     public void onListenerConnected() {
         activeService = this;
         super.onListenerConnected();
+        refreshActiveNotificationWakeKeys(this);
     }
 
     @Override
@@ -56,6 +63,36 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
             activeService = null;
         }
         super.onListenerDisconnected();
+    }
+
+    @Override
+    public void onNotificationPosted(StatusBarNotification statusBarNotification) {
+        super.onNotificationPosted(statusBarNotification);
+        if (!shouldShowNotificationInList(this, statusBarNotification)) {
+            forgetActiveNotificationWakeKey(statusBarNotification);
+            return;
+        }
+        if (shouldEmitNotificationPosted(statusBarNotification)) {
+            emitNotificationPosted(statusBarNotification.getKey());
+        }
+    }
+
+    @Override
+    public void onNotificationRemoved(StatusBarNotification statusBarNotification) {
+        forgetActiveNotificationWakeKey(statusBarNotification);
+        super.onNotificationRemoved(statusBarNotification);
+    }
+
+    public static void addNotificationListener(FaceclawNotificationListener listener) {
+        if (listener != null) {
+            notificationListeners.add(listener);
+        }
+    }
+
+    public static void removeNotificationListener(FaceclawNotificationListener listener) {
+        if (listener != null) {
+            notificationListeners.remove(listener);
+        }
     }
 
     public static boolean hasActiveNotificationTitle(String expectedTitle) {
@@ -229,6 +266,81 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
             Log.w(TAG, "failed to dismiss notification", t);
             return false;
         }
+    }
+
+    private static void emitNotificationPosted(String key) {
+        if (key == null || key.isEmpty() || notificationListeners.isEmpty()) {
+            return;
+        }
+        for (FaceclawNotificationListener listener : notificationListeners) {
+            mainHandler.post(() -> {
+                try {
+                    listener.onNotificationPosted(key);
+                } catch (Throwable t) {
+                    Log.w(TAG, "notification listener failed", t);
+                }
+            });
+        }
+    }
+
+    private static void refreshActiveNotificationWakeKeys(FaceclawMediaNotificationListenerService service) {
+        StatusBarNotification[] notifications;
+        try {
+            notifications = service.getActiveNotifications();
+        } catch (Throwable t) {
+            Log.w(TAG, "failed to refresh active notification wake keys", t);
+            return;
+        }
+        synchronized (activeNotificationWakeKeys) {
+            activeNotificationWakeKeys.clear();
+            if (notifications == null) {
+                return;
+            }
+            for (StatusBarNotification statusBarNotification : notifications) {
+                if (shouldShowNotificationInList(service, statusBarNotification)) {
+                    String key = statusBarNotification.getKey();
+                    if (key != null && !key.isEmpty()) {
+                        activeNotificationWakeKeys.add(key);
+                    }
+                }
+            }
+        }
+    }
+
+    private static boolean shouldEmitNotificationPosted(StatusBarNotification statusBarNotification) {
+        String key = statusBarNotification.getKey();
+        if (key == null || key.isEmpty()) {
+            return true;
+        }
+
+        boolean alreadyActive;
+        synchronized (activeNotificationWakeKeys) {
+            alreadyActive = activeNotificationWakeKeys.contains(key);
+            activeNotificationWakeKeys.add(key);
+        }
+        return !alreadyActive || !isPersistentNotification(statusBarNotification);
+    }
+
+    private static void forgetActiveNotificationWakeKey(StatusBarNotification statusBarNotification) {
+        if (statusBarNotification == null) {
+            return;
+        }
+        String key = statusBarNotification.getKey();
+        if (key == null || key.isEmpty()) {
+            return;
+        }
+        synchronized (activeNotificationWakeKeys) {
+            activeNotificationWakeKeys.remove(key);
+        }
+    }
+
+    private static boolean isPersistentNotification(StatusBarNotification statusBarNotification) {
+        Notification notification = statusBarNotification.getNotification();
+        if (notification == null) {
+            return false;
+        }
+        int persistentFlags = Notification.FLAG_ONGOING_EVENT | Notification.FLAG_NO_CLEAR;
+        return (notification.flags & persistentFlags) != 0;
     }
 
     private static boolean shouldShowNotificationIcon(FaceclawMediaNotificationListenerService service, StatusBarNotification statusBarNotification) {

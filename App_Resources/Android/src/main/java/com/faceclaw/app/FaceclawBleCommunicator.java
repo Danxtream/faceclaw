@@ -335,8 +335,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
 
-    @Override
-    public void run() {
+    @Override public void run() {
         logLine(String.format(Locale.US, "communicator start R=%s L=%s ring=%s", rightAddress, leftAddress, ringAddress));
         while (true) {
             try {
@@ -367,8 +366,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         logLine("communicator stop");
     }
 
-    @Override
-    public void onNotification(String address, String characteristicUuid, byte[] data) {
+    @Override public void onNotification(String address, String characteristicUuid, byte[] data) {
         if (address == null || characteristicUuid == null || data == null) {
             return;
         }
@@ -432,8 +430,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
-    @Override
-    public void onConnectionStateChange(String address, boolean connected) {
+    @Override public void onConnectionStateChange(String address, boolean connected) {
         synchronized (lock) {
             if (address == null) {
                 return;
@@ -464,7 +461,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
-    private void connectLoopOnce() throws InterruptedException { //{{{
+    private void connectLoopOnce() throws InterruptedException {
         setStateDisplay("connecting", "Connecting to the glasses...");
         try {
             connectArm(rightAddress, true);
@@ -499,7 +496,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             logLine("connect failed: " + safeMessage(t));
             handleTransportFailure("connect failed");
         }
-    } //}}}
+    }
 
     private boolean sleepDuringConnectSettling(long delayMs) throws InterruptedException {
         long deadline = SystemClock.elapsedRealtime() + delayMs;
@@ -544,7 +541,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
-    private void sendPrelude() throws InterruptedException { //{{{
+    private void sendPrelude() throws InterruptedException {
         synchronized (lock) {
             clearAllMessagesLocked("prelude");
         }
@@ -577,7 +574,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 throw new IllegalStateException("prelude ack timeout");
             }
         }
-    } //}}}
+    }
 
     private long driveSession() {
         //Log.d(TAG, "driveSession called (pendingMessages.size=" + pendingMessages.size() + " inFlightMessages.size=" + inFlightMessages.size() + ")");
@@ -869,6 +866,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         return false;
     }
+
 
     private void resolveAckLocked(int sid, int magic, byte[] pb) {
         Iterator<OutboundMessage> iterator = inFlightMessages.iterator();
