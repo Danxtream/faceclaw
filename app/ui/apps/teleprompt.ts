@@ -1,5 +1,5 @@
 import { wrapText } from "../../graphics/textwrap";
-import { type BdfFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { Layer, type DashboardInputEvent, type LayerContext } from "../layers";
 
@@ -20,29 +20,30 @@ export class TelepromptLayer implements Layer {
   constructor(private readonly documentText: string | null) {}
 
   paint(ctx: LayerContext): GrayImage {
+    const font = getDefaultSmallFont();
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     image.drawRect(12, 12, G2_LENS_WIDTH - 24, G2_LENS_HEIGHT - 24, 52);
-    image.drawText(ctx.font, MARGIN_X + 4, TITLE_Y, "Teleprompt", 220);
+    image.drawText(font, MARGIN_X + 4, TITLE_Y, "Teleprompt", 220);
 
     if (this.documentText === null) {
       const message = [
         "Open a plain text document on your phone and Share it to Faceclaw.",
       ];
       for (let index = 0; index < message.length; index++) {
-        image.drawText(ctx.font, BODY_X, BODY_Y + index * LINE_STEP, message[index]!, 200);
+        image.drawText(font, BODY_X, BODY_Y + index * LINE_STEP, message[index]!, 200);
       }
       return image;
     }
 
-    const lines = this.getLines(ctx.font);
+    const lines = this.getLines(font);
     const visibleLines = lines.slice(this.firstLine, this.firstLine + BODY_LINE_COUNT);
     for (let index = 0; index < visibleLines.length; index++) {
-      image.drawText(ctx.font, BODY_X, BODY_Y + index * LINE_STEP, visibleLines[index]!, 230);
+      image.drawText(font, BODY_X, BODY_Y + index * LINE_STEP, visibleLines[index]!, 230);
     }
 
     const currentPage = Math.floor(this.firstLine / PAGE_STEP) + 1;
     const totalPages = totalPageCount(lines.length);
-    image.drawText(ctx.font, BODY_X, FOOTER_Y, `Page ${currentPage}/${totalPages}`, 110);
+    image.drawText(font, BODY_X, FOOTER_Y, `Page ${currentPage}/${totalPages}`, 110);
     return image;
   }
 

@@ -1,5 +1,5 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
-import { type BdfFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
 import { Layer, type DashboardInputEvent, type LayerContext } from "../layers";
 
@@ -22,24 +22,25 @@ export class TranscribeLayer implements Layer {
   }
 
   paint(ctx: LayerContext): GrayImage {
+    const font = getDefaultSmallFont();
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     const modeLabel = this.mode === "full" ? "Full" : this.mode === "wakeword" ? "Wakeword" : "Off";
     const text = this.transcript || "Listening...";
-    const wrapped = wrapTranscribeText(ctx.font, text, G2_LENS_WIDTH - 64);
+    const wrapped = wrapTranscribeText(font, text, G2_LENS_WIDTH - 64);
 
     image.drawRect(12, 12, G2_LENS_WIDTH - 24, G2_LENS_HEIGHT - 24, 52);
-    image.drawText(ctx.font, 24, 24, "Transcribe", 200);
-    image.drawText(ctx.font, G2_LENS_WIDTH - 108, 24, modeLabel, this.mode === "full" ? 220 : 130);
-    //image.drawText(ctx.font, 24, 46, truncateTranscribeLine(this.status, 74), 110);
-    image.drawText(ctx.font, 24, 46, this.status, 110);
+    image.drawText(font, 24, 24, "Transcribe", 200);
+    image.drawText(font, G2_LENS_WIDTH - 108, 24, modeLabel, this.mode === "full" ? 220 : 130);
+    //image.drawText(font, 24, 46, truncateTranscribeLine(this.status, 74), 110);
+    image.drawText(font, 24, 46, this.status, 110);
 
     const firstLine = Math.max(0, wrapped.length - 10);
     for (let index = firstLine; index < wrapped.length; index++) {
       const y = 72 + (index - firstLine) * 16;
-      image.drawText(ctx.font, 32, y, wrapped[index]!, 230);
+      image.drawText(font, 32, y, wrapped[index]!, 230);
     }
 
-    image.drawText(ctx.font, 24, 252, "Click: mode / Double-click: back", 110);
+    image.drawText(font, 24, 252, "Click: mode / Double-click: back", 110);
     return image;
   }
 

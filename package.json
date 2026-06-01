@@ -7,6 +7,8 @@
     "@nativescript/core": "~9.0.0",
     "@nativescript/theme": "^3.1.0",
     "lodash": "^4.18.1",
+    "lz4js": "^0.2.0",
+    "pako": "^2.1.0",
     "upng-js": "^2.1.0"
   },
   "devDependencies": {

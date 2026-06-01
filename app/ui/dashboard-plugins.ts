@@ -1,6 +1,6 @@
 import takeRight from "lodash/takeRight";
 
-import { BdfFont, loadEmbeddedTerminus24 } from "../graphics/bdffont";
+import { BdfFont, getDefaultLargeFont, getDefaultSmallFont } from "../graphics/bdffont";
 import { GrayImage, imageFromAsciiArt } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
 import { mediaControllerBridge, type MediaControllerState } from "../native/media-controller";
@@ -26,7 +26,6 @@ export type DashboardPluginCardRenderArgs = {
   image: GrayImage;
   bounds: DashboardPluginCardBounds;
   selected: boolean;
-  font: BdfFont;
   state: DashboardPluginState;
 };
 
@@ -47,7 +46,8 @@ const DASHBOARD_PLUGINS: DashboardPlugin[] = [
   {
     id: "input-debug-log",
     label: "Input debug log",
-    renderCard: ({ image, bounds, font, state }) => {
+    renderCard: ({ image, bounds, state }) => {
+      const font = getDefaultSmallFont();
       image.drawText(font, bounds.x + 10, bounds.y + 14, "Input log", 180);
       const lineHeight = 14;
       const visibleLineCount = Math.max(1, Math.floor((bounds.height - 28) / lineHeight));
@@ -61,7 +61,8 @@ const DASHBOARD_PLUGINS: DashboardPlugin[] = [
   {
     id: "music-controller",
     label: "Music controller",
-    renderCard: ({ image, bounds, font, state }) => {
+    renderCard: ({ image, bounds, state }) => {
+      const font = getDefaultSmallFont();
       const media = state.media;
       image.drawText(font, bounds.x + 10, bounds.y + 14, "Now playing", 180);
       if (!media.accessEnabled) {
@@ -88,7 +89,8 @@ const DASHBOARD_PLUGINS: DashboardPlugin[] = [
   {
     id: "nightscout",
     label: "Nightscout",
-    renderCard: ({ image, bounds, font, state }) => {
+    renderCard: ({ image, bounds, state }) => {
+      const font = getDefaultSmallFont();
       const nightscout = state.nightscout;
       const nowMs = Date.now();
       image.drawText(font, bounds.x + 10, bounds.y + 10, "Nightscout", 180);
@@ -146,7 +148,7 @@ const DASHBOARD_PLUGINS: DashboardPlugin[] = [
 const PLUGIN_MAP = new Map<DashboardPluginId, DashboardPlugin>(
   DASHBOARD_PLUGINS.map((plugin) => [plugin.id, plugin]),
 );
-const nightscoutLargeFont = loadEmbeddedTerminus24();
+const nightscoutLargeFont = getDefaultLargeFont();
 const NIGHTSCOUT_STALE_MS = 15 * 60 * 1000;
 const NIGHTSCOUT_GRAPH_WINDOW_MS = 2 * 60 * 60 * 1000;
 const NIGHTSCOUT_GRAPH_TIME_QUANTUM_MS = 60 * 1000;
@@ -489,9 +491,10 @@ class DebugLogLayer implements Layer {
   constructor(private readonly getState: () => DashboardPluginState) {}
 
   paint(ctx: LayerContext): GrayImage {
+    const font = getDefaultSmallFont();
     const image = new GrayImage(576, 288, 0);
     image.drawRect(12, 12, 552, 264, 52);
-    image.drawText(ctx.font, 22, 16, "Input debug log", 220);
+    image.drawText(font, 22, 16, "Input debug log", 220);
 
     const logs = this.getState().logLines;
     const lineHeight = 14;
@@ -501,9 +504,9 @@ class DebugLogLayer implements Layer {
     const start = Math.max(0, maxOffset - this.scrollOffset);
     const visible = logs.slice(start, start + visibleCount);
     for (let index = 0; index < visible.length; index++) {
-      image.drawText(ctx.font, 22, 42 + index * lineHeight, visible[index]!, 180);
+      image.drawText(font, 22, 42 + index * lineHeight, visible[index]!, 180);
     }
-    image.drawText(ctx.font, 22, 252, "Scroll: browse  Double-click: back", 110);
+    image.drawText(font, 22, 252, "Scroll: browse  Double-click: back", 110);
     return image;
   }
 
@@ -528,40 +531,41 @@ class MusicControllerLayer implements Layer {
   constructor(private readonly getState: () => DashboardPluginState) {}
 
   paint(ctx: LayerContext): GrayImage {
+    const font = getDefaultSmallFont();
     const image = new GrayImage(576, 288, 0);
     const media = this.getState().media;
     image.drawRect(12, 12, 552, 264, 52);
-    image.drawText(ctx.font, 22, 16, "Music controller", 220);
+    image.drawText(font, 22, 16, "Music controller", 220);
 
     if (!media.accessEnabled) {
       const lines = wrapText(
-        ctx.font,
+        font,
         "Notification access is required before Android will expose active media sessions to Faceclaw. Click to open settings.",
         520,
       );
       for (let i = 0; i < lines.length; i++) {
-        image.drawText(ctx.font, 22, 44 + i * 14, lines[i]!, 180);
+        image.drawText(font, 22, 44 + i * 14, lines[i]!, 180);
       }
-      image.drawText(ctx.font, 22, 252, "Click: open settings  Double-click: back", 110);
+      image.drawText(font, 22, 252, "Click: open settings  Double-click: back", 110);
       return image;
     }
 
     if (!media.available) {
-      image.drawText(ctx.font, 22, 44, "No active media session.", 180);
-      image.drawText(ctx.font, 22, 58, "Start playback in another app,", 180);
-      image.drawText(ctx.font, 22, 72, "then reopen this card.", 180);
-      image.drawText(ctx.font, 22, 252, "Double-click: back", 110);
+      image.drawText(font, 22, 44, "No active media session.", 180);
+      image.drawText(font, 22, 58, "Start playback in another app,", 180);
+      image.drawText(font, 22, 72, "then reopen this card.", 180);
+      image.drawText(font, 22, 252, "Double-click: back", 110);
       return image;
     }
 
-    image.drawText(ctx.font, 22, 44, media.title || "Unknown title", 220);
-    image.drawText(ctx.font, 22, 60, media.artist || media.album || "Unknown artist", 180);
-    image.drawText(ctx.font, 22, 76, media.packageName, 130);
-    image.drawText(ctx.font, 22, 104, `State: ${playbackLabel(media)}`, 180);
-    image.drawText(ctx.font, 22, 132, "Click: play/pause", 180);
-    image.drawText(ctx.font, 22, 146, "Scroll up: previous", 180);
-    image.drawText(ctx.font, 22, 160, "Scroll down: next", 180);
-    image.drawText(ctx.font, 22, 252, "Double-click: back", 110);
+    image.drawText(font, 22, 44, media.title || "Unknown title", 220);
+    image.drawText(font, 22, 60, media.artist || media.album || "Unknown artist", 180);
+    image.drawText(font, 22, 76, media.packageName, 130);
+    image.drawText(font, 22, 104, `State: ${playbackLabel(media)}`, 180);
+    image.drawText(font, 22, 132, "Click: play/pause", 180);
+    image.drawText(font, 22, 146, "Scroll up: previous", 180);
+    image.drawText(font, 22, 160, "Scroll down: next", 180);
+    image.drawText(font, 22, 252, "Double-click: back", 110);
     return image;
   }
 
@@ -598,23 +602,24 @@ class NightscoutLayer implements Layer {
   constructor(private readonly getState: () => DashboardPluginState) {}
 
   paint(ctx: LayerContext): GrayImage {
+    const font = getDefaultSmallFont();
     const image = new GrayImage(576, 288, 0);
     const nightscout = this.getState().nightscout;
     const nowMs = Date.now();
     image.drawRect(12, 12, 552, 264, 52);
-    image.drawText(ctx.font, 22, 16, "Nightscout", 220);
+    image.drawText(font, 22, 16, "Nightscout", 220);
 
     if (!this.getState().nightscoutConfigured || nightscout.configurationMissing) {
-      image.drawText(ctx.font, 22, 44, "Nightscout needs configuration.", 180);
-      image.drawText(ctx.font, 22, 62, "Double-click and use Settings", 140);
-      image.drawText(ctx.font, 22, 78, "Integrations > Nightscout.", 140);
+      image.drawText(font, 22, 44, "Nightscout needs configuration.", 180);
+      image.drawText(font, 22, 62, "Double-click and use Settings", 140);
+      image.drawText(font, 22, 78, "Integrations > Nightscout.", 140);
       return image;
     }
 
     if (!nightscout.available || !nightscout.latest) {
-      image.drawText(ctx.font, 22, 44, "No Nightscout data available.", 180);
-      image.drawText(ctx.font, 22, 58, truncateLine(nightscout.status, 60), 140);
-      image.drawText(ctx.font, 22, 252, "Click: refresh  Double-click: back", 110);
+      image.drawText(font, 22, 44, "No Nightscout data available.", 180);
+      image.drawText(font, 22, 58, truncateLine(nightscout.status, 60), 140);
+      image.drawText(font, 22, 252, "Click: refresh  Double-click: back", 110);
       return image;
     }
 
@@ -626,28 +631,28 @@ class NightscoutLayer implements Layer {
     if (isNightscoutPointStale(latest, nowMs)) {
       drawNightscoutValueStrikeThrough(image, glucoseX, 40, glucoseWidth);
     }
-    image.drawText(ctx.font, glucoseX + glucoseWidth + 8, 36, nightscout.units, 140);
+    image.drawText(font, glucoseX + glucoseWidth + 8, 36, nightscout.units, 140);
     const trendText = `Delta ${formatDelta(nightscout.delta)}  Trend `;
-    image.drawText(ctx.font, 22, 62, trendText, 180);
-    drawDirectionIndicator(image, ctx.font, 22 + ctx.font.measureText(trendText), 62, nightscout.direction, 180);
+    image.drawText(font, 22, 62, trendText, 180);
+    drawDirectionIndicator(image, font, 22 + font.measureText(trendText), 62, nightscout.direction, 180);
     image.drawText(
-      ctx.font,
+      font,
       22,
       78,
       `IOB ${nightscout.iob === null ? "--" : nightscout.iob.toFixed(2)}  COB ${nightscout.cob === null ? "--" : formatWholeNumber(nightscout.cob)}  Updated ${formatTimestamp(latest.timestampMs)}`,
       160,
     );
     image.drawText(
-      ctx.font,
+      font,
       22,
       94,
       `CAGE ${formatAgeShortFromTimestamp(nightscout.cageTimestampMs, nowMs)}  Loop ${nightscout.openapsStatusShort}`,
       160,
     );
-    image.drawText(ctx.font, 22, 110, `Pump ${truncateLine(nightscout.pumpStatus || "--", 56)}`, 150);
-    drawNightscoutGraph(image, { x: 22, y: 128, width: 532, height: 96 }, nightscout, nowMs, ctx.font);
-    image.drawText(ctx.font, 22, 234, "2-hour glucose history with basal / carbs / boluses", 130);
-    image.drawText(ctx.font, 22, 252, "Click: refresh  Double-click: back", 110);
+    image.drawText(font, 22, 110, `Pump ${truncateLine(nightscout.pumpStatus || "--", 56)}`, 150);
+    drawNightscoutGraph(image, { x: 22, y: 128, width: 532, height: 96 }, nightscout, nowMs, font);
+    image.drawText(font, 22, 234, "2-hour glucose history with basal / carbs / boluses", 130);
+    image.drawText(font, 22, 252, "Click: refresh  Double-click: back", 110);
     return image;
   }
 

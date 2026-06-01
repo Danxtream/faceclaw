@@ -1,4 +1,4 @@
-import { BdfFont } from "../graphics/bdffont";
+import { BdfFont, getDefaultSmallFont } from "../graphics/bdffont";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
 import {
@@ -40,20 +40,21 @@ export class NotificationsListLayer implements Layer {
   constructor(private readonly exitToRootMenu?: (ctx: LayerContext) => void) {}
 
   paint(ctx: LayerContext): GrayImage {
+    const font = getDefaultSmallFont();
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     const notifications = readActiveNotifications(MAX_NOTIFICATIONS);
     const selectedIndex = this.resolveSelectedIndex(notifications);
     const layouts = notifications.map((notification, index) =>
-      buildNotificationCardLayout(ctx.font, notification, index === selectedIndex),
+      buildNotificationCardLayout(font, notification, index === selectedIndex),
     );
 
     image.drawRect(PAGE_X, PAGE_Y, PAGE_WIDTH, PAGE_HEIGHT, 52);
-    image.drawText(ctx.font, PAGE_X + 12, PAGE_Y + 9, "Notifications", 220);
-    image.drawText(ctx.font, G2_LENS_WIDTH - 96, PAGE_Y + 9, `${notifications.length} active`, 150);
+    image.drawText(font, PAGE_X + 12, PAGE_Y + 9, "Notifications", 220);
+    image.drawText(font, G2_LENS_WIDTH - 96, PAGE_Y + 9, `${notifications.length} active`, 150);
 
     if (!notifications.length) {
-      image.drawText(ctx.font, 24, 72, "No current Android notifications.", 190);
-      image.drawText(ctx.font, 24, 252, "Double-click to return to dashboard", 110);
+      image.drawText(font, 24, 72, "No current Android notifications.", 190);
+      image.drawText(font, 24, 252, "Double-click to return to dashboard", 110);
       return image;
     }
 
@@ -62,14 +63,14 @@ export class NotificationsListLayer implements Layer {
     for (let index = 0; index < layouts.length; index++) {
       const layout = layouts[index]!;
       if (cursorY + layout.height >= LIST_TOP && cursorY <= LIST_BOTTOM) {
-        drawNotificationCard(image, ctx.font, layout, CARD_X, cursorY, CARD_WIDTH, index === selectedIndex);
+        drawNotificationCard(image, font, layout, CARD_X, cursorY, CARD_WIDTH, index === selectedIndex);
       }
       cursorY += layout.height + CARD_GAP;
       if (cursorY > LIST_BOTTOM + 80) break;
     }
 
     const footer = `${selectedIndex + 1}/${notifications.length}  tap: open  double: dashboard`;
-    image.drawText(ctx.font, PAGE_X + 12, 258, footer, 110);
+    image.drawText(font, PAGE_X + 12, 258, footer, 110);
     return image;
   }
 
@@ -119,21 +120,21 @@ export class SingleNotificationLayer implements Layer {
   constructor(private readonly notificationKey: string) {}
 
   paint(ctx: LayerContext, _paintBelow: PaintBelow): GrayImage {
+    const font = getDefaultSmallFont();
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     const notification = readActiveNotifications(MAX_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
 
-    image.drawRect(PAGE_X, PAGE_Y, PAGE_WIDTH, PAGE_HEIGHT, 52);
     if (!notification) {
-      image.drawText(ctx.font, PAGE_X + 12, PAGE_Y + 9, "Notification", 220);
-      image.drawText(ctx.font, 24, 72, "This notification is no longer active.", 190);
-      image.drawText(ctx.font, 24, 252, "Double-click to go back", 110);
+      image.drawText(font, PAGE_X + 12, PAGE_Y + 9, "Notification", 220);
+      image.drawText(font, 24, 72, "This notification is no longer active.", 190);
+      image.drawText(font, 24, 252, "Double-click to go back", 110);
       return image;
     }
 
     const menu = buildDetailMenu(notification);
     this.selectedMenuIndex = clamp(this.selectedMenuIndex, 0, Math.max(0, menu.length - 1));
-    drawDetailContent(image, ctx.font, notification);
-    drawDetailMenu(image, ctx.font, menu, this.selectedMenuIndex);
+    drawDetailContent(image, font, notification);
+    drawDetailMenu(image, font, menu, this.selectedMenuIndex);
     return image;
   }
 
@@ -263,9 +264,8 @@ function drawDetailContent(image: GrayImage, font: BdfFont, notification: Androi
 
 function drawDetailMenu(image: GrayImage, font: BdfFont, menu: DetailMenuItem[], selectedIndex: number): void {
   const menuX = 404;
-  const menuY = 40;
+  const menuY = 24;
   const menuWidth = 148;
-  image.drawText(font, menuX, 24, "Menu", 170);
   for (let index = 0; index < menu.length; index++) {
     const y = menuY + index * 22;
     const selected = index === selectedIndex;
@@ -276,7 +276,6 @@ function drawDetailMenu(image: GrayImage, font: BdfFont, menu: DetailMenuItem[],
     const label = truncateToWidth(font, menu[index]!.label, menuWidth - 12);
     image.drawText(font, menuX, y + 2, label, selected ? 255 : 185);
   }
-  image.drawText(font, 404, 258, "tap: select", 110);
 }
 
 function buildDetailMenu(notification: AndroidNotification): DetailMenuItem[] {

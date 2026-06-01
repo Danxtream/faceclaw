@@ -10,13 +10,15 @@ import { onAndroidNotificationPosted } from "../native/notification-icons";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource, grayImageToPreviewSourceWithBitmapFactory } from "../native/gray-image-preview";
 import { voiceControlBridge } from "../native/voice-control";
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
+import { estimateTileCompression } from "../graphics/compression-estimator";
+import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, type ImageTile } from "../graphics/image";
 import {
   applyDashboardScreenTimeout,
   consumeDashboardTiledWakePaint,
   drawDashboard,
   getDashboardNightscoutSettings,
   getDashboardSystemCardName,
+  isDashboardCompressionRatioEstimationEnabled,
   isDashboardVoiceControlEnabled,
   noteDashboardPhoneTextInput,
   openAndroidNotificationFromSleep,
@@ -636,7 +638,11 @@ class DashboardController {
     const paintMs = Date.now() - paintStartedAtMs;
     const forceTiledCommit = consumeDashboardTiledWakePaint();
     const fingerprint = image.fingerprint();
-    const tiles = image.toEvenHubTiles().map((tile) => tile.bmp);
+    const imageTiles = image.toEvenHubTiles();
+    if (isDashboardCompressionRatioEstimationEnabled()) {
+      this.logCompressionEstimate(imageTiles);
+    }
+    const tiles = imageTiles.map((tile) => tile.bmp);
     const updatePreviewAfterTransmit = this.phase === "connected";
     if (!updatePreviewAfterTransmit) {
       this.updateDisplayPreviewFromImage(image);
@@ -821,6 +827,18 @@ class DashboardController {
 
   private formatFrameMetrics(metrics: FrameMetrics): string {
     return `paint=${Math.round(metrics.paintMs)}ms, transmit=${Math.round(metrics.transmitMs)}ms, tiles=${Math.round(metrics.tileCount)}`;
+  }
+
+  private logCompressionEstimate(tiles: readonly ImageTile[]): void {
+    try {
+      const report = estimateTileCompression(tiles);
+      for (const line of report.tileLines) {
+        this.appendLog(line);
+      }
+      this.appendLog(report.totalLine);
+    } catch (error) {
+      this.appendLog(`compression estimate failed: ${this.formatError(error)}`);
+    }
   }
 
   private appendLog(line: string): void {

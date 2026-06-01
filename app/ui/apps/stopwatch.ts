@@ -1,8 +1,8 @@
-import { loadEmbeddedTerminus32 } from "../../graphics/bdffont";
+import { getDefaultSmallFont, getFont } from "../../graphics/bdffont";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { Layer, type DashboardInputEvent, type LayerContext } from "../layers";
 
-const stopwatchFont = loadEmbeddedTerminus32();
+const stopwatchFont = getFont("terminus32");
 
 export class StopwatchLayer implements Layer {
   private readonly startedAtMs = Date.now();
@@ -14,17 +14,18 @@ export class StopwatchLayer implements Layer {
     const elapsedMs = this.elapsedMs();
     const timeLabel = formatStopwatchElapsed(elapsedMs);
     const stateLabel = this.pausedAtMs === null ? "Running" : "Paused";
+    const smallFont = getDefaultSmallFont();
 
-    image.drawText(ctx.font, 24, 24, "Stopwatch", 180);
+    image.drawText(smallFont, 24, 24, "Stopwatch", 180);
 
     const quadrantWidth = G2_LENS_WIDTH / 2;
     const quadrantHeight = G2_LENS_HEIGHT / 2;
     const timeX = Math.max(0, Math.round((quadrantWidth - stopwatchFont.measureText(timeLabel)) / 2));
     const timeY = Math.max(0, Math.round((quadrantHeight - stopwatchFont.lineHeight) / 2));
     image.drawText(stopwatchFont, timeX, timeY, timeLabel, 245);
-    image.drawText(ctx.font, 90, 142, stateLabel, 150);
-    image.drawText(ctx.font, 90, 160, "Click: pause / resume", 150);
-    image.drawText(ctx.font, 90, 178, "Double-click: back", 150);
+    image.drawText(smallFont, 90, 142, stateLabel, 150);
+    image.drawText(smallFont, 90, 160, "Click: pause / resume", 150);
+    image.drawText(smallFont, 90, 178, "Double-click: back", 150);
     return image;
   }
 

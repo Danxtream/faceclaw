@@ -1,5 +1,5 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
-import { loadEmbeddedTerminus12, loadEmbeddedTerminus16, loadEmbeddedTerminus32 } from "../graphics/bdffont";
+import { getDefaultMediumFont, getDefaultSmallFont } from "../graphics/bdffont";
 import { BATTERY_ICON_WIDTH, drawBattery } from "../graphics/battery";
 import { loadPngAsGrayImage } from "../graphics/imagefile";
 import { type RawInputEvent } from "../native/faceclaw-communicator";
@@ -22,6 +22,7 @@ import {
   getDashboardSlotIds,
   isNightscoutSettingsConfigured,
   loadDashboardSlotConfig,
+  loadEstimateCompressionRatiosEnabled,
   loadNightscoutSettings,
   loadScreenTimeoutSetting,
   loadSystemCardSettings,
@@ -31,6 +32,7 @@ import {
   nextScreenTimeoutSetting,
   nextWakeModeSetting,
   saveDashboardSlotPlugin,
+  saveEstimateCompressionRatiosEnabled,
   saveNightscoutApiToken,
   saveNightscoutSiteUrl,
   saveScreenTimeoutSetting,
@@ -72,6 +74,7 @@ let dashboardState = {
   screenTimeout: loadScreenTimeoutSetting(),
   wakeMode: loadWakeModeSetting(),
   voiceControlEnabled: loadVoiceControlEnabled(),
+  estimateCompressionRatiosEnabled: loadEstimateCompressionRatiosEnabled(),
   tiledWakePaintPending: false,
   telepromptDocumentText: null as string | null,
   nightscoutSettings: loadNightscoutSettings(),
@@ -96,8 +99,8 @@ const dashboardActions: LayerActions = {
   startDedicatedVoiceInput: () => {},
   stopDedicatedVoiceInput: () => {},
 };
-const dashboardFont = loadEmbeddedTerminus12();
-const dashboardSystemFont = loadEmbeddedTerminus16();
+const dashboardFont = getDefaultSmallFont();
+const dashboardSystemFont = getDefaultMediumFont();
 const NOTIFICATION_ICON_SIZE = 24;
 const SYSTEM_CARD_ITEM_HEIGHT = 38;
 const SYSTEM_CARD_ITEM_GAP = 2;
@@ -243,6 +246,10 @@ export function isDashboardVoiceControlEnabled(): boolean {
 
 export function setDashboardVoiceControlEnabled(value: boolean): void {
   dashboardState.voiceControlEnabled = saveVoiceControlEnabled(value);
+}
+
+export function isDashboardCompressionRatioEstimationEnabled(): boolean {
+  return dashboardState.estimateCompressionRatiosEnabled;
 }
 
 export function applyDashboardScreenTimeout(nowMs = Date.now()): boolean {
@@ -439,7 +446,6 @@ class DashboardLayer implements Layer {
         image,
         bounds,
         selected: false,
-        font: dashboardFont,
         state: pluginState,
       });
     }
@@ -648,6 +654,24 @@ function createDisplaySettingsMenuLayer(): MenuLayer {
           drawRightValueMenuItem(image, dashboardFont, x, y, width, "Wake mode", wakeModeLabel(dashboardState.wakeMode));
         },
       },
+      {
+        label: "Estimate compression ratios",
+        onSelect: () => {
+          setEstimateCompressionRatiosEnabled(!dashboardState.estimateCompressionRatiosEnabled);
+        },
+        render: ({ image, x, y, width, selected }) => {
+          drawToggleMenuItem(
+            image,
+            dashboardFont,
+            x,
+            y,
+            width,
+            "Estimate compression ratios",
+            dashboardState.estimateCompressionRatiosEnabled,
+            selected,
+          );
+        },
+      },
     ],
     TOP_LEFT_MENU_LAYOUT,
   );
@@ -660,6 +684,10 @@ function setScreenTimeout(value: ScreenTimeoutSetting): void {
 
 function setWakeMode(value: WakeModeSetting): void {
   dashboardState.wakeMode = saveWakeModeSetting(value);
+}
+
+function setEstimateCompressionRatiosEnabled(value: boolean): void {
+  dashboardState.estimateCompressionRatiosEnabled = saveEstimateCompressionRatiosEnabled(value);
 }
 
 function createVoiceSettingsMenuLayer(): MenuLayer {
@@ -935,6 +963,6 @@ function maskToken(token: string): string {
   return token.length <= 6 ? "******" : `${token.slice(0, 2)}...${token.slice(-4)}`;
 }
 
-const dashboardLayers = new LayerStack(new DashboardLayer(), dashboardFont, dashboardActions);
+const dashboardLayers = new LayerStack(new DashboardLayer(), dashboardActions);
 dashboardLayers.push(createRootMenuLayer());
 

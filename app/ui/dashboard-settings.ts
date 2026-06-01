@@ -22,10 +22,12 @@ export const DEFAULT_SYSTEM_CARD_NAME = "Faceclaw";
 export const DEFAULT_SCREEN_TIMEOUT: ScreenTimeoutSetting = "30s";
 export const DEFAULT_WAKE_MODE: WakeModeSetting = "tiled";
 export const DEFAULT_VOICE_CONTROL_ENABLED = false;
+export const DEFAULT_ESTIMATE_COMPRESSION_RATIOS_ENABLED = false;
 const SYSTEM_CARD_NAME_KEY = "dashboard.systemCardName";
 const SCREEN_TIMEOUT_KEY = "display.screenTimeout";
 const WAKE_MODE_KEY = "display.wakeMode";
 const VOICE_CONTROL_ENABLED_KEY = "voice.enabled";
+const ESTIMATE_COMPRESSION_RATIOS_ENABLED_KEY = "debug.estimateCompressionRatios";
 const SYSTEM_CARD_SETTING_KEYS: Record<SystemCardSettingKey, string> = {
   showFaceclawLogo: "dashboard.systemCard.showFaceclawLogo",
   showBatteryIndicators: "dashboard.systemCard.showBatteryIndicators",
@@ -146,6 +148,18 @@ export function loadVoiceControlEnabled(): boolean {
 
 export function saveVoiceControlEnabled(value: boolean): boolean {
   ApplicationSettings.setBoolean(VOICE_CONTROL_ENABLED_KEY, value);
+  return value;
+}
+
+export function loadEstimateCompressionRatiosEnabled(): boolean {
+  return ApplicationSettings.getBoolean(
+    ESTIMATE_COMPRESSION_RATIOS_ENABLED_KEY,
+    DEFAULT_ESTIMATE_COMPRESSION_RATIOS_ENABLED,
+  );
+}
+
+export function saveEstimateCompressionRatiosEnabled(value: boolean): boolean {
+  ApplicationSettings.setBoolean(ESTIMATE_COMPRESSION_RATIOS_ENABLED_KEY, value);
   return value;
 }
 

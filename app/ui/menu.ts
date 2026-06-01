@@ -1,6 +1,6 @@
 import { GrayImage } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
-import { type BdfFont } from "../graphics/bdffont";
+import { getDefaultSmallFont, type BdfFont } from "../graphics/bdffont";
 import { DashboardInputEvent, Layer, LayerContext, PaintBelow } from "./layers";
 
 const DEFAULT_MENU_X = 8;
@@ -92,12 +92,13 @@ export class MenuLayer implements Layer {
   ) {}
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
+    const font = getDefaultSmallFont();
     const { x, y, width, height } = this.layout;
     const image = paintBelow();
     image.fillRoundedRect(x, y, width, height, 0);
     image.drawRoundedRect(x, y, width, height, 72);
     if (this.title) {
-      image.drawText(ctx.font, x + 12, y + 8, this.title, 220);
+      image.drawText(font, x + 12, y + 8, this.title, 220);
     }
 
     const bodyY = y + (this.title ? MENU_TITLE_HEIGHT : 0) + 8;
@@ -121,7 +122,7 @@ export class MenuLayer implements Layer {
           ctx,
         });
       } else {
-        image.drawText(ctx.font, x + 22, y + 3, item.label, selected ? 255 : 200);
+        image.drawText(font, x + 22, y + 3, item.label, selected ? 255 : 200);
       }
     }
 
@@ -161,15 +162,16 @@ export class TextPageLayer implements Layer {
   ) {}
 
   paint(ctx: LayerContext): GrayImage {
+    const font = getDefaultSmallFont();
     const image = new GrayImage(576, 288, 0);
-    image.drawText(ctx.font, 18, 14, this.title, 220);
+    image.drawText(font, 18, 14, this.title, 220);
     image.drawRect(12, 12, 552, 264, 52);
 
-    const wrapped = wrapText(ctx.font, this.body, 520);
+    const wrapped = wrapText(font, this.body, 520);
     for (let index = 0; index < wrapped.length; index++) {
-      image.drawText(ctx.font, 24, 42 + index * 14, wrapped[index]!, 190);
+      image.drawText(font, 24, 42 + index * 14, wrapped[index]!, 190);
     }
-    image.drawText(ctx.font, 24, 252, "Double-click to go back", 110);
+    image.drawText(font, 24, 252, "Double-click to go back", 110);
     return image;
   }
 

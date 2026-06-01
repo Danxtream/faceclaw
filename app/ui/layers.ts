@@ -26,7 +26,6 @@ export type PaintBelow = () => GrayImage;
 
 export interface LayerContext {
   readonly stack: LayerStack;
-  readonly font: BdfFont;
   readonly actions: LayerActions;
 }
 
@@ -40,11 +39,10 @@ export class LayerStack {
   private readonly layers: Layer[];
   private readonly ctx: LayerContext;
 
-  constructor(baseLayer: Layer, font: BdfFont, actions: LayerActions) {
+  constructor(baseLayer: Layer, actions: LayerActions) {
     this.layers = [baseLayer];
     this.ctx = {
       stack: this,
-      font,
       actions,
     };
   }

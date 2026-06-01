@@ -130,22 +130,6 @@ export class BdfFont {
 
 const cachedEmbeddedFonts = new Map<string, BdfFont>();
 
-export function loadEmbeddedTerminus12(): BdfFont {
-  return loadEmbeddedFont("fonts/terminus/ter-u12n.bdf");
-}
-
-export function loadEmbeddedTerminus16(): BdfFont {
-  return loadEmbeddedFont("fonts/terminus/ter-u16n.bdf");
-}
-
-export function loadEmbeddedTerminus24(): BdfFont {
-  return loadEmbeddedFont("fonts/terminus/ter-u24n.bdf");
-}
-
-export function loadEmbeddedTerminus32(): BdfFont {
-  return loadEmbeddedFont("fonts/terminus/ter-u32n.bdf");
-}
-
 function loadEmbeddedFont(path: string): BdfFont {
   const cached = cachedEmbeddedFonts.get(path);
   if (cached) {
@@ -156,4 +140,26 @@ function loadEmbeddedFont(path: string): BdfFont {
   const font = BdfFont.parse(text);
   cachedEmbeddedFonts.set(path, font);
   return font;
+}
+
+const embeddedFonts = {
+  "terminus12": "fonts/terminus/ter-u12n.bdf",
+  "terminus16": "fonts/terminus/ter-u16n.bdf",
+  "terminus24": "fonts/terminus/ter-u24n.bdf",
+  "terminus32": "fonts/terminus/ter-u32n.bdf",
+}
+type EmbeddedFontName = keyof typeof embeddedFonts;
+
+export function getFont(font: EmbeddedFontName): BdfFont {
+  return loadEmbeddedFont(embeddedFonts[font]);
+}
+
+export function getDefaultSmallFont(): BdfFont {
+  return getFont("terminus12");
+}
+export function getDefaultMediumFont(): BdfFont {
+  return getFont("terminus16");
+}
+export function getDefaultLargeFont(): BdfFont {
+  return getFont("terminus24");
 }
