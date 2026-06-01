@@ -1,4 +1,5 @@
 import { BdfFont, Glyph } from "./bdffont";
+import { wrapText } from "./textwrap";
 
 export const G2_LENS_WIDTH = 576;
 export const G2_LENS_HEIGHT = 288;
@@ -127,6 +128,20 @@ export class GrayImage {
       if (!glyph) continue;
       this.drawGlyph(font, glyph, cursorX, y, fill);
       cursorX += glyph.dwidthX;
+    }
+  }
+
+  drawTextWrapped({font, x, y, width, text, value }: {
+    font: BdfFont;
+    x: number;
+    y: number;
+    width: number;
+    text: string;
+    value: number;
+  }): void {
+    const lines = wrapText(font, text, this.width);
+    for (let i = 0; i < lines.length; i++) {
+      this.drawText(font, x, y + i * font.lineHeight, lines[i]!, value);
     }
   }
 

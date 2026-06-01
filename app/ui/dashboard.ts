@@ -1,14 +1,9 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../graphics/bdffont";
-import { BATTERY_ICON_WIDTH, drawBattery } from "../graphics/battery";
 import { loadPngAsGrayImage } from "../graphics/imagefile";
 import { type RawInputEvent } from "../native/faceclaw-communicator";
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
-import { readActiveNotificationIcons } from "../native/notification-icons";
-import { readPhoneBatteryState } from "../native/phone-battery";
-import { readSystemStatusIcons } from "../native/system-status-icons";
-import { voiceControlBridge, type VoiceTranscriptEvent } from "../native/voice-control";
 import { EventSourceType, OsEventTypeList } from "../g2/events";
 import {
   getDashboardPlugin,
@@ -18,7 +13,6 @@ import {
   type DashboardPluginState,
 } from "./dashboard-plugins";
 import {
-  DEFAULT_SYSTEM_CARD_NAME,
   getDashboardSlotIds,
   isNightscoutSettingsConfigured,
   loadDashboardSlotConfig,
@@ -56,6 +50,8 @@ import { NotificationsListLayer, SingleNotificationLayer } from "./notifications
 import { TranscribeLayer } from "./apps/transcribe";
 import { TelepromptLayer } from "./apps/teleprompt";
 import { ScreenTestLayer } from "./apps/screen-test";
+import { getDashboardLogo } from "~/graphics/logo";
+import { drawSystemCard, getDisplayedSystemCardName } from "./dashboard/system-card";
 
 type DashboardCardId = "system" | DashboardSlotId;
 export type DashboardBatteryLevels = {
@@ -64,7 +60,7 @@ export type DashboardBatteryLevels = {
   ring: number | null;
 };
 
-let dashboardState = {
+export let dashboardState = {
   logLines: [] as string[],
   screenOn: true,
   lastInputAtMs: Date.now(),
@@ -85,7 +81,6 @@ let dashboardState = {
   } as DashboardBatteryLevels,
 };
 
-let cachedDashboardLogo: GrayImage | null | undefined;
 const dashboardActions: LayerActions = {
   disconnect: () => {},
   startSystemNameEdit: () => {},
@@ -100,11 +95,6 @@ const dashboardActions: LayerActions = {
   stopDedicatedVoiceInput: () => {},
 };
 const dashboardFont = getDefaultSmallFont();
-const dashboardSystemFont = getDefaultMediumFont();
-const NOTIFICATION_ICON_SIZE = 24;
-const SYSTEM_CARD_ITEM_HEIGHT = 38;
-const SYSTEM_CARD_ITEM_GAP = 2;
-const BATTERY_ITEM_Y_OFFSET = 4;
 const TOP_LEFT_MENU_LAYOUT = { x: 8, y: 8, width: 272, height: 128 };
 
 function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputEvent {
@@ -305,119 +295,6 @@ export function setDashboardBatteryLevels(levels: Partial<DashboardBatteryLevels
   };
 }
 
-function getDisplayedSystemCardName(): string {
-  return dashboardState.systemCardName || DEFAULT_SYSTEM_CARD_NAME;
-}
-
-type SystemCardFlowItem =
-  | { type: "battery"; label: string; percentCharge: number; isCharging: boolean }
-  | { type: "notification"; icon: GrayImage };
-
-function collectBatteryItems(): SystemCardFlowItem[] {
-  if (!dashboardState.systemCardSettings.showBatteryIndicators) return [];
-  const phone = readPhoneBatteryState();
-  const items: SystemCardFlowItem[] = [];
-  addBatteryItem(items, "Phone", phone.battery, phone.charging);
-  addBatteryItem(items, "G2", dashboardState.battery.headset, dashboardState.battery.headsetCharging);
-  addBatteryItem(items, "R1", dashboardState.battery.ring, null);
-  return items;
-}
-
-function addBatteryItem(
-  items: SystemCardFlowItem[],
-  label: string,
-  percentCharge: number | null,
-  isCharging: boolean | null,
-): void {
-  if (percentCharge === null || !Number.isFinite(percentCharge)) return;
-  items.push({
-    type: "battery",
-    label,
-    percentCharge,
-    isCharging: Boolean(isCharging),
-  });
-}
-
-function drawBatteryFlowItem(image: GrayImage, x: number, y: number, item: Extract<SystemCardFlowItem, { type: "battery" }>): void {
-  const itemWidth = systemCardFlowItemWidth(item);
-  const labelX = x + Math.max(0, ((itemWidth - dashboardFont.measureText(item.label)) / 2) | 0);
-  image.drawText(dashboardFont, labelX, y + BATTERY_ITEM_Y_OFFSET, item.label, 150);
-  const battery = drawBattery(item.percentCharge, item.isCharging);
-  image.bitBlt(battery, x + ((itemWidth - battery.width) / 2) | 0, y + 16 + BATTERY_ITEM_Y_OFFSET);
-}
-
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-function formatDashboardDate(now: Date): string {
-  return `${WEEKDAYS[now.getDay()]} ${MONTHS[now.getMonth()]} ${now.getDate()} ${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
-}
-
-function pad2(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
-function getDashboardLogo(): GrayImage | null {
-  if (cachedDashboardLogo !== undefined) {
-    return cachedDashboardLogo;
-  }
-  try {
-    cachedDashboardLogo = loadPngAsGrayImage("images/faceclaw-logo-dashboard.png");
-  } catch {
-    cachedDashboardLogo = null;
-  }
-  return cachedDashboardLogo;
-}
-
-function drawSystemCardFlowItems(image: GrayImage, bounds: DashboardPluginCardBounds): void {
-  const left = bounds.x + 10;
-  const top = bounds.y + 84;
-  const right = bounds.x + bounds.width - 10;
-  const bottom = bounds.y + bounds.height - 6;
-  const items: SystemCardFlowItem[] = [];
-  if (dashboardState.systemCardSettings.showAndroidNotifications) {
-    const maxNotificationIcons = Math.max(0, ((right - left) / Math.max(1, NOTIFICATION_ICON_SIZE + SYSTEM_CARD_ITEM_GAP)) | 0) * 2;
-    for (const icon of readActiveNotificationIcons(maxNotificationIcons)) {
-      items.push({ type: "notification", icon });
-    }
-  }
-  items.push(...collectBatteryItems());
-  if (dashboardState.systemCardSettings.showSignalStrength) {
-    for (const icon of readSystemStatusIcons()) {
-      items.push({ type: "notification", icon });
-    }
-  }
-
-  let itemX = left;
-  let itemY = top;
-  for (const item of items) {
-    const itemWidth = systemCardFlowItemWidth(item);
-    if (itemX > left && itemX + itemWidth > right) {
-      itemX = left;
-      itemY += SYSTEM_CARD_ITEM_HEIGHT + SYSTEM_CARD_ITEM_GAP;
-    }
-    if (itemY + SYSTEM_CARD_ITEM_HEIGHT > bottom) {
-      break;
-    }
-    if (item.type === "battery") {
-      drawBatteryFlowItem(image, itemX, itemY, item);
-    } else {
-      image.bitBlt(
-        item.icon,
-        itemX,
-        itemY + ((SYSTEM_CARD_ITEM_HEIGHT - NOTIFICATION_ICON_SIZE) / 2) | 0,
-      );
-    }
-    itemX += itemWidth + SYSTEM_CARD_ITEM_GAP;
-  }
-}
-
-function systemCardFlowItemWidth(item: SystemCardFlowItem): number {
-  if (item.type === "notification") {
-    return NOTIFICATION_ICON_SIZE;
-  }
-  return Math.max(BATTERY_ICON_WIDTH, dashboardFont.measureText(item.label));
-}
 
 class DashboardLayer implements Layer {
   paint(): GrayImage {
@@ -426,18 +303,8 @@ class DashboardLayer implements Layer {
     }
 
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
-    const now = new Date();
-    const logo = getDashboardLogo();
     const pluginState = getPluginState();
-
-    const systemBounds = getCardBounds("system");
-    if (logo && dashboardState.systemCardSettings.showFaceclawLogo) {
-      image.bitBlt(logo, systemBounds.x + 10, systemBounds.y + 10);
-    }
-    const infoX = logo && dashboardState.systemCardSettings.showFaceclawLogo ? systemBounds.x + 92 : systemBounds.x + 10;
-    image.drawText(dashboardSystemFont, infoX, systemBounds.y + 10, getDisplayedSystemCardName(), 200);
-    image.drawText(dashboardSystemFont, infoX, systemBounds.y + 32, formatDashboardDate(now), 200);
-    drawSystemCardFlowItems(image, systemBounds);
+    drawSystemCard(image, getCardBounds("system"));
 
     for (const slot of getDashboardSlotIds()) {
       const bounds = getCardBounds(slot);
@@ -818,7 +685,7 @@ class EditSystemNameLayer implements Layer {
     image.drawText(dashboardFont, 22, 16, "Edit dashboard name", 220);
     image.drawText(dashboardFont, 22, 52, "Look at the phone app", 200);
     image.drawText(dashboardFont, 22, 70, "to type a new name.", 200);
-    image.drawText(dashboardSystemFont, 22, 110, getDisplayedSystemCardName(), 220);
+    image.drawText(getDefaultMediumFont(), 22, 110, getDisplayedSystemCardName(), 220);
     image.drawText(dashboardFont, 22, 252, "Double-click to go back", 110);
     return image;
   }
@@ -887,14 +754,13 @@ class AboutLayer implements Layer {
     image.drawText(dashboardFont, 108, 48, "Faceclaw", 220);
     image.drawText(dashboardFont, 108, 64, "Dashboard prototype", 180);
 
-    const aboutLines = [
-      "By James Babcock. Distributed under the GNU General Public License, version 3.",
-      "Version 0.1.0. Too much of an early janky development prototype to have",
-      "proper numbered releases."
-    ];
-    for (let index = 0; index < aboutLines.length; index++) {
-      image.drawText(dashboardFont, 22, 128 + index * 14, aboutLines[index]!, 180);
-    }
+    image.drawTextWrapped({
+      font: dashboardFont,
+      x: 22, y: 128,
+      width: G2_LENS_WIDTH - 44,
+      text: "By James Babcock. Distributed under the GNU General Public License, version 3. Version 0.1.0. Too much of an early janky development prototype to have proper numbered releases.",
+      value: 180
+    });
     return image;
   }
 

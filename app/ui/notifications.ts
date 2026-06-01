@@ -12,10 +12,8 @@ import { type DashboardInputEvent, type Layer, type LayerContext, type PaintBelo
 
 const PAGE_X = 12;
 const PAGE_Y = 12;
-const PAGE_WIDTH = G2_LENS_WIDTH - 24;
-const PAGE_HEIGHT = G2_LENS_HEIGHT - 24;
 const LIST_TOP = 38;
-const LIST_BOTTOM = 248;
+const LIST_BOTTOM = G2_LENS_HEIGHT;
 const CARD_X = 20;
 const CARD_WIDTH = G2_LENS_WIDTH - 40;
 const CARD_TEXT_WIDTH = CARD_WIDTH - 24;
@@ -48,9 +46,8 @@ export class NotificationsListLayer implements Layer {
       buildNotificationCardLayout(font, notification, index === selectedIndex),
     );
 
-    image.drawRect(PAGE_X, PAGE_Y, PAGE_WIDTH, PAGE_HEIGHT, 52);
     image.drawText(font, PAGE_X + 12, PAGE_Y + 9, "Notifications", 220);
-    image.drawText(font, G2_LENS_WIDTH - 96, PAGE_Y + 9, `${notifications.length} active`, 150);
+    image.drawText(font, G2_LENS_WIDTH - 96, PAGE_Y + 9, `${selectedIndex+1}/${notifications.length}`, 150);
 
     if (!notifications.length) {
       image.drawText(font, 24, 72, "No current Android notifications.", 190);
@@ -69,8 +66,6 @@ export class NotificationsListLayer implements Layer {
       if (cursorY > LIST_BOTTOM + 80) break;
     }
 
-    const footer = `${selectedIndex + 1}/${notifications.length}  tap: open  double: dashboard`;
-    image.drawText(font, PAGE_X + 12, 258, footer, 110);
     return image;
   }
 
