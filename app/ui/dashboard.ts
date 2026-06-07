@@ -178,8 +178,17 @@ export function openAndroidNotificationFromSleep(notificationKey: string, nowMs 
   dashboardState.tiledWakePaintPending = wakeModeSetting.get() === "tiled";
   dashboardLayers.clearToBase();
   dashboardLayers.push(createRootMenuLayer());
-  dashboardLayers.push(new SingleNotificationLayer(notificationKey));
+  dashboardLayers.push(new SingleNotificationLayer(notificationKey, {
+    origin: "new-notification-trigger",
+    closeNewNotificationTrigger: closeNewNotificationTrigger,
+  }));
   return true;
+}
+
+function closeNewNotificationTrigger(ctx: LayerContext): void {
+  dashboardState.screenOn = false;
+  dashboardState.tiledWakePaintPending = false;
+  ctx.stack.clearToBase();
 }
 
 export function resetDashboardSleepTimerAndWake(nowMs = Date.now()): boolean {

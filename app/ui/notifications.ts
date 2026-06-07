@@ -34,6 +34,13 @@ type DetailMenuItem =
   | { kind: "action"; label: string; action: AndroidNotificationAction }
   | { kind: "dismiss"; label: string };
 
+export type SingleNotificationLayerOrigin = "notifications-dashboard" | "new-notification-trigger";
+
+type SingleNotificationLayerOptions = {
+  origin: SingleNotificationLayerOrigin;
+  closeNewNotificationTrigger?: (ctx: LayerContext) => void;
+};
+
 export class NotificationsListLayer implements Layer {
   private selectedKey = "";
 
@@ -93,7 +100,9 @@ export class NotificationsListLayer implements Layer {
       return;
     }
     if (event.type === "click") {
-      ctx.stack.push(new SingleNotificationLayer(notifications[selectedIndex]!.key));
+      ctx.stack.push(new SingleNotificationLayer(notifications[selectedIndex]!.key, {
+        origin: "notifications-dashboard",
+      }));
     }
   }
 
@@ -114,18 +123,18 @@ export class NotificationsListLayer implements Layer {
 export class SingleNotificationLayer implements Layer {
   private selectedMenuIndex = 0;
 
-  constructor(private readonly notificationKey: string) {}
+  constructor(
+    private readonly notificationKey: string,
+    private readonly options: SingleNotificationLayerOptions,
+  ) {}
 
-  paint(ctx: LayerContext, _paintBelow: PaintBelow): GrayImage {
+  paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
     const font = getDefaultSmallFont();
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     const notification = readActiveNotifications(MAX_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
 
     if (!notification) {
-      image.drawText(font, PAGE_X + 12, PAGE_Y + 9, "Notification", 220);
-      image.drawText(font, 24, 72, "This notification is no longer active.", 190);
-      image.drawText(font, 24, 252, "Double-click to go back", 110);
-      return image;
+      return this.closeUnavailableNotification(ctx, paintBelow);
     }
 
     const menu = buildDetailMenu(notification);
@@ -137,7 +146,11 @@ export class SingleNotificationLayer implements Layer {
 
   handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
     const notification = readActiveNotifications(MAX_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
-    const menu = notification ? buildDetailMenu(notification) : [{ kind: "back", label: "Back" } as DetailMenuItem];
+    if (!notification) {
+      this.closeUnavailableNotification(ctx);
+      return;
+    }
+    const menu = buildDetailMenu(notification);
 
     if (event.type === "double-click") {
       ctx.stack.pop();
@@ -158,10 +171,23 @@ export class SingleNotificationLayer implements Layer {
       ctx.stack.pop();
     } else if (item.kind === "action") {
       invokeNotificationAction(this.notificationKey, item.action.index);
+      if (!readActiveNotifications(MAX_NOTIFICATIONS).some((item) => item.key === this.notificationKey)) {
+        this.closeUnavailableNotification(ctx);
+      }
     } else if (item.kind === "dismiss") {
       dismissNotification(this.notificationKey);
-      ctx.stack.pop();
+      this.closeUnavailableNotification(ctx);
     }
+  }
+
+  private closeUnavailableNotification(ctx: LayerContext, paintBelow?: PaintBelow): GrayImage {
+    if (this.options.origin === "new-notification-trigger") {
+      this.options.closeNewNotificationTrigger?.(ctx);
+      return new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+    }
+
+    ctx.stack.pop();
+    return paintBelow ? paintBelow() : new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
   }
 }
 
