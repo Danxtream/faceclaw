@@ -54,6 +54,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private boolean rightConnected;
     private boolean leftConnected;
+    private boolean ringConnected;
+    private boolean ringNotificationsReady;
     private boolean sessionReady;
     private boolean fixedLayoutCreated;
     private boolean warmedUp;
@@ -61,6 +63,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private boolean startupProbePending;
 
     private long reconnectAfterMs;
+    private long ringReconnectAfterMs;
     private long lastAckAtMs;
     private long lastIncomingAtMs;
     private long lastHeartbeatSentAtMs;
@@ -155,6 +158,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         bleManager.disconnect(rightAddress);
         bleManager.disconnect(leftAddress);
+        if (hasRingAddress()) {
+            bleManager.disconnect(ringAddress);
+        }
         bleManager.close();
         setStateDisplay("disconnected", "Disconnected.");
     }
@@ -354,6 +360,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     continue;
                 }
 
+                if (shouldAttemptRingConnect()) {
+                    tryConnectRing("retry");
+                    continue;
+                }
+
                 long sleepMs = driveSession();
                 if (sleepMs > 0) {
                     interruptibleSleep.sleep(sleepMs);
@@ -371,6 +382,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return;
         }
         String uuid = characteristicUuid.toLowerCase(Locale.US);
+        if (isDirectRingNotification(address, uuid)) {
+            handleDirectRingNotification(uuid, data);
+            return;
+        }
         if (BleProtocol.RENDER_NOTIFY_UUID.equals(uuid)) {
             handleRenderNotification(address, data);
             return;
@@ -391,7 +406,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 event = G2Event.decode(frame);
                 if (event != null) {
                     lastConnectionOrInputAtMs = lastIncomingAtMs;
-                    if (event.kind == "sys-event") {
+                    if ("sys-event".equals(event.kind)) {
                         if (event.eventType == BleProtocol.EVENT_FOREGROUND_EXIT || event.eventType == BleProtocol.EVENT_ABNORMAL_EXIT || event.eventType == BleProtocol.EVENT_SYSTEM_EXIT) {
                             if (shutdownRequested) {
                                 lastShutdownExitAtMs = SystemClock.elapsedRealtime();
@@ -410,6 +425,24 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (event != null) {
             emitRingEvent(event.kind, event.containerName, event.eventType, event.eventSource, event.systemExitReasonCode);
         }
+    }
+
+    private void handleDirectRingNotification(String characteristicUuid, byte[] data) {
+        FaceclawRingEventDecoder.DirectRingEvent decoded = FaceclawRingEventDecoder.decode(data);
+        if (decoded == null) {
+            Log.d(TAG, "direct ring notify ignored: characteristicUuid=" + characteristicUuid + " raw=" + hex(data));
+            return;
+        }
+
+        G2Event event = decoded.event;
+        long arrivalMs = SystemClock.elapsedRealtime();
+        synchronized (lock) {
+            lastIncomingAtMs = arrivalMs;
+            lastConnectionOrInputAtMs = arrivalMs;
+        }
+        logLine("direct ring " + decoded.label + " " + decoded.detail + " raw=" + hex(data));
+        emitRingEvent(event.kind, event.containerName, event.eventType, event.eventSource, event.systemExitReasonCode);
+        interruptibleSleep.interrupt();
     }
 
     private void handleRenderNotification(String address, byte[] data) {
@@ -435,10 +468,21 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (address == null) {
                 return;
             }
+            if (isConfiguredRingAddress(address)) {
+                ringConnected = connected;
+                ringNotificationsReady = false;
+                if (!connected) {
+                    ringReconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RING_RECONNECT_DELAY_MS;
+                }
+                logLine(connected ? "direct ring BLE connected" : "direct ring BLE disconnected");
+                return;
+            }
             if (address.equalsIgnoreCase(rightAddress)) {
                 rightConnected = connected;
             } else if (address.equalsIgnoreCase(leftAddress)) {
                 leftConnected = connected;
+            } else {
+                return;
             }
             if (!connected) {
                 sessionReady = false;
@@ -492,6 +536,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             setStateDisplay("connected", "Connected.");
             logLine("session ready");
+            tryConnectRing("initial");
         } catch (Throwable t) {
             logLine("connect failed: " + safeMessage(t));
             handleTransportFailure("connect failed");
@@ -538,6 +583,78 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             } else if (address.equalsIgnoreCase(leftAddress)) {
                 leftConnected = true;
             }
+        }
+    }
+
+    private boolean shouldAttemptRingConnect() {
+        if (!hasRingAddress()) {
+            return false;
+        }
+        long now = SystemClock.elapsedRealtime();
+        synchronized (lock) {
+            return running
+                && sessionReady
+                && !ringNotificationsReady
+                && now >= ringReconnectAfterMs
+                && pendingMessages.isEmpty()
+                && inFlightMessages.isEmpty();
+        }
+    }
+
+    private void tryConnectRing(String reason) {
+        if (!hasRingAddress()) {
+            return;
+        }
+        try {
+            connectRing();
+        } catch (Throwable t) {
+            synchronized (lock) {
+                ringConnected = false;
+                ringNotificationsReady = false;
+                ringReconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RING_RECONNECT_DELAY_MS;
+            }
+            logLine("direct ring connect failed (" + reason + "): " + safeMessage(t));
+        }
+    }
+
+    private void connectRing() {
+        logLine("connecting direct ring " + ringAddress);
+        if (!bleManager.connect(ringAddress, ConnectionOptions.CONNECT_TIMEOUT_MS)) {
+            throw new IllegalStateException("connect failed: " + ringAddress);
+        }
+
+        bleManager.requestConnectionPriority(ringAddress, BluetoothGatt.CONNECTION_PRIORITY_HIGH);
+        bleManager.requestMtu(ringAddress, ConnectionOptions.RING_DESIRED_MTU, ConnectionOptions.CONNECT_TIMEOUT_MS);
+
+        if (!bleManager.discoverServices(ringAddress, ConnectionOptions.SERVICES_TIMEOUT_MS)) {
+            throw new IllegalStateException("discoverServices failed: " + ringAddress);
+        }
+
+        boolean phoneNotify = enableRingNotification(BleProtocol.R1_PHONE_NOTIFY_CHAR_UUID);
+        boolean dataNotify = enableRingNotification(BleProtocol.R1_NOTIFY_CHAR_UUID);
+        if (!phoneNotify && !dataNotify) {
+            throw new IllegalStateException("no R1 notify characteristic subscribed");
+        }
+
+        synchronized (lock) {
+            ringConnected = true;
+            ringNotificationsReady = true;
+            ringReconnectAfterMs = 0;
+        }
+        logLine("direct ring ready phoneNotify=" + phoneNotify + " dataNotify=" + dataNotify);
+    }
+
+    private boolean enableRingNotification(String characteristicUuid) {
+        try {
+            return bleManager.enableNotifications(
+                ringAddress,
+                characteristicUuid,
+                true,
+                ConnectionOptions.DESCRIPTOR_TIMEOUT_MS
+            );
+        } catch (Throwable t) {
+            Log.d(TAG, "direct ring notify subscribe skipped: " + characteristicUuid + " " + safeMessage(t));
+            return false;
         }
     }
 
@@ -1323,7 +1440,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         warmedUp = false;
         rightConnected = false;
         leftConnected = false;
+        ringConnected = false;
+        ringNotificationsReady = false;
         reconnectAfterMs = 0;
+        ringReconnectAfterMs = 0;
         lastAckAtMs = 0;
         lastIncomingAtMs = 0;
         lastHeartbeatSentAtMs = 0;
@@ -1486,6 +1606,36 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             throw new IllegalArgumentException(name + " is required");
         }
         return address.trim();
+    }
+
+    private boolean hasRingAddress() {
+        return ringAddress != null && !ringAddress.trim().isEmpty();
+    }
+
+    private boolean isConfiguredRingAddress(String address) {
+        return hasRingAddress() && address != null && address.equalsIgnoreCase(ringAddress);
+    }
+
+    private boolean isDirectRingNotification(String address, String characteristicUuid) {
+        if (!isConfiguredRingAddress(address) || characteristicUuid == null) {
+            return false;
+        }
+        return BleProtocol.R1_PHONE_NOTIFY_CHAR_UUID.equals(characteristicUuid)
+            || BleProtocol.R1_NOTIFY_CHAR_UUID.equals(characteristicUuid);
+    }
+
+    private static String hex(byte[] data) {
+        if (data == null || data.length == 0) {
+            return "";
+        }
+        char[] out = new char[data.length * 2];
+        char[] digits = "0123456789abcdef".toCharArray();
+        for (int i = 0; i < data.length; i++) {
+            int value = data[i] & 0xff;
+            out[i * 2] = digits[value >>> 4];
+            out[i * 2 + 1] = digits[value & 0x0f];
+        }
+        return new String(out);
     }
 
     private static byte[][] emptyTileSet() {

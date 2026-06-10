@@ -66,6 +66,10 @@ function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputEvent {
         type: "double-click",
         source: eventSourceToString(event.eventSource),
       };
+    } else if (event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
+      return { type: "scroll-down" };
+    } else if (event.eventType === OsEventTypeList.SCROLL_TOP_EVENT) {
+      return { type: "scroll-up" };
     }
   } else if (event.kind === "text-click") {
     if (event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {

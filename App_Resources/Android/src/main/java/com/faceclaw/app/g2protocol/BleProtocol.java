@@ -18,6 +18,8 @@ public class BleProtocol {
     public static final String WRITE_CHAR_UUID = "00002760-08c2-11e1-9073-0e8ac72e5401";
     public static final String NOTIFY_CHAR_UUID = "00002760-08c2-11e1-9073-0e8ac72e5402";
     public static final String RENDER_NOTIFY_UUID = "00002760-08c2-11e1-9073-0e8ac72e6402";
+    public static final String R1_PHONE_NOTIFY_CHAR_UUID = "bae80011-4f05-4503-8e65-3af1f7329d1f";
+    public static final String R1_NOTIFY_CHAR_UUID = "bae80013-4f05-4503-8e65-3af1f7329d1f";
 
     public static final int PRELUDE_ACK_SID = 0x01;
     public static final int PRELUDE_ACK_MAGIC = 156;
@@ -37,6 +39,12 @@ public class BleProtocol {
     public static final int EVENT_FOREGROUND_EXIT = 5;
     public static final int EVENT_ABNORMAL_EXIT = 6;
     public static final int EVENT_SYSTEM_EXIT = 7;
+    public static final int EVENT_RING_LONG_PRESS = 9;
+    public static final int EVENT_RING_LONG_PRESS_RELEASE = 10;
+
+    public static final int EVENT_SOURCE_GLASSES_R = 1;
+    public static final int EVENT_SOURCE_RING = 2;
+    public static final int EVENT_SOURCE_GLASSES_L = 3;
 
     public static final UUID CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
     

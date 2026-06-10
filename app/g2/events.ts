@@ -22,6 +22,8 @@ export const OsEventTypeList = {
   ABNORMAL_EXIT_EVENT: 6,
   SYSTEM_EXIT_EVENT: 7,
   IMU_DATA_REPORT: 8,
+  RING_LONG_PRESS_EVENT: 9,
+  RING_LONG_PRESS_RELEASE_EVENT: 10,
 } as const;
 
 export const OsEventTypeName: Record<number, string> = {
@@ -34,4 +36,6 @@ export const OsEventTypeName: Record<number, string> = {
   6: "ABNORMAL_EXIT_EVENT",
   7: "SYSTEM_EXIT_EVENT",
   8: "IMU_DATA_REPORT",
+  9: "RING_LONG_PRESS_EVENT",
+  10: "RING_LONG_PRESS_RELEASE_EVENT",
 };
