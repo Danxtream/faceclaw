@@ -128,6 +128,9 @@ public class BleProtocol {
         //inner.add(encodeVarintField(3, sessionId));
         inner.add(encodeVarintField(3, tile.containerId));
         inner.add(encodeVarintField(4, totalSize));
+        // CompressMode stays 0: the CFW's zlib path is detected from the buffer's
+        // zlib header at BMP-load time, and frag_write must copy our deflated bytes
+        // VERBATIM (CompressMode!=0 would route them through the 1bpp expander).
         inner.add(encodeVarintField(5, 0)); //compression
         inner.add(encodeVarintField(6, fragment.index));
         inner.add(encodeVarintField(7, fragment.size));

@@ -19,6 +19,11 @@ public class ConnectionOptions {
     public static final int BATTERY_REFRESH_INTERVAL_MS = 5 * 60_000;
     public static final int BATTERY_INPUT_QUIET_MS = 5_000;
     public static final int IMAGE_FRAGMENT_SIZE = 3800;
+    // Stream image tiles as zlib(DEFLATE)-compressed BMPs. REQUIRES the custom
+    // firmware (load_image_z inflates any image buffer that starts with a zlib
+    // stream; a raw BMP is loaded unchanged). Turn OFF when talking to stock
+    // firmware, which would reject the compressed bytes as an invalid BMP.
+    public static final boolean COMPRESS_IMAGES_ZLIB = true;
     public static final int IMAGE_RETRY_DELAY_MS = 2_000;
     public static final int MAX_CONSECUTIVE_ACK_TIMEOUTS = 8;
     public static final int EVEN_APP_WRITE_FAILURE_WINDOW_MS = 15_000;

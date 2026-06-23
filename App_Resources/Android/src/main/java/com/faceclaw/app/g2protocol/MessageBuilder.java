@@ -62,7 +62,7 @@ public class MessageBuilder {
             BleProtocol.SID_EVENHUB,
             BleProtocol.FLAG_REQUEST,
             magic,
-            BleProtocol.buildImageRawData(plan.tile, plan.sessionId, plan.bmp.length, fragment, magic),
+            BleProtocol.buildImageRawData(plan.tile, plan.sessionId, plan.payload.length, fragment, magic),
             ACK_TIMEOUT_MS,
             plan.tileIndex,
             leftArm

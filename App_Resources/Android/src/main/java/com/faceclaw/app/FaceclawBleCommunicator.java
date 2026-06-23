@@ -1151,13 +1151,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return;
         }
 
-        boolean synchronizedCommits = changedTiles.size() > 1;
+        //boolean synchronizedCommits = changedTiles.size() > 1;
+        boolean synchronizedCommits = false;
         if (forceTiledCommit) {
             synchronizedCommits = false;
         }
         boolean reserveLastByte = false;
         for (BleImageOptimizer.TileImagePlan plan : changedTiles) {
-            plan.fragments = BleImageOptimizer.planImageFragments(plan.bmp, ConnectionOptions.IMAGE_FRAGMENT_SIZE, reserveLastByte);
+            plan.fragments = BleImageOptimizer.planImageFragments(plan.payload, ConnectionOptions.IMAGE_FRAGMENT_SIZE, reserveLastByte);
         }
 
         int updateId = nextImageUpdateId++;

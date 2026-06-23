@@ -1,9 +1,11 @@
 package com.faceclaw.app;
 
+import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.zip.Deflater;
 import android.util.Log;
 
 public final class BleImageOptimizer {
@@ -71,7 +73,8 @@ public final class BleImageOptimizer {
     public static final class TileImagePlan {
         final int tileIndex;
         final BleProtocol.ImageTileOptions tile;
-        final byte[] bmp;
+        final byte[] bmp;      // raw 4bpp BMP, kept for the displayed-tile dedup cache
+        final byte[] payload;  // bytes actually streamed: zlib BMP when it shrinks, else == bmp
         final int sessionId;
         List<BleProtocol.ImageFragment> fragments = Collections.emptyList();
 
@@ -79,8 +82,42 @@ public final class BleImageOptimizer {
             this.tileIndex = tileIndex;
             this.tile = tile;
             this.bmp = BmpUtil.copyTileBmp(bmp);
+            this.payload = maybeCompress(this.bmp);
             this.sessionId = sessionId;
         }
+    }
+
+    /**
+     * zlib-deflate a tile BMP for transmission when CFW image decompression is
+     * enabled and it actually shrinks the payload. The CFW's load_image_z
+     * inflates any image buffer whose first byte is a zlib stream (CM nibble 8);
+     * a raw BMP (starts 0x42) is loaded unchanged, so the raw fallback is always
+     * safe and mixing raw/compressed tiles is fine. java.util.zip.Deflater's
+     * default is the zlib wrapper (2-byte header + adler32) at windowBits 15,
+     * matching the firmware inflate.
+     */
+    static byte[] maybeCompress(byte[] bmp) {
+        if (!ConnectionOptions.COMPRESS_IMAGES_ZLIB || bmp == null || bmp.length == 0) {
+            return bmp;
+        }
+        byte[] z = deflate(bmp);
+        return (z != null && z.length < bmp.length) ? z : bmp;
+    }
+
+    private static byte[] deflate(byte[] data) {
+        Deflater deflater = new Deflater(Deflater.BEST_COMPRESSION);
+        deflater.setInput(data);
+        deflater.finish();
+        ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(64, data.length / 3));
+        byte[] buf = new byte[4096];
+        try {
+            while (!deflater.finished()) {
+                out.write(buf, 0, deflater.deflate(buf));
+            }
+        } finally {
+            deflater.end();
+        }
+        return out.toByteArray();
     }
 
     public static final class ImageUpdateStats {
