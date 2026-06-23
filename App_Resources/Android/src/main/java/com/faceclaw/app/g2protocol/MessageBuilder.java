@@ -84,7 +84,7 @@ public class MessageBuilder {
         );
     }
 
-    public OutboundMessage createLayout(BleProtocol.ImageTileOptions[] tiles) {
+    public OutboundMessage createLayout(BleProtocol.ImageTileOptions... tiles) {
         int magic = magicPool.allocate();
         return new OutboundMessage(
             "create-layout",

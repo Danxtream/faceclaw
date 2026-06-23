@@ -1,5 +1,5 @@
 import { dashboardState, TOP_LEFT_MENU_LAYOUT } from "../dashboard";
-import { dashboardSlotIds, enumSettingMenuItem, estimateCompressionRatiosSetting, showSignalStrengthSetting, showAndroidNotificationsSetting, showBatteryIndicatorsSetting, showFaceclawLogoSetting, systemCardNameSetting, textSettingMenuItem, toggleSettingMenuItem, voiceControlEnabledSetting, wakeModeSetting, dashboardSlotSettings, nightscoutSiteUrlSetting, nightscoutApiTokenSetting, screenTimeoutSetting } from "../dashboard-settings";
+import { dashboardSlotIds, enumSettingMenuItem, showSignalStrengthSetting, showAndroidNotificationsSetting, showBatteryIndicatorsSetting, showFaceclawLogoSetting, systemCardNameSetting, textSettingMenuItem, toggleSettingMenuItem, voiceControlEnabledSetting, dashboardSlotSettings, nightscoutSiteUrlSetting, nightscoutApiTokenSetting, screenTimeoutSetting } from "../dashboard-settings";
 import { MenuLayer } from "../menu";
 
 export function createSettingsMenuLayer(): MenuLayer {
@@ -44,8 +44,6 @@ function createDisplaySettingsMenuLayer(): MenuLayer {
           dashboardState.lastInputAtMs = Date.now();
         },
       }),
-      enumSettingMenuItem(wakeModeSetting),
-      toggleSettingMenuItem(estimateCompressionRatiosSetting),
     ],
     TOP_LEFT_MENU_LAYOUT,
   );

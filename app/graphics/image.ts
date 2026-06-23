@@ -3,17 +3,7 @@ import { wrapText } from "./textwrap";
 
 export const G2_LENS_WIDTH = 576;
 export const G2_LENS_HEIGHT = 288;
-export const G2_TILE_WIDTH = 288;
-export const G2_TILE_HEIGHT = 144;
 const DEFAULT_CORNER_RADIUS = 8;
-
-export type ImageTile = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  bmp: Uint8Array;
-};
 
 export function imageFromAsciiArt(lines: readonly string[], value = 255): GrayImage {
   const width = Math.max(0, ...lines.map((line) => line.length));
@@ -255,22 +245,14 @@ export class GrayImage {
     return `fnv:${(hash >>> 0).toString(16)}`;
   }
 
-  toEvenHubTiles(): ImageTile[] {
-    const tiles: ImageTile[] = [];
-    for (let ty = 0; ty < this.height; ty += G2_TILE_HEIGHT) {
-      for (let tx = 0; tx < this.width; tx += G2_TILE_WIDTH) {
-        const width = Math.min(G2_TILE_WIDTH, this.width - tx);
-        const height = Math.min(G2_TILE_HEIGHT, this.height - ty);
-        tiles.push({
-          x: tx,
-          y: ty,
-          width,
-          height,
-          bmp: buildEvenHubBmp(width, height, (x, y) => grayToEvenHubNibble(this.getPixel(tx + x, ty + y))),
-        });
-      }
-    }
-    return tiles;
+  /**
+   * Snapshot of the full image as a single 8-bit-per-pixel grayscale buffer,
+   * row-major and top-to-bottom. The Java side turns this into whatever wire
+   * format the firmware currently expects (today: a 4bpp BMP), so all framing
+   * concerns stay on one side of the bridge.
+   */
+  to8bppBuffer(): Uint8Array {
+    return Uint8Array.from(this.pixels);
   }
 
   private drawGlyph(font: BdfFont, glyph: Glyph, x: number, y: number, value: number): void {
@@ -288,63 +270,6 @@ export class GrayImage {
       }
     }
   }
-}
-
-function buildEvenHubBmp(
-  width: number,
-  height: number,
-  pixel: (x: number, y: number) => number,
-): Uint8Array {
-  const bytesPerPixelRow = (width + 1) >> 1;
-  const rowStride = (bytesPerPixelRow + 3) & ~3;
-  const pixelDataSize = rowStride * height;
-
-  const fileHeaderSize = 14;
-  const dibHeaderSize = 40;
-  const paletteSize = 16 * 4;
-  const pixelOffset = fileHeaderSize + dibHeaderSize + paletteSize;
-  const fileSize = pixelOffset + pixelDataSize;
-
-  const buf = new Uint8Array(fileSize);
-  const view = new DataView(buf.buffer);
-  buf[0] = 0x42;
-  buf[1] = 0x4d;
-  view.setUint32(2, fileSize, true);
-  view.setUint32(10, pixelOffset, true);
-  view.setUint32(14, dibHeaderSize, true);
-  view.setInt32(18, width, true);
-  view.setInt32(22, height, true);
-  view.setUint16(26, 1, true);
-  view.setUint16(28, 4, true);
-  view.setUint32(30, 0, true);
-  view.setUint32(34, pixelDataSize, true);
-  view.setUint32(46, 16, true);
-
-  for (let i = 0; i < 16; i++) {
-    const v = i * 17;
-    const base = fileHeaderSize + dibHeaderSize + i * 4;
-    buf[base + 0] = v;
-    buf[base + 1] = v;
-    buf[base + 2] = v;
-    buf[base + 3] = 0;
-  }
-
-  for (let bmpRow = 0; bmpRow < height; bmpRow++) {
-    const srcY = height - 1 - bmpRow;
-    const rowOffset = pixelOffset + bmpRow * rowStride;
-    for (let x = 0; x < width; x += 2) {
-      const hi = pixel(x, srcY) & 0x0f;
-      const lo = (x + 1 < width ? pixel(x + 1, srcY) : 0) & 0x0f;
-      buf[rowOffset + (x >> 1)] = (hi << 4) | lo;
-    }
-  }
-
-  return buf;
-}
-
-function grayToEvenHubNibble(value: number): number {
-  const clamped = clampByte(value);
-  return clamped === 0 ? 0 : Math.min(15, (clamped + 15) >> 4);
 }
 
 function clampByte(value: number): number {

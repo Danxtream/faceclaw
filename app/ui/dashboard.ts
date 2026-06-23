@@ -5,7 +5,7 @@ import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
 import { EventSourceType, OsEventTypeList } from "../g2/events";
 import { getDashboardPlugin, type DashboardPluginCardBounds, type DashboardPluginState } from "./dashboard-plugins";
-import { isNightscoutSettingsConfigured, screenTimeoutSettingToMs, screenTimeoutSetting, wakeModeSetting, type DashboardSlotId, DashboardPluginId, bottomRightSlotSetting, bottomLeftSlotSetting, dashboardSlotIds } from "./dashboard-settings";
+import { isNightscoutSettingsConfigured, screenTimeoutSettingToMs, screenTimeoutSetting, type DashboardSlotId, DashboardPluginId, bottomRightSlotSetting, bottomLeftSlotSetting, dashboardSlotIds } from "./dashboard-settings";
 import { Layer, LayerActions, LayerStack, type DashboardInputEvent, type LayerContext } from "./layers";
 import { SingleNotificationLayer } from "./notifications";
 import { TelepromptLayer } from "./apps/teleprompt";
@@ -23,7 +23,6 @@ type DashboardState = {
   logLines: string[];
   screenOn: boolean;
   lastInputAtMs: number;
-  tiledWakePaintPending: boolean;
   telepromptDocumentText: string | null;
   battery: DashboardBatteryLevels;
 };
@@ -32,7 +31,6 @@ export let dashboardState: DashboardState = {
   logLines: [] as string[],
   screenOn: true,
   lastInputAtMs: Date.now(),
-  tiledWakePaintPending: false,
   telepromptDocumentText: null as string | null,
   battery: {
     headset: null,
@@ -104,7 +102,6 @@ export async function receiveInput(event: RawInputEvent): Promise<void> {
   if (!dashboardState.screenOn) {
     if (inputEvent.type === "double-click") {
       dashboardState.screenOn = true;
-      dashboardState.tiledWakePaintPending = wakeModeSetting.get() === "tiled";
       if (dashboardLayers.isAtBase()) {
         dashboardLayers.push(createRootMenuLayer());
       }
@@ -145,12 +142,6 @@ export function drawDashboard(): GrayImage {
   return dashboardLayers.paint();
 }
 
-export function consumeDashboardTiledWakePaint(): boolean {
-  const value = dashboardState.tiledWakePaintPending;
-  dashboardState.tiledWakePaintPending = false;
-  return value;
-}
-
 export function applyDashboardScreenTimeout(nowMs = Date.now()): boolean {
   const timeoutMs = screenTimeoutSettingToMs(screenTimeoutSetting.get());
   if (timeoutMs === null || !dashboardState.screenOn) return false;
@@ -179,7 +170,6 @@ export function openAndroidNotificationFromSleep(notificationKey: string, nowMs 
 
   dashboardState.lastInputAtMs = nowMs;
   dashboardState.screenOn = true;
-  dashboardState.tiledWakePaintPending = wakeModeSetting.get() === "tiled";
   dashboardLayers.clearToBase();
   dashboardLayers.push(createRootMenuLayer());
   dashboardLayers.push(new SingleNotificationLayer(notificationKey, {
@@ -191,7 +181,6 @@ export function openAndroidNotificationFromSleep(notificationKey: string, nowMs 
 
 function closeNewNotificationTrigger(ctx: LayerContext): void {
   dashboardState.screenOn = false;
-  dashboardState.tiledWakePaintPending = false;
   ctx.stack.clearToBase();
 }
 
@@ -200,7 +189,6 @@ export function resetDashboardSleepTimerAndWake(nowMs = Date.now()): boolean {
   if (dashboardState.screenOn) return false;
 
   dashboardState.screenOn = true;
-  dashboardState.tiledWakePaintPending = wakeModeSetting.get() === "tiled";
   dashboardLayers.clearToBase();
   dashboardLayers.push(createRootMenuLayer());
   return true;

@@ -28,12 +28,11 @@ import java.util.Map;
 public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final String TAG = "FaceclawComm";
 
-    private static final BleProtocol.ImageTileOptions[] DASHBOARD_TILES = new BleProtocol.ImageTileOptions[] {
-        new BleProtocol.ImageTileOptions("img00", 10, 0, 0, 288, 144),
-        new BleProtocol.ImageTileOptions("img10", 11, 288, 0, 288, 144),
-        new BleProtocol.ImageTileOptions("img01", 12, 0, 144, 288, 144),
-        new BleProtocol.ImageTileOptions("img11", 13, 288, 144, 288, 144)
-    };
+    // A single full-screen image container. Earlier firmware capped image tiles at
+    // 288x144, which forced a 2x2 tile layout; the custom firmware lifts that limit,
+    // so the dashboard is now one 576x288 container.
+    private static final BleProtocol.ImageTileOptions DASHBOARD_TILE =
+        new BleProtocol.ImageTileOptions("img00", 10, 0, 0, 576, 288);
 
     private final Context appContext;
     private final FaceclawBleManager bleManager;
@@ -90,13 +89,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private volatile FaceclawAudioPacketListener audioPacketListener;
 
     private String displayedFingerprint = "";
-    private byte[][] displayedTileBmps = emptyTileSet();
+    private byte[] displayedBmp = new byte[0];
     private final Map<Integer, BleImageOptimizer.ImageUpdateStats> imageUpdateStats = new HashMap<>();
 
     private final Object desiredTilesLock = new Object();
     private String desiredFingerprint = "";
-    private byte[][] desiredTileBmps = emptyTileSet();
-    private boolean desiredForceTiledCommit;
+    private byte[] desiredBmp = new byte[0];
     private int desiredPaintMs;
 
     private final ArrayDeque<OutboundMessage> pendingMessages = new ArrayDeque<>();
@@ -215,24 +213,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
 
-    public void submitDashboardImage4(
-            byte[] tile0Bmp,
-            byte[] tile1Bmp,
-            byte[] tile2Bmp,
-            byte[] tile3Bmp,
+    public void submitDashboardImage(
+            byte[] image8bpp,
+            int width,
+            int height,
             String fingerprint,
-            boolean forceTiledCommit,
             int paintMs
     ) {
         Log.i(TAG, "Received an updated frame ");
+        // Convert the full-screen 8bpp grayscale buffer into the BMP wire format here so
+        // that all framing concerns live on the Java side.
+        byte[] bmp = image8bpp == null ? new byte[0] : BmpUtil.build4bppBmp(image8bpp, width, height);
         synchronized (desiredTilesLock) {
-            desiredTileBmps = emptyTileSet();
-            desiredTileBmps[0] = tile0Bmp == null ? new byte[0] : Arrays.copyOf(tile0Bmp, tile0Bmp.length);
-            desiredTileBmps[1] = tile1Bmp == null ? new byte[0] : Arrays.copyOf(tile1Bmp, tile1Bmp.length);
-            desiredTileBmps[2] = tile2Bmp == null ? new byte[0] : Arrays.copyOf(tile2Bmp, tile2Bmp.length);
-            desiredTileBmps[3] = tile3Bmp == null ? new byte[0] : Arrays.copyOf(tile3Bmp, tile3Bmp.length);
+            desiredBmp = bmp;
             desiredFingerprint = fingerprint == null ? "" : fingerprint;
-            desiredForceTiledCommit = forceTiledCommit;
             desiredPaintMs = paintMs;
         }
         interruptibleSleep.interrupt();
@@ -265,7 +259,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 fixedLayoutCreated = false;
                 warmedUp = false;
                 displayedFingerprint = "";
-                displayedTileBmps = emptyTileSet();
+                displayedBmp = new byte[0];
             };
             message.onTimeout = () -> {
                 handleTransportFailure("shutdown ack timeout");
@@ -414,7 +408,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                             fixedLayoutCreated = false;
                             warmedUp = false;
                             displayedFingerprint = "";
-                            displayedTileBmps = emptyTileSet();
+                            displayedBmp = new byte[0];
                             clearAllMessagesLocked("firmware exit event");
                         }
                     }
@@ -493,7 +487,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 audioPacketListener = null;
                 clearAllMessagesLocked("connection lost");
                 displayedFingerprint = "";
-                displayedTileBmps = emptyTileSet();
+                displayedBmp = new byte[0];
                 reconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RECONNECT_DELAY_MS;
             }
         }
@@ -521,7 +515,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 warmedUp = false;
                 clearAllMessagesLocked("session ready");
                 displayedFingerprint = "";
-                displayedTileBmps = emptyTileSet();
+                displayedBmp = new byte[0];
                 lastAckAtMs = SystemClock.elapsedRealtime();
                 lastIncomingAtMs = lastAckAtMs;
                 lastConnectionOrInputAtMs = lastAckAtMs;
@@ -1044,13 +1038,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void enqueueCreateLayoutLocked() {
-        OutboundMessage message = messageBuilder.createLayout(DASHBOARD_TILES);
+        OutboundMessage message = messageBuilder.createLayout(DASHBOARD_TILE);
         message.onAck = () -> {
             startupProbePending = false;
             clearMessagesOfKindLocked("startup-text-probe");
             fixedLayoutCreated = true;
             displayedFingerprint = "";
-            displayedTileBmps = emptyTileSet();
+            displayedBmp = new byte[0];
         };
         message.onTimeout = () -> {
             if (startupProbePending) {
@@ -1076,7 +1070,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             fixedLayoutCreated = true;
             warmedUp = false;
             displayedFingerprint = "";
-            displayedTileBmps = emptyTileSet();
+            displayedBmp = new byte[0];
             logLine("existing dashboard layout accepted text probe; image warmup still required");
         };
         message.onTimeout = () -> {
@@ -1094,13 +1088,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private void enqueueWarmupLocked() {
         byte[] bmp;
         synchronized (desiredTilesLock) {
-            bmp = desiredTileBmps[0];
+            bmp = desiredBmp;
         }
         if (bmp == null || bmp.length == 0) {
             bmp = new byte[] {0};
         }
         bmp = BmpUtil.buildBlankWarmupBmp(bmp);
-        BleProtocol.ImageTileOptions tile = DASHBOARD_TILES[0];
+        BleProtocol.ImageTileOptions tile = DASHBOARD_TILE;
         int sessionId = nextMapSessionId();
         List<BleProtocol.ImageFragment> fragments = BleImageOptimizer.planImageFragments(bmp, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
         for (BleProtocol.ImageFragment fragment : fragments) {
@@ -1116,7 +1110,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 warmedUp = false;
                 clearMessagesOfKindLocked("warmup");
                 displayedFingerprint = "";
-                displayedTileBmps = emptyTileSet();
+                displayedBmp = new byte[0];
             };
         }
         logLine("queue blank warmup");
@@ -1124,76 +1118,34 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void enqueueDesiredImageLocked() {
         String fingerprint = getDesiredFingerprint();
-        List<BleImageOptimizer.TileImagePlan> changedTiles = new ArrayList<>();
-        byte[][] tileBmps;
-        boolean forceTiledCommit;
+        byte[] bmp;
         int paintMs;
         synchronized (desiredTilesLock) {
-            tileBmps = desiredTileBmps;
-            forceTiledCommit = desiredForceTiledCommit;
-            desiredForceTiledCommit = false;
+            bmp = desiredBmp;
             paintMs = desiredPaintMs;
         }
-        for (int i = 0; i < DASHBOARD_TILES.length; i++) {
-            BleProtocol.ImageTileOptions tile = DASHBOARD_TILES[i];
-            byte[] bmp = tileBmps[i];
-            if (bmp == null) {
-                bmp = new byte[0];
-            }
-            byte[] displayedBmp = displayedTileBmps[i];
-            if (Arrays.equals(bmp, displayedBmp)) {
-                continue;
-            }
-            changedTiles.add(new BleImageOptimizer.TileImagePlan(i, tile, bmp, nextMapSessionId()));
+        if (bmp == null) {
+            bmp = new byte[0];
         }
-        if (changedTiles.isEmpty()) {
+        if (Arrays.equals(bmp, displayedBmp)) {
             displayedFingerprint = fingerprint;
             return;
         }
 
-        //boolean synchronizedCommits = changedTiles.size() > 1;
-        boolean synchronizedCommits = false;
-        if (forceTiledCommit) {
-            synchronizedCommits = false;
-        }
-        boolean reserveLastByte = false;
-        for (BleImageOptimizer.TileImagePlan plan : changedTiles) {
-            plan.fragments = BleImageOptimizer.planImageFragments(plan.payload, ConnectionOptions.IMAGE_FRAGMENT_SIZE, reserveLastByte);
-        }
+        BleImageOptimizer.TileImagePlan plan =
+            new BleImageOptimizer.TileImagePlan(0, DASHBOARD_TILE, bmp, nextMapSessionId());
+        plan.fragments = BleImageOptimizer.planImageFragments(plan.payload, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
 
         int updateId = nextImageUpdateId++;
-        imageUpdateStats.put(updateId, new BleImageOptimizer.ImageUpdateStats(paintMs, changedTiles.size()));
-        int messageCount = 0;
-        for (BleImageOptimizer.TileImagePlan plan : changedTiles) {
-            messageCount += plan.fragments.size();
-        }
-        int messageNumber = 1;
-        if (!synchronizedCommits) {
-            for (BleImageOptimizer.TileImagePlan plan : changedTiles) {
-                for (int i = 0; i < plan.fragments.size(); i++) {
-                    BleProtocol.ImageFragment fragment = plan.fragments.get(i);
-                    boolean requestAck = true;
-                    boolean isLast = i == plan.fragments.size() - 1;
-                    enqueueImageFragmentLocked(plan, fragment, fingerprint, updateId, messageNumber++, messageCount, requestAck, isLast);
-                }
-            }
-        } else {
-            for (BleImageOptimizer.TileImagePlan plan : changedTiles) {
-                for (int i = 0; i < plan.fragments.size() - 1; i++) {
-                    boolean requestAck = true;
-                    boolean isLast = false;
-                    enqueueImageFragmentLocked(plan, plan.fragments.get(i), fingerprint, updateId, messageNumber++, messageCount, requestAck, isLast);
-                }
-            }
-            for (BleImageOptimizer.TileImagePlan plan : changedTiles) {
-                boolean isLast = true;
-                enqueueImageFragmentLocked(plan, plan.fragments.get(plan.fragments.size() - 1), fingerprint, updateId, messageNumber++, messageCount, true, isLast);
-            }
+        int messageCount = plan.fragments.size();
+        imageUpdateStats.put(updateId, new BleImageOptimizer.ImageUpdateStats(paintMs, 1));
+        for (int i = 0; i < plan.fragments.size(); i++) {
+            BleProtocol.ImageFragment fragment = plan.fragments.get(i);
+            enqueueImageFragmentLocked(plan, fragment, fingerprint, updateId, i + 1, messageCount, true);
         }
 
         logLine("queue image update#" + updateId + " fingerprint=" + fingerprint
-                + " changedTiles=" + changedTiles.size() + " messages=" + messageCount
-                + " synchronizedCommits=" + synchronizedCommits);
+                + " messages=" + messageCount);
     }
 
     private void enqueueImageFragmentLocked(
@@ -1203,8 +1155,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         int updateId,
         int messageNumber,
         int messageCount,
-        boolean requestAck,
-        boolean isLast
+        boolean requestAck
     ) {
         OutboundMessage message = messageBuilder.imageFragment(fragment, plan, requestAck, connectionOptions.sendImagesToLeft);
         message.setImageUpdatePosition(updateId, messageNumber, messageCount);
@@ -1212,7 +1163,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             imageRetryAfterMs = 0;
             logImageUpdateAckLandmarkLocked(message);
             if (message.tileIndex >= 0 && !hasPendingOrInflightTileLocked(message.tileIndex)) {
-                displayedTileBmps[message.tileIndex] = BmpUtil.copyTileBmp(plan.bmp);
+                displayedBmp = BmpUtil.copyTileBmp(plan.bmp);
             }
             boolean imageStillInFlight = false;
             for (OutboundMessage inFlight : inFlightMessages) {
@@ -1238,7 +1189,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             imageUpdateStats.remove(message.imageUpdateId);
             clearMessagesOfKindLocked("image");
             displayedFingerprint = "";
-            displayedTileBmps = emptyTileSet();
+            displayedBmp = new byte[0];
             imageRetryAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.IMAGE_RETRY_DELAY_MS;
         };
         pendingMessages.addLast(message);
@@ -1423,7 +1374,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             shutdownRequested = false;
             imageRetryAfterMs = 0;
             displayedFingerprint = "";
-            displayedTileBmps = emptyTileSet();
+            displayedBmp = new byte[0];
             clearAllMessagesLocked("transport failure: " + reason);
             reconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RECONNECT_DELAY_MS;
             bleManager.disconnect(rightAddress);
@@ -1454,7 +1405,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         audioCaptureActive = false;
         audioPacketListener = null;
         displayedFingerprint = "";
-        displayedTileBmps = emptyTileSet();
+        displayedBmp = new byte[0];
     }
 
     private boolean hasPendingOrInflightTileLocked(int tileIndex) {
@@ -1637,10 +1588,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             out[i * 2 + 1] = digits[value & 0x0f];
         }
         return new String(out);
-    }
-
-    private static byte[][] emptyTileSet() {
-        return new byte[][] {new byte[0], new byte[0], new byte[0], new byte[0]};
     }
 
     private static String safeMessage(Throwable t) {

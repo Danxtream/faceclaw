@@ -22,7 +22,6 @@ export type SystemCardSettings = {
 };
 export type SystemCardSettingKey = keyof SystemCardSettings;
 export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "never";
-export type WakeModeSetting = "tiled" | "synchronized";
 
 type ConfigSettingOptions<TValue, TId extends string> = {
   id: TId;
@@ -221,26 +220,10 @@ export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>(
   formatValue: screenTimeoutLabel,
 });
 
-export const wakeModeSetting = new ConfigSettingEnum<WakeModeSetting>({
-  id: "wake-mode",
-  label: "Wake mode",
-  storageKey: "display.wakeMode",
-  defaultValue: "tiled",
-  values: ["tiled", "synchronized"],
-  formatValue: (value) => value === "tiled" ? "Tiled" : "Synchronized",
-});
-
 export const voiceControlEnabledSetting = new ConfigSettingBoolean({
   id: "voice-control-enabled",
   label: "Enable",
   storageKey: "voice.enabled",
-  defaultValue: false,
-});
-
-export const estimateCompressionRatiosSetting = new ConfigSettingBoolean({
-  id: "estimate-compression-ratios",
-  label: "Estimate compression ratios",
-  storageKey: "debug.estimateCompressionRatios",
   defaultValue: false,
 });
 

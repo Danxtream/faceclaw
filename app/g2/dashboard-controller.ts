@@ -10,11 +10,9 @@ import { onAndroidNotificationPosted } from "../native/notification-icons";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource, grayImageToPreviewSourceWithBitmapFactory } from "../native/gray-image-preview";
 import { voiceControlBridge } from "../native/voice-control";
-import { estimateTileCompression } from "../graphics/compression-estimator";
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, type ImageTile } from "../graphics/image";
+import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import {
   applyDashboardScreenTimeout,
-  consumeDashboardTiledWakePaint,
   drawDashboard,
   noteDashboardPhoneTextInput,
   openAndroidNotificationFromSleep,
@@ -25,7 +23,6 @@ import {
   setDashboardActions,
 } from "../ui/dashboard";
 import {
-  estimateCompressionRatiosSetting,
   nightscoutApiTokenSetting,
   nightscoutSiteUrlSetting,
   systemCardNameSetting,
@@ -558,20 +555,14 @@ class DashboardController {
     const paintStartedAtMs = Date.now();
     const image = drawDashboard();
     const paintMs = Date.now() - paintStartedAtMs;
-    const forceTiledCommit = consumeDashboardTiledWakePaint();
     const fingerprint = image.fingerprint();
-    const imageTiles = image.toEvenHubTiles();
-    if (estimateCompressionRatiosSetting.get()) {
-      this.logCompressionEstimate(imageTiles);
-    }
-    const tiles = imageTiles.map((tile) => tile.bmp);
     const updatePreviewAfterTransmit = this.phase === "connected";
     if (!updatePreviewAfterTransmit) {
       this.updateDisplayPreviewFromImage(image);
     }
     if (this.communicator) {
       console.log("submitDashboardImage");
-      await this.communicator.submitDashboardImage(tiles, fingerprint, forceTiledCommit, paintMs);
+      await this.communicator.submitDashboardImage(image.to8bppBuffer(), image.width, image.height, fingerprint, paintMs);
       await this.communicator.waitForNextFrameMetrics(FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
       if (updatePreviewAfterTransmit) {
         await this.updateConnectedDisplayPreviewFromImage(image);
@@ -751,17 +742,6 @@ class DashboardController {
     return `paint=${Math.round(metrics.paintMs)}ms, transmit=${Math.round(metrics.transmitMs)}ms, tiles=${Math.round(metrics.tileCount)}`;
   }
 
-  private logCompressionEstimate(tiles: readonly ImageTile[]): void {
-    try {
-      const report = estimateTileCompression(tiles);
-      for (const line of report.tileLines) {
-        this.appendLog(line);
-      }
-      this.appendLog(report.totalLine);
-    } catch (error) {
-      this.appendLog(`compression estimate failed: ${this.formatError(error)}`);
-    }
-  }
 
   private appendLog(line: string): void {
     const stamped = `[${formatTimestamp(new Date())}] ${line}`;

@@ -225,20 +225,14 @@ export class FaceclawCommunicatorBridge {
     await this.enqueueJavaCall(() => this.communicator.start());
   }
 
-  async submitDashboardImage(tileBmps: Uint8Array[], fingerprint: string, forceTiledCommit = false, paintMs = -1): Promise<void> {
-    if (tileBmps.length !== 4) {
-      throw new Error(`expected 4 dashboard tiles, got ${tileBmps.length}`);
-    }
-    const tileSnapshots = tileBmps.map((tile) => new Uint8Array(tile));
+  async submitDashboardImage(image8bpp: Uint8Array, width: number, height: number, fingerprint: string, paintMs = -1): Promise<void> {
+    const snapshot = new Uint8Array(image8bpp);
     await this.enqueueJavaCall(() => {
-      console.log("submitDashboardImage calling Java function");
-      this.communicator.submitDashboardImage4(
-        toJavaByteArray(tileSnapshots[0]!),
-        toJavaByteArray(tileSnapshots[1]!),
-        toJavaByteArray(tileSnapshots[2]!),
-        toJavaByteArray(tileSnapshots[3]!),
+      this.communicator.submitDashboardImage(
+        toJavaByteArray(snapshot),
+        Math.round(width),
+        Math.round(height),
         fingerprint,
-        forceTiledCommit,
         Math.round(nonNegativeNumber(paintMs)),
       );
     });
