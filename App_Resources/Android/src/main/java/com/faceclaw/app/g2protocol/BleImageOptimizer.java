@@ -101,7 +101,16 @@ public final class BleImageOptimizer {
             return bmp;
         }
         byte[] z = deflate(bmp);
-        return (z != null && z.length < bmp.length) ? z : bmp;
+        // CFW wire format: a compressed payload is [mode byte][zlib stream]. Mode 1
+        // = zlib of a 4bpp BMP (load_image_z inflates it and hands the BMP to the
+        // stock loader). A raw BMP (starts 'B') is still sent verbatim.
+        if (z == null || z.length + 1 >= bmp.length) {
+            return bmp;
+        }
+        byte[] out = new byte[z.length + 1];
+        out[0] = 1;
+        System.arraycopy(z, 0, out, 1, z.length);
+        return out;
     }
 
     private static byte[] deflate(byte[] data) {
