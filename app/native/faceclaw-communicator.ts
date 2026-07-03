@@ -225,6 +225,10 @@ export class FaceclawCommunicatorBridge {
     await this.enqueueJavaCall(() => this.communicator.start());
   }
 
+  async setG2ScreenOn(screenOn: boolean): Promise<void> {
+    await this.enqueueJavaCall(() => this.communicator.setG2ScreenOn(Boolean(screenOn)));
+  }
+
   async submitDashboardImage(image8bpp: Uint8Array, width: number, height: number, fingerprint: string, paintMs = -1): Promise<void> {
     const snapshot = new Uint8Array(image8bpp);
     await this.enqueueJavaCall(() => {

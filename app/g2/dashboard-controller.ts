@@ -13,6 +13,7 @@ import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import {
   applyDashboardScreenTimeout,
+  dashboardState,
   drawDashboard,
   noteDashboardPhoneTextInput,
   openAndroidNotificationFromSleep,
@@ -561,9 +562,15 @@ class DashboardController {
       this.updateDisplayPreviewFromImage(image);
     }
     if (this.communicator) {
+      if (dashboardState.screenOn) {
+        await this.communicator.setG2ScreenOn(true);
+      }
       console.log("submitDashboardImage");
       await this.communicator.submitDashboardImage(image.to8bppBuffer(), image.width, image.height, fingerprint, paintMs);
       await this.communicator.waitForNextFrameMetrics(FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
+      if (!dashboardState.screenOn) {
+        await this.communicator.setG2ScreenOn(false);
+      }
       if (updatePreviewAfterTransmit) {
         await this.updateConnectedDisplayPreviewFromImage(image);
       }

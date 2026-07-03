@@ -7,6 +7,7 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.util.Log;
 
@@ -34,7 +35,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final BleProtocol.ImageTileOptions DASHBOARD_TILE =
         new BleProtocol.ImageTileOptions("img00", 10, 0, 0, 576, 288);
 
+    private static final String G2_SCREEN_WAKE_LOCK_TAG = "Faceclaw:G2Screen";
+
     private final Context appContext;
+    private final PowerManager powerManager;
     private final FaceclawBleManager bleManager;
     private final InterruptibleSleep interruptibleSleep = new InterruptibleSleep();
     private final Object lock = new Object();
@@ -87,6 +91,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int headsetCharging = -1;
     private boolean audioCaptureActive;
     private volatile FaceclawAudioPacketListener audioPacketListener;
+    private PowerManager.WakeLock g2ScreenWakeLock;
 
     private String displayedFingerprint = "";
     private byte[] displayedBmp = new byte[0];
@@ -104,6 +109,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     public FaceclawBleCommunicator(Context context, String rightAddress, String leftAddress, String ringAddress) {
         this.appContext = context.getApplicationContext();
+        this.powerManager = (PowerManager) appContext.getSystemService(Context.POWER_SERVICE);
         this.bleManager = new FaceclawBleManager(appContext);
         this.bleManager.setListener(this);
         this.rightAddress = requireAddress("rightAddress", rightAddress);
@@ -160,11 +166,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             bleManager.disconnect(ringAddress);
         }
         bleManager.close();
+        releaseG2ScreenWakeLock();
         setStateDisplay("disconnected", "Disconnected.");
     }
 
     public void close() {
         disconnect();
+    }
+
+    public void setG2ScreenOn(boolean screenOn) {
+        mainHandler.post(() -> updateG2ScreenWakeLock(screenOn));
     }
 
     public boolean startG2AudioCapture(FaceclawAudioPacketListener listener) {
@@ -1524,6 +1535,28 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 Log.w(TAG, "listener onStateChange failed", t);
             }
         });
+    }
+
+    private void updateG2ScreenWakeLock(boolean screenOn) {
+        if (screenOn) {
+            if (g2ScreenWakeLock == null) {
+                g2ScreenWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, G2_SCREEN_WAKE_LOCK_TAG);
+                g2ScreenWakeLock.setReferenceCounted(false);
+            }
+            if (!g2ScreenWakeLock.isHeld()) {
+                g2ScreenWakeLock.acquire();
+                logLine("G2 screen wake lock acquired");
+            }
+            return;
+        }
+        releaseG2ScreenWakeLock();
+    }
+
+    private void releaseG2ScreenWakeLock() {
+        if (g2ScreenWakeLock != null && g2ScreenWakeLock.isHeld()) {
+            g2ScreenWakeLock.release();
+            logLine("G2 screen wake lock released");
+        }
     }
 
     private void logLine(String line) {
