@@ -661,7 +661,7 @@ class DashboardController {
     if (reason === "initial") {
       this.appendLog("initial dashboard image queued");
     }
-    console.log("renderDashbaord finished");
+    console.log("renderDashboard finished");
   }
 
   private async handleInputEvent(event: RawInputEvent): Promise<void> {
