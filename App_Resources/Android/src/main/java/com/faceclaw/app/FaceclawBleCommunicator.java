@@ -4,7 +4,6 @@ import android.annotation.SuppressLint;
 import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCharacteristic;
 import android.content.Context;
-import android.graphics.Bitmap;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -226,8 +225,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
 
+    /**
+     * image8bpp arrives as a ByteBuffer because NativeScript marshals a JS
+     * ArrayBuffer to one without the per-element bridge copy that a byte[]
+     * parameter would need (~150ms for a full frame).
+     */
     public void submitDashboardImage(
-            byte[] image8bpp,
+            java.nio.ByteBuffer image8bpp,
             int width,
             int height,
             String fingerprint,
@@ -238,7 +242,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // Convert the full-screen 8bpp grayscale buffer into the BMP wire format here so
         // that all framing concerns live on the Java side.
         FrameTimings.getInstance().spanStart(frameId, "bmp-convert");
-        byte[] bmp = image8bpp == null ? new byte[0] : BmpUtil.build4bppBmp(image8bpp, width, height);
+        byte[] gray;
+        if (image8bpp == null) {
+            gray = new byte[0];
+        } else {
+            gray = new byte[image8bpp.remaining()];
+            image8bpp.get(gray);
+        }
+        byte[] bmp = gray.length == 0 ? new byte[0] : BmpUtil.build4bppBmp(gray, width, height);
         FrameTimings.getInstance().spanEnd(frameId, "bmp-convert");
         int supersededFrameId;
         synchronized (desiredTilesLock) {
@@ -277,16 +288,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             logLine("queue " + message.label);
         }
         interruptibleSleep.interrupt();
-    }
-
-    public Bitmap createPreviewBitmap(int[] colors, int width, int height) {
-        if (colors == null) {
-            throw new IllegalArgumentException("colors are required");
-        }
-        if (width <= 0 || height <= 0 || colors.length < width * height) {
-            throw new IllegalArgumentException("invalid preview bitmap dimensions");
-        }
-        return Bitmap.createBitmap(colors, width, height, Bitmap.Config.ARGB_8888);
     }
 
     public boolean sendShutdown(int exitMode) {

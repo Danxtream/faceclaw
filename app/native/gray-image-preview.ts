@@ -2,51 +2,26 @@ import { ImageSource } from "@nativescript/core";
 
 import { type GrayImage } from "../graphics/image";
 
-const PREVIEW_BRIGHTEN_GAMMA = 0.7;
-const PREVIEW_COLOR_LUT = buildPreviewColorLookup();
+declare const com: any;
 
+const PREVIEW_BRIGHTEN_GAMMA = 0.7;
+
+/**
+ * Build the phone-UI preview for a frame. The pixel buffer is passed to Java
+ * as an ArrayBuffer (marshalled to a ByteBuffer) and expanded to ARGB there;
+ * doing the per-pixel work in JS or copying element-by-element across the
+ * bridge costs ~150ms per frame.
+ */
 export function grayImageToPreviewSource(image: GrayImage): ImageSource | null {
   if (!global.isAndroid) {
     return null;
   }
 
-  const colors = grayImageToPreviewColors(image);
-
-  const bitmap = android.graphics.Bitmap.createBitmap(
-    colors,
+  const bitmap = com.faceclaw.app.PreviewBitmapUtil.fromGray(
+    image.pixels.buffer,
     image.width,
     image.height,
-    android.graphics.Bitmap.Config.ARGB_8888,
+    PREVIEW_BRIGHTEN_GAMMA,
   );
   return new ImageSource(bitmap);
-}
-
-export async function grayImageToPreviewSourceWithBitmapFactory(
-  image: GrayImage,
-  createBitmap: (createColors: () => number[], width: number, height: number) => Promise<any>,
-): Promise<ImageSource | null> {
-  if (!global.isAndroid) {
-    return null;
-  }
-
-  const bitmap = await createBitmap(() => grayImageToPreviewColors(image), image.width, image.height);
-  return new ImageSource(bitmap);
-}
-
-function grayImageToPreviewColors(image: GrayImage): number[] {
-  const colors = Array.create("int", image.width * image.height) as number[];
-  for (let i = 0; i < image.pixels.length; i++) {
-    colors[i] = PREVIEW_COLOR_LUT[image.pixels[i] ?? 0]!;
-  }
-  return colors;
-}
-
-function buildPreviewColorLookup(): number[] {
-  const colors: number[] = [];
-  for (let gray = 0; gray <= 255; gray++) {
-    const normalized = gray / 255;
-    const preview = Math.max(0, Math.min(255, Math.round(255 * Math.pow(normalized, PREVIEW_BRIGHTEN_GAMMA))));
-    colors[gray] = (255 << 24) | (preview << 16) | (preview << 8) | preview;
-  }
-  return colors;
 }

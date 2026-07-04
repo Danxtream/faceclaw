@@ -9,7 +9,7 @@ import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
 import { onAndroidNotificationPosted } from "../native/notification-icons";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
-import { grayImageToPreviewSource, grayImageToPreviewSourceWithBitmapFactory } from "../native/gray-image-preview";
+import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import {
@@ -145,7 +145,6 @@ class DashboardController {
   private queuedFrameId = 0;
   private lastForegroundNotificationUpdateAtMs = 0;
   private lastConnectedPreviewUpdateAtMs = 0;
-  private connectedPreviewUpdateSeq = 0;
 
   constructor() {
     setDashboardActions({
@@ -608,7 +607,7 @@ class DashboardController {
         await this.communicator.setG2ScreenOn(false);
       }
       if (updatePreviewAfterTransmit) {
-        await this.updateConnectedDisplayPreviewFromImage(image);
+        this.updateConnectedDisplayPreviewFromImage(image);
       }
     } else {
       frameTimings.finishFrame(frameId, "discarded: no communicator, preview only");
@@ -829,7 +828,7 @@ class DashboardController {
     this.setDisplayPreview(grayImageToPreviewSource(image));
   }
 
-  private async updateConnectedDisplayPreviewFromImage(image: GrayImage): Promise<void> {
+  private updateConnectedDisplayPreviewFromImage(image: GrayImage): void {
     if (!this.communicator) return;
     const now = Date.now();
     if (
@@ -839,16 +838,7 @@ class DashboardController {
       return;
     }
     this.lastConnectedPreviewUpdateAtMs = now;
-    const previewUpdateId = ++this.connectedPreviewUpdateSeq;
-    console.log(`[preview#${previewUpdateId}] create start`);
-    const preview = await grayImageToPreviewSourceWithBitmapFactory(
-      image,
-      (createColors, width, height) =>
-        this.communicator!.createPreviewBitmapWithColorFactory(createColors, width, height),
-    );
-    console.log(`[preview#${previewUpdateId}] create done; setDisplayPreview start`);
-    this.setDisplayPreview(preview);
-    console.log(`[preview#${previewUpdateId}] setDisplayPreview done`);
+    this.updateDisplayPreviewFromImage(image);
   }
 
   private formatError(error: unknown): string {

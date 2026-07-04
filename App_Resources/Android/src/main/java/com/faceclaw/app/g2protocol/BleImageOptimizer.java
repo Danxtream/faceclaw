@@ -111,7 +111,11 @@ public final class BleImageOptimizer {
     }
 
     private static byte[] deflate(byte[] data) {
-        Deflater deflater = new Deflater(Deflater.BEST_COMPRESSION);
+        // Level 6: BEST_COMPRESSION cost 18-109ms per frame on the BLE worker,
+        // but BEST_SPEED inflated typical payloads from ~2.7KB past the 3800-byte
+        // fragment boundary, adding a whole extra ack round trip (~350ms). The
+        // default level keeps payloads under one fragment at about half the CPU.
+        Deflater deflater = new Deflater(Deflater.DEFAULT_COMPRESSION);
         deflater.setInput(data);
         deflater.finish();
         ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(64, data.length / 3));

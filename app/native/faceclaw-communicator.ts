@@ -52,15 +52,6 @@ export type RawInputEvent =
       frameId: number;
     };
 
-function toJavaByteArray(bytes: Uint8Array): number[] {
-  const out = Array.create("byte", bytes.length) as number[];
-  for (let i = 0; i < bytes.length; i++) {
-    const value = bytes[i]!;
-    out[i] = value > 127 ? value - 256 : value;
-  }
-  return out;
-}
-
 function nonNegativeNumber(value: number): number {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.max(0, numeric) : 0;
@@ -300,11 +291,13 @@ export class FaceclawCommunicatorBridge {
   }
 
   async submitDashboardImage(image8bpp: Uint8Array, width: number, height: number, fingerprint: string, paintMs = -1, frameId = 0): Promise<void> {
+    // Snapshot because the Java call is deferred; the buffer is passed as an
+    // ArrayBuffer, which NativeScript marshals to a ByteBuffer without the
+    // ~150ms per-element copy a byte[] parameter would need.
     const snapshot = new Uint8Array(image8bpp);
     await this.enqueueJavaCall(() => {
-      const javaBytes = frameTimings.span(frameId, "js-to-java-copy", () => toJavaByteArray(snapshot));
       this.communicator.submitDashboardImage(
-        javaBytes,
+        snapshot.buffer,
         Math.round(width),
         Math.round(height),
         fingerprint,
@@ -312,22 +305,6 @@ export class FaceclawCommunicatorBridge {
         Math.round(nonNegativeNumber(frameId)),
       );
     });
-  }
-
-  async createPreviewBitmap(colors: number[], width: number, height: number): Promise<any> {
-    return this.enqueueJavaCall(() =>
-      this.communicator.createPreviewBitmap(colors, width, height),
-    );
-  }
-
-  async createPreviewBitmapWithColorFactory(
-    createColors: () => number[],
-    width: number,
-    height: number,
-  ): Promise<any> {
-    return this.enqueueJavaCall(() =>
-      this.communicator.createPreviewBitmap(createColors(), width, height),
-    );
   }
 
   async disconnect(): Promise<void> {
