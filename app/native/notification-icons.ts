@@ -35,13 +35,31 @@ export type AndroidNotification = {
   actions: AndroidNotificationAction[];
 };
 
-export function readActiveNotificationIcons(maxIcons: number): GrayImage[] {
-  if (!global.isAndroid || maxIcons <= 0) return [];
+export type NotificationIconsResult = {
+  icons: GrayImage[];
+  /** True when the icons came from an expired (or empty) cache under allowStale. */
+  stale: boolean;
+};
+
+/**
+ * With allowStale, this always returns immediately: expired cached icons (or
+ * none at all, right after startup or a cache invalidation) come back with
+ * stale=true, and the caller is expected to repaint with allowStale=false
+ * once the current frame is done. Only an allowStale=false call actually
+ * fetches from the notification listener service, which can be slow depending
+ * on what is in the tray.
+ */
+export function readActiveNotificationIcons(maxIcons: number, allowStale: boolean): NotificationIconsResult {
+  if (!global.isAndroid || maxIcons <= 0) return { icons: [], stale: false };
 
   const now = Date.now();
-  if (now - cachedAtMs < ICON_CACHE_MS) {
+  if (cachedAtMs > 0 && now - cachedAtMs < ICON_CACHE_MS) {
     logCurrent("notification icons served from cache");
-    return cachedIcons.map(icon => icon.clone());
+    return { icons: cachedIcons.map(icon => icon.clone()), stale: false };
+  }
+  if (allowStale) {
+    logCurrent("notification icons served stale");
+    return { icons: cachedIcons.map(icon => icon.clone()), stale: true };
   }
 
   const bytes = spanCurrent("fetch-notification-icons", () =>
@@ -63,7 +81,7 @@ export function readActiveNotificationIcons(maxIcons: number): GrayImage[] {
 
   cachedIcons = icons;
   cachedAtMs = now;
-  return icons.map(icon => icon.clone());
+  return { icons: icons.map(icon => icon.clone()), stale: false };
 }
 
 export function readActiveNotifications(maxNotifications = 50): AndroidNotification[] {

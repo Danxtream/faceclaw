@@ -13,6 +13,8 @@ export class MainViewModel extends Observable {
   private _activeTextSettingValue = "";
   private _evenAppConflictMessage = "";
   private _evenAppConflictWarningVisible = false;
+  private _firmwareWarningMessage = "";
+  private _firmwareWarningVisible = false;
   private _showLog = false;
   private _phase: "disconnected" | "connecting" | "connected" | "disconnecting" = "disconnected";
 
@@ -28,6 +30,8 @@ export class MainViewModel extends Observable {
       this.activeTextSettingValue = snapshot.activeTextSettingValue;
       this.evenAppConflictMessage = snapshot.evenAppConflictMessage;
       this.evenAppConflictWarningVisible = snapshot.evenAppConflictWarningVisible;
+      this.firmwareWarningMessage = snapshot.firmwareWarningMessage;
+      this.firmwareWarningVisible = snapshot.firmwareWarningVisible;
     });
   }
 
@@ -197,6 +201,33 @@ export class MainViewModel extends Observable {
 
   get evenAppConflictWarningVisibility(): "visible" | "collapse" {
     return this._evenAppConflictWarningVisible ? "visible" : "collapse";
+  }
+
+  get firmwareWarningMessage(): string {
+    return this._firmwareWarningMessage;
+  }
+
+  set firmwareWarningMessage(value: string) {
+    if (this._firmwareWarningMessage !== value) {
+      this._firmwareWarningMessage = value;
+      this.notifyPropertyChange("firmwareWarningMessage", value);
+    }
+  }
+
+  get firmwareWarningVisible(): boolean {
+    return this._firmwareWarningVisible;
+  }
+
+  set firmwareWarningVisible(value: boolean) {
+    if (this._firmwareWarningVisible !== value) {
+      this._firmwareWarningVisible = value;
+      this.notifyPropertyChange("firmwareWarningVisible", value);
+      this.notifyPropertyChange("firmwareWarningVisibility", this.firmwareWarningVisibility);
+    }
+  }
+
+  get firmwareWarningVisibility(): "visible" | "collapse" {
+    return this._firmwareWarningVisible ? "visible" : "collapse";
   }
 
   get phase(): "disconnected" | "connecting" | "connected" | "disconnecting" {

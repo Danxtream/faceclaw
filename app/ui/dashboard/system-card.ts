@@ -1,5 +1,6 @@
 import { GrayImage } from "../../graphics/image";
 import { spanCurrent } from "../../native/frame-timings";
+import { noteStaleDataUsed, renderPassAllowsStaleData } from "../../util/render-freshness";
 import { BATTERY_ICON_WIDTH, drawBattery } from "../../graphics/battery";
 import { readActiveNotificationIcons } from "../../native/notification-icons";
 import { readPhoneBatteryState } from "../../native/phone-battery";
@@ -32,7 +33,11 @@ function drawSystemCardFlowItems(image: GrayImage, bounds: DashboardPluginCardBo
   const items: SystemCardFlowItem[] = [];
   if (showAndroidNotificationsSetting.get()) {
     const maxNotificationIcons = Math.max(0, ((right - left) / Math.max(1, NOTIFICATION_ICON_SIZE + SYSTEM_CARD_ITEM_GAP)) | 0) * 2;
-    for (const icon of readActiveNotificationIcons(maxNotificationIcons)) {
+    const { icons, stale } = readActiveNotificationIcons(maxNotificationIcons, renderPassAllowsStaleData());
+    if (stale) {
+      noteStaleDataUsed();
+    }
+    for (const icon of icons) {
       items.push({ type: "notification", icon });
     }
   }

@@ -26,6 +26,12 @@ export type FrameMetrics = {
   tileCount: number;
 };
 
+export type FirmwareInfo = {
+  leftVersion: string;
+  rightVersion: string;
+  capabilities: string;
+};
+
 export type RawInputEvent =
   | {
       kind: "list-click";
@@ -72,6 +78,7 @@ export class FaceclawCommunicatorBridge {
   private readonly batteryListeners = new Set<(state: HeadsetBatteryState) => void>();
   private readonly evenAppConflictListeners = new Set<(message: string) => void>();
   private readonly frameMetricsListeners = new Set<(metrics: FrameMetrics) => void>();
+  private readonly firmwareInfoListeners = new Set<(info: FirmwareInfo) => void>();
 
   constructor(addresses: { right: string; left: string; ring?: string }) {
     const context = Utils.android.getApplicationContext();
@@ -139,6 +146,14 @@ export class FaceclawCommunicatorBridge {
       onFrameFinished: (frameId: number, outcome: string) => {
         this.recordFrameFinished(Number(frameId), String(outcome));
       },
+      onFirmwareInfo: (leftVersion: string, rightVersion: string, capabilities: string) => {
+        const info = {
+          leftVersion: String(leftVersion),
+          rightVersion: String(rightVersion),
+          capabilities: String(capabilities),
+        };
+        this.emitAsync(this.firmwareInfoListeners, info);
+      },
     });
     this.communicator.setListener(this.listenerProxy);
   }
@@ -200,6 +215,11 @@ export class FaceclawCommunicatorBridge {
   onFrameMetrics(listener: (metrics: FrameMetrics) => void): () => void {
     this.frameMetricsListeners.add(listener);
     return () => this.frameMetricsListeners.delete(listener);
+  }
+
+  onFirmwareInfo(listener: (info: FirmwareInfo) => void): () => void {
+    this.firmwareInfoListeners.add(listener);
+    return () => this.firmwareInfoListeners.delete(listener);
   }
 
   getNativeCommunicator(): any {

@@ -11,9 +11,12 @@
                 <Image src="{{ displayPreview }}" stretch="fill" height="{{ displayPreviewHeight }}" />
             </StackLayout>
             <GridLayout row="1" rows="auto,auto,auto,*" class="p-20">
-                <StackLayout row="0" class="m-b-8" visibility="{{ evenAppConflictWarningVisibility }}">
-                    <Label text="{{ evenAppConflictMessage }}" textWrap="true" />
-                    <Button text="Open Even app settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary" />
+                <StackLayout row="0" class="m-b-8">
+                    <StackLayout visibility="{{ evenAppConflictWarningVisibility }}">
+                        <Label text="{{ evenAppConflictMessage }}" textWrap="true" />
+                        <Button text="Open Even app settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary" />
+                    </StackLayout>
+                    <Label text="{{ firmwareWarningMessage }}" textWrap="true" visibility="{{ firmwareWarningVisibility }}" />
                 </StackLayout>
                 <StackLayout row="1">
                     <GridLayout rows="auto,auto,auto" columns="*,*,*" class="m-t-8">
@@ -31,9 +34,12 @@
         </GridLayout>
 
         <GridLayout rows="auto,*" class="p-20" visibility="{{ landscapeLayoutVisibility }}">
-            <StackLayout row="0" class="m-b-8" visibility="{{ evenAppConflictWarningVisibility }}">
-                <Label text="{{ evenAppConflictMessage }}" textWrap="true" />
-                <Button text="Open Even app settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary" />
+            <StackLayout row="0" class="m-b-8">
+                <StackLayout visibility="{{ evenAppConflictWarningVisibility }}">
+                    <Label text="{{ evenAppConflictMessage }}" textWrap="true" />
+                    <Button text="Open Even app settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary" />
+                </StackLayout>
+                <Label text="{{ firmwareWarningMessage }}" textWrap="true" visibility="{{ firmwareWarningVisibility }}" />
             </StackLayout>
             <GridLayout row="1" rows="auto,auto,*" columns="*,260">
                 <StackLayout row="0" col="0" visibility="{{ displayPreviewVisibility }}" horizontalAlignment="left">

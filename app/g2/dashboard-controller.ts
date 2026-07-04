@@ -10,6 +10,8 @@ import { nightscoutBridge } from "../native/nightscout-bridge";
 import { onAndroidNotificationPosted } from "../native/notification-icons";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
+import { firmwareIncompatibilityMessage } from "./firmware-compat";
+import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import {
@@ -44,6 +46,8 @@ export type DashboardSnapshot = {
   activeTextSettingValue: string;
   evenAppConflictMessage: string;
   evenAppConflictWarningVisible: boolean;
+  firmwareWarningMessage: string;
+  firmwareWarningVisible: boolean;
 };
 
 type DashboardListener = (snapshot: DashboardSnapshot) => void;
@@ -118,6 +122,7 @@ class DashboardController {
   private activeTextSetting: ConfigSettingString | null = null;
   private evenNotificationActive = false;
   private evenAppConflictMessage = "";
+  private firmwareWarningMessage = "";
   private displayPreview: ImageSource | null = createInitialDisplayPreview();
   private readonly listeners = new Set<DashboardListener>();
 
@@ -132,6 +137,7 @@ class DashboardController {
   private offBattery: (() => void) | null = null;
   private offEvenAppConflict: (() => void) | null = null;
   private offFrameMetrics: (() => void) | null = null;
+  private offFirmwareInfo: (() => void) | null = null;
   private offMedia: (() => void) | null = null;
   private offNightscout: (() => void) | null = null;
   private offVoiceStatus: (() => void) | null = null;
@@ -145,6 +151,9 @@ class DashboardController {
   private queuedFrameId = 0;
   private lastForegroundNotificationUpdateAtMs = 0;
   private lastConnectedPreviewUpdateAtMs = 0;
+  // Consumed by the next renderDashboard: repaint with data sources not
+  // allowed to serve stale caches (set after a frame painted with stale data).
+  private nextRenderWantsFreshData = false;
 
   constructor() {
     setDashboardActions({
@@ -184,6 +193,8 @@ class DashboardController {
       activeTextSettingValue: this.activeTextSetting?.get() ?? "",
       evenAppConflictMessage: this.evenAppConflictMessage,
       evenAppConflictWarningVisible: this.evenAppConflictMessage.length > 0,
+      firmwareWarningMessage: this.firmwareWarningMessage,
+      firmwareWarningVisible: this.firmwareWarningMessage.length > 0,
     };
   }
 
@@ -232,6 +243,7 @@ class DashboardController {
     this.log = "";
     this.lastInput = "waiting...";
     this.lastSys = "none yet";
+    this.firmwareWarningMessage = "";
     resetDashboardSleepTimerAndWake();
     this.refreshEvenAppStatus();
     this.setPhase("connecting");
@@ -299,6 +311,20 @@ class DashboardController {
           this.setStatus(`Connected. Last frame: ${this.formatFrameMetrics(metrics)}.`);
         }
       });
+      this.offFirmwareInfo = communicator.onFirmwareInfo((info) => {
+        this.appendLog(
+          `firmware: L=${info.leftVersion || "?"} R=${info.rightVersion || "?"}` +
+            (info.capabilities ? ` caps="${info.capabilities}"` : " (no CFW capability string)"),
+        );
+        const warning = firmwareIncompatibilityMessage(info) ?? "";
+        if (warning !== this.firmwareWarningMessage) {
+          this.firmwareWarningMessage = warning;
+          if (warning) {
+            this.appendLog(`firmware compatibility warning: ${warning}`);
+          }
+          this.emit();
+        }
+      });
       this.offMedia = mediaControllerBridge.onStateChange(() => {
         if (this.phase === "connected" && this.communicator) {
           void this.requestRender("interval").catch((error) => {
@@ -360,6 +386,8 @@ class DashboardController {
       this.offEvenAppConflict = null;
       this.offFrameMetrics?.();
       this.offFrameMetrics = null;
+      this.offFirmwareInfo?.();
+      this.offFirmwareInfo = null;
       this.offMedia?.();
       this.offMedia = null;
       this.offNightscout?.();
@@ -406,6 +434,8 @@ class DashboardController {
     this.offEvenAppConflict = null;
     this.offFrameMetrics?.();
     this.offFrameMetrics = null;
+    this.offFirmwareInfo?.();
+    this.offFirmwareInfo = null;
     this.offMedia?.();
     this.offMedia = null;
     this.offNightscout?.();
@@ -580,11 +610,18 @@ class DashboardController {
   private async renderDashboard(reason: "initial" | "interval", frameId: number): Promise<void> {
     console.log("renderDashboard", reason);
     frameTimings.logFrame(frameId, `renderDashboard start (${reason})`);
+    const wantFreshData = this.nextRenderWantsFreshData;
+    this.nextRenderWantsFreshData = false;
+    beginRenderPass(!wantFreshData);
     const paintStartedAtMs = Date.now();
     const image = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => drawDashboard()),
     );
     const paintMs = Date.now() - paintStartedAtMs;
+    const paintUsedStaleData = endRenderPass();
+    if (paintUsedStaleData) {
+      frameTimings.logFrame(frameId, "painted with stale data; will schedule a fresh-data repaint");
+    }
     const fingerprint = frameTimings.span(frameId, "fingerprint", () => image.fingerprint());
     const updatePreviewAfterTransmit = this.phase === "connected";
     if (!updatePreviewAfterTransmit) {
@@ -611,6 +648,13 @@ class DashboardController {
       }
     } else {
       frameTimings.finishFrame(frameId, "discarded: no communicator, preview only");
+    }
+
+    if (paintUsedStaleData) {
+      this.nextRenderWantsFreshData = true;
+      void this.requestRender("interval").catch((error) => {
+        this.appendLog(`fresh-data repaint failed: ${this.formatError(error)}`);
+      });
     }
 
     this.updateConnectedForegroundNotification();

@@ -6,6 +6,7 @@ import android.app.PendingIntent;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
 import android.os.Bundle;
@@ -164,9 +165,13 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
             }
             Drawable drawable = loadNotificationIcon(service, statusBarNotification.getNotification());
             if (drawable == null) {
+                Log.i(TAG, "icon skipped (no drawable): " + statusBarNotification.getPackageName());
                 continue;
             }
-            appendIconGrayBytes(drawable, size, out);
+            Log.i(TAG, "icon[" + emitted + "] pkg=" + statusBarNotification.getPackageName()
+                    + " drawable=" + drawable.getClass().getSimpleName()
+                    + " intrinsic=" + drawable.getIntrinsicWidth() + "x" + drawable.getIntrinsicHeight());
+            appendIconGrayBytes(drawable, size, out, service, emitted, statusBarNotification.getPackageName());
             if (dedupeGroupKey != null) {
                 emittedGroupKeys.add(dedupeGroupKey);
             }
@@ -401,6 +406,16 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
             if (smallIcon != null) {
                 Drawable drawable = smallIcon.loadDrawable(service);
                 if (drawable != null) {
+                    // Status-bar small icons are alpha templates: the platform
+                    // draws them tinted and ignores their color channels, which
+                    // apps may fill with garbage (Discord ships noise there).
+                    // Tint white so the shape comes from alpha alone, matching
+                    // how the status bar renders them.
+                    drawable.mutate();
+                    drawable.setTint(Color.WHITE);
+                    if (drawable instanceof BitmapDrawable) {
+                        ((BitmapDrawable) drawable).setFilterBitmap(true);
+                    }
                     return drawable;
                 }
             }
@@ -408,6 +423,7 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
             Log.w(TAG, "failed to load small notification icon", t);
         }
         try {
+            // Large icons are real color images (avatars, album art); keep color.
             Icon largeIcon = notification.getLargeIcon();
             if (largeIcon != null) {
                 return largeIcon.loadDrawable(service);
@@ -418,11 +434,10 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
         return null;
     }
 
-    private static void appendIconGrayBytes(Drawable drawable, int size, ByteArrayOutputStream out) {
-        Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(bitmap);
-        drawable.setBounds(0, 0, size, size);
-        drawable.draw(canvas);
+    private static void appendIconGrayBytes(Drawable drawable, int size, ByteArrayOutputStream out,
+            FaceclawMediaNotificationListenerService service, int index, String packageName) {
+        Bitmap bitmap = renderIconScaled(drawable, size);
+        dumpIconDebugPng(service, index, packageName, bitmap);
         for (int y = 0; y < size; y++) {
             for (int x = 0; x < size; x++) {
                 int color = bitmap.getPixel(x, y);
@@ -433,6 +448,55 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
             }
         }
         bitmap.recycle();
+    }
+
+    /**
+     * Render a drawable at the target size with proper downscaling. Detailed
+     * sources (e.g. avatar bitmaps used as notification icons) are rendered at
+     * native resolution and reduced by repeated halving: a single filtered pass
+     * from, say, 126px to 24px samples too sparsely and turns fine detail into
+     * speckle that reads as a garbled icon.
+     */
+    private static Bitmap renderIconScaled(Drawable drawable, int size) {
+        int renderW = Math.max(size, drawable.getIntrinsicWidth());
+        int renderH = Math.max(size, drawable.getIntrinsicHeight());
+        Bitmap bitmap = Bitmap.createBitmap(renderW, renderH, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        drawable.setBounds(0, 0, renderW, renderH);
+        drawable.draw(canvas);
+        while (bitmap.getWidth() >= size * 2 && bitmap.getHeight() >= size * 2) {
+            Bitmap halved = Bitmap.createScaledBitmap(bitmap, bitmap.getWidth() / 2, bitmap.getHeight() / 2, true);
+            bitmap.recycle();
+            bitmap = halved;
+        }
+        if (bitmap.getWidth() != size || bitmap.getHeight() != size) {
+            Bitmap scaled = Bitmap.createScaledBitmap(bitmap, size, size, true);
+            bitmap.recycle();
+            bitmap = scaled;
+        }
+        return bitmap;
+    }
+
+    /**
+     * Debug aid for garbled-icon reports: saves each rendered icon to
+     * <externalFilesDir>/debug-icons/ (adb-pullable) so extraction problems can
+     * be told apart from downstream compositing/transmission problems. Cheap:
+     * runs at most once per icon-cache refresh on tiny bitmaps.
+     */
+    private static void dumpIconDebugPng(FaceclawMediaNotificationListenerService service, int index, String packageName, Bitmap bitmap) {
+        try {
+            java.io.File dir = new java.io.File(service.getExternalFilesDir(null), "debug-icons");
+            if (!dir.exists() && !dir.mkdirs()) {
+                return;
+            }
+            String safeName = packageName == null ? "unknown" : packageName.replaceAll("[^A-Za-z0-9._-]", "_");
+            java.io.File file = new java.io.File(dir, "icon-" + index + "-" + safeName + ".png");
+            try (java.io.FileOutputStream stream = new java.io.FileOutputStream(file)) {
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "failed to dump debug icon", t);
+        }
     }
 
     private static StatusBarNotification findActiveNotificationByKey(FaceclawMediaNotificationListenerService service, String key) {

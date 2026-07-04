@@ -25,6 +25,10 @@
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
 	<uses-permission android:name="android.permission.WAKE_LOCK"/>
+	<!-- Needed to resolve other apps' notification small icons (Icon TYPE_RESOURCE):
+	     package visibility filtering otherwise makes Icon.loadDrawable fail with
+	     NameNotFoundException for any package we cannot see. -->
+	<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
 
 	<application
 		android:name="com.tns.NativeScriptApplication"

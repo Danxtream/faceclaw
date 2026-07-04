@@ -89,6 +89,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int headsetBattery = -1;
     private int headsetCharging = -1;
     private boolean audioCaptureActive;
+    private boolean firmwareInfoQueried;
     private volatile FaceclawAudioPacketListener audioPacketListener;
     private PowerManager.WakeLock g2ScreenWakeLock;
 
@@ -583,6 +584,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             setStateDisplay("connected", "Connected.");
             logLine("session ready");
+            synchronized (lock) {
+                // Query settings promptly on the first session so firmware
+                // version/capabilities (and battery) arrive without waiting for
+                // the input-quiet battery poll. The settings response doubles as
+                // the firmware-compatibility check surfaced during onboarding.
+                if (!firmwareInfoQueried) {
+                    firmwareInfoQueried = true;
+                    lastBatteryRefreshAtMs = SystemClock.elapsedRealtime();
+                    pendingMessages.addLast(createBatteryQueryMessageLocked());
+                    logLine("queue settings query for firmware info");
+                }
+            }
             tryConnectRing("initial");
         } catch (Throwable t) {
             logLine("connect failed: " + safeMessage(t));
@@ -1198,6 +1211,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 // guarantee that the tile is now visible on-screen, so it must not
                 // update the displayed-tile cache used by image dedupe.
                 warmedUp = true;
+                // Warmup fragments are image messages on the wire, so they reset
+                // the firmware's heartbeat timer just like real image updates.
+                lastHeartbeatAckedAtMs = SystemClock.elapsedRealtime();
             };
             message.onTimeout = () -> {
                 warmedUp = false;
@@ -1262,6 +1278,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         message.setImageUpdatePosition(updateId, messageNumber, messageCount);
         message.onAck = () -> {
             imageRetryAfterMs = 0;
+            // Firmware >= 2.2.4.34 resets its heartbeat timer when it receives
+            // image messages (not just heartbeats), so an acked image fragment
+            // satisfies the heartbeat deadline and heartbeats stop contending
+            // with active rendering.
+            lastHeartbeatAckedAtMs = SystemClock.elapsedRealtime();
             logImageUpdateAckLandmarkLocked(message);
             if (message.tileIndex >= 0 && !hasPendingOrInflightTileLocked(message.tileIndex)) {
                 displayedBmp = BmpUtil.copyTileBmp(plan.bmp);
@@ -1326,6 +1347,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 headsetBattery = snapshot.battery;
                 headsetCharging = snapshot.charging;
                 emitBatteryState(headsetBattery, headsetCharging);
+            }
+            BleProtocol.FirmwareInfo firmwareInfo = BleProtocol.parseSettingsFirmwareInfo(message.ackPayload);
+            if (firmwareInfo != null) {
+                emitFirmwareInfo(firmwareInfo);
             }
         };
         message.onTimeout = () -> {
@@ -1572,6 +1597,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 current.onBatteryState(headsetBattery, headsetCharging);
             } catch (Throwable t) {
                 Log.w(TAG, "listener onBatteryState failed", t);
+            }
+        });
+    }
+
+    private void emitFirmwareInfo(BleProtocol.FirmwareInfo info) {
+        final FaceclawBleCommunicatorListener current = listener;
+        if (current == null) {
+            return;
+        }
+        mainHandler.post(() -> {
+            try {
+                current.onFirmwareInfo(info.leftVersion, info.rightVersion, info.capabilities);
+            } catch (Throwable t) {
+                Log.w(TAG, "listener onFirmwareInfo failed", t);
             }
         });
     }

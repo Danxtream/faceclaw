@@ -181,6 +181,28 @@ public class BleProtocol {
         return new BatterySnapshot(battery, charging);
     }
 
+    /**
+     * Firmware versions and the CFW capability advertisement from a settings
+     * READ ack. Versions are fields 5/6 of the deviceReceiveRequestFromApp
+     * submessage (field 4); the custom firmware additionally appends top-level
+     * field 100, a string like "EVENCFW/1 img576 imgz xordelta stereo", which
+     * stock firmware never sends. Returns null when the ack carries none of it.
+     */
+    public static FirmwareInfo parseSettingsFirmwareInfo(byte[] pb) {
+        byte[] root = stripTrailingCrc(pb);
+        byte[] request = readFieldBytes(root, 4);
+        if (request == null) {
+            return null;
+        }
+        String leftVersion = readStringFieldValue(request, 5);
+        String rightVersion = readStringFieldValue(request, 6);
+        String capabilities = readStringFieldValue(root, 100);
+        if (leftVersion.isEmpty() && rightVersion.isEmpty() && capabilities.isEmpty()) {
+            return null;
+        }
+        return new FirmwareInfo(leftVersion, rightVersion, capabilities);
+    }
+
     public static byte[] wrapEvenHub(int cmd, int magic, int innerFieldNumber, byte[] inner) {
         List<byte[]> parts = new ArrayList<>();
         parts.add(encodeVarintField(1, cmd));
@@ -507,6 +529,18 @@ public class BleProtocol {
         BatterySnapshot(int battery, int charging) {
             this.battery = battery;
             this.charging = charging;
+        }
+    }
+
+    public static final class FirmwareInfo {
+        final String leftVersion;
+        final String rightVersion;
+        final String capabilities;
+
+        FirmwareInfo(String leftVersion, String rightVersion, String capabilities) {
+            this.leftVersion = leftVersion;
+            this.rightVersion = rightVersion;
+            this.capabilities = capabilities;
         }
     }
 }
