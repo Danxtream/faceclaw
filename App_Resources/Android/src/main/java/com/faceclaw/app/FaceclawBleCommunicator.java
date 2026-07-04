@@ -101,6 +101,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private String desiredFingerprint = "";
     private byte[] desiredBmp = new byte[0];
     private int desiredPaintMs;
+    private int desiredFrameId;
 
     private final ArrayDeque<OutboundMessage> pendingMessages = new ArrayDeque<>();
     private final ArrayDeque<OutboundMessage> inFlightMessages = new ArrayDeque<>();
@@ -109,6 +110,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     public FaceclawBleCommunicator(Context context, String rightAddress, String leftAddress, String ringAddress) {
         this.appContext = context.getApplicationContext();
+        FrameTimings.getInstance().init(appContext);
         this.powerManager = (PowerManager) appContext.getSystemService(Context.POWER_SERVICE);
         this.bleManager = new FaceclawBleManager(appContext);
         this.bleManager.setListener(this);
@@ -229,17 +231,27 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             int width,
             int height,
             String fingerprint,
-            int paintMs
+            int paintMs,
+            int frameId
     ) {
         Log.i(TAG, "Received an updated frame ");
         // Convert the full-screen 8bpp grayscale buffer into the BMP wire format here so
         // that all framing concerns live on the Java side.
+        FrameTimings.getInstance().spanStart(frameId, "bmp-convert");
         byte[] bmp = image8bpp == null ? new byte[0] : BmpUtil.build4bppBmp(image8bpp, width, height);
+        FrameTimings.getInstance().spanEnd(frameId, "bmp-convert");
+        int supersededFrameId;
         synchronized (desiredTilesLock) {
+            supersededFrameId = desiredFrameId;
             desiredBmp = bmp;
             desiredFingerprint = fingerprint == null ? "" : fingerprint;
             desiredPaintMs = paintMs;
+            desiredFrameId = frameId;
         }
+        if (supersededFrameId != 0 && supersededFrameId != frameId) {
+            finishFrame(supersededFrameId, "discarded: superseded by frame#" + frameId + " before send");
+        }
+        FrameTimings.getInstance().log(frameId, "image submitted as desired frame");
         interruptibleSleep.interrupt();
     }
 
@@ -452,7 +464,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         interruptibleSleep.interrupt();
         if (event != null) {
-            emitRingEvent(event.kind, event.containerName, event.eventType, event.eventSource, event.systemExitReasonCode);
+            int frameId = FrameTimings.getInstance().startFrame(
+                "input:" + event.kind + " type=" + event.eventType + " src=" + event.eventSource);
+            FrameTimings.getInstance().log(frameId, "input event decoded from BLE notification");
+            emitRingEvent(event.kind, event.containerName, event.eventType, event.eventSource, event.systemExitReasonCode, frameId);
         }
     }
 
@@ -470,7 +485,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             lastConnectionOrInputAtMs = arrivalMs;
         }
         logLine("direct ring " + decoded.label + " " + decoded.detail + " raw=" + hex(data));
-        emitRingEvent(event.kind, event.containerName, event.eventType, event.eventSource, event.systemExitReasonCode);
+        int frameId = FrameTimings.getInstance().startFrame("input:ring:" + decoded.label);
+        FrameTimings.getInstance().log(frameId, "input event decoded from direct ring notification");
+        emitRingEvent(event.kind, event.containerName, event.eventType, event.eventSource, event.systemExitReasonCode, frameId);
         interruptibleSleep.interrupt();
     }
 
@@ -729,6 +746,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             OutboundMessage messageToPrewrite = null;
             long now = SystemClock.elapsedRealtime();
 
+            maybeFinishNoChangeDesiredFrame();
+
             synchronized (lock) {
                 if (!inFlightMessages.isEmpty()) {
                     OutboundMessage oldest = inFlightMessages.peekFirst();
@@ -805,6 +824,26 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
                 return 0;
             }
+        }
+    }
+
+    /**
+     * If the desired image already matches what the glasses display, nothing will
+     * ever be enqueued for it, so finish its frame now (otherwise the TS side
+     * would block on it until its backpressure timeout).
+     */
+    private void maybeFinishNoChangeDesiredFrame() {
+        int frameIdToFinish = 0;
+        synchronized (lock) {
+            synchronized (desiredTilesLock) {
+                if (desiredFrameId != 0 && !displayedFingerprint.isEmpty() && desiredFingerprint.equals(displayedFingerprint)) {
+                    frameIdToFinish = desiredFrameId;
+                    desiredFrameId = 0;
+                }
+            }
+        }
+        if (frameIdToFinish != 0) {
+            finishFrame(frameIdToFinish, "discarded: no change from displayed image");
         }
     }
 
@@ -1041,14 +1080,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (message.imageUpdateId <= 0) {
             return;
         }
+        BleImageOptimizer.ImageUpdateStats stats = imageUpdateStats.get(message.imageUpdateId);
+        int frameId = stats == null ? 0 : stats.frameId;
         if (message.imageMessageNumber == 1) {
-            BleImageOptimizer.ImageUpdateStats stats = imageUpdateStats.get(message.imageUpdateId);
             if (stats != null && stats.firstWriteStartedAtMs <= 0) {
                 stats.firstWriteStartedAtMs = message.writeStartedAtMs > 0 ? message.writeStartedAtMs : message.sentAtMs;
             }
+            FrameTimings.getInstance().log(frameId, "first bluetooth packet sent");
             logImageUpdateLandmarkLocked("first bluetooth message sent", message, message.sentAtMs);
         }
         if (message.imageMessageNumber == message.imageMessageCount) {
+            FrameTimings.getInstance().log(frameId,
+                "last bluetooth packet sent (message " + message.imageMessageNumber + "/" + message.imageMessageCount + ")");
             logImageUpdateLandmarkLocked("last bluetooth message sent", message, message.sentAtMs);
         }
     }
@@ -1062,7 +1105,21 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (stats != null && stats.firstWriteStartedAtMs > 0) {
             emitFrameMetrics(stats.paintMs, (int) Math.max(0, ackedAtMs - stats.firstWriteStartedAtMs), stats.tileCount);
         }
+        if (stats != null) {
+            finishFrame(stats.frameId, "sent");
+        }
         logImageUpdateLandmarkLocked("last bluetooth message acked", message, ackedAtMs);
+    }
+
+    /** Remove the stats entry for an image update that will not complete, finishing its frame. */
+    private void discardImageUpdateStatsLocked(int imageUpdateId, String reason) {
+        if (imageUpdateId <= 0) {
+            return;
+        }
+        BleImageOptimizer.ImageUpdateStats stats = imageUpdateStats.remove(imageUpdateId);
+        if (stats != null) {
+            finishFrame(stats.frameId, "discarded: " + reason);
+        }
     }
 
     private void logImageUpdateLandmarkLocked(String event, OutboundMessage message, long elapsedMs) {
@@ -1155,30 +1212,38 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         String fingerprint = getDesiredFingerprint();
         byte[] bmp;
         int paintMs;
+        int frameId;
         synchronized (desiredTilesLock) {
             bmp = desiredBmp;
             paintMs = desiredPaintMs;
+            frameId = desiredFrameId;
+            desiredFrameId = 0;
         }
         if (bmp == null) {
             bmp = new byte[0];
         }
         if (Arrays.equals(bmp, displayedBmp)) {
             displayedFingerprint = fingerprint;
+            finishFrame(frameId, "discarded: image content identical to displayed");
             return;
         }
 
+        FrameTimings.getInstance().spanStart(frameId, "compress-and-plan");
         BleImageOptimizer.TileImagePlan plan =
             new BleImageOptimizer.TileImagePlan(0, DASHBOARD_TILE, bmp, nextMapSessionId());
         plan.fragments = BleImageOptimizer.planImageFragments(plan.payload, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
+        FrameTimings.getInstance().spanEnd(frameId, "compress-and-plan");
 
         int updateId = nextImageUpdateId++;
         int messageCount = plan.fragments.size();
-        imageUpdateStats.put(updateId, new BleImageOptimizer.ImageUpdateStats(paintMs, 1));
+        imageUpdateStats.put(updateId, new BleImageOptimizer.ImageUpdateStats(paintMs, 1, frameId));
         for (int i = 0; i < plan.fragments.size(); i++) {
             BleProtocol.ImageFragment fragment = plan.fragments.get(i);
             enqueueImageFragmentLocked(plan, fragment, fingerprint, updateId, i + 1, messageCount, true);
         }
 
+        FrameTimings.getInstance().log(frameId, "queued image update#" + updateId
+                + " messages=" + messageCount + " payload=" + plan.payload.length + "B");
         logLine("queue image update#" + updateId + " fingerprint=" + fingerprint
                 + " messages=" + messageCount);
     }
@@ -1221,7 +1286,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
         };
         message.onTimeout = () -> {
-            imageUpdateStats.remove(message.imageUpdateId);
+            discardImageUpdateStatsLocked(message.imageUpdateId, "image ack timeout (will retry)");
             clearMessagesOfKindLocked("image");
             displayedFingerprint = "";
             displayedBmp = new byte[0];
@@ -1325,7 +1390,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 pendingIterator.remove();
                 discardPrewriteIfMatchesLocked(message);
                 if ("image".equals(kind)) {
-                    imageUpdateStats.remove(message.imageUpdateId);
+                    discardImageUpdateStatsLocked(message.imageUpdateId, "pending messages cleared (" + kind + ")");
                 }
                 magicPool.release(message.sid, message.magic, message.label, "cleared pending " + kind);
             }
@@ -1336,7 +1401,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (kind.equals(message.kind)) {
                 inFlightIterator.remove();
                 if ("image".equals(kind)) {
-                    imageUpdateStats.remove(message.imageUpdateId);
+                    discardImageUpdateStatsLocked(message.imageUpdateId, "inflight messages cleared (" + kind + ")");
                 }
                 magicPool.release(message.sid, message.magic, message.label, "cleared inflight " + kind);
             }
@@ -1352,6 +1417,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         while (!pendingMessages.isEmpty()) {
             var message = pendingMessages.removeFirst();
             discardPrewriteIfMatchesLocked(message);
+            discardImageUpdateStatsLocked(message.imageUpdateId, "pending messages cleared: " + reason);
             magicPool.release(message.sid, message.magic, message.label, "cleared pending: " + reason);
         }
     }
@@ -1359,6 +1425,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private void clearInFlightMessagesLocked(String reason) {
         while (!inFlightMessages.isEmpty()) {
             var message = inFlightMessages.removeFirst();
+            discardImageUpdateStatsLocked(message.imageUpdateId, "inflight messages cleared: " + reason);
             magicPool.release(message.sid, message.magic, message.label, "cleared inflight: " + reason);
         }
     }
@@ -1457,17 +1524,39 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         return false;
     }
 
-    private void emitRingEvent(String kind, String containerName, int eventType, int eventSource, int systemExitReasonCode) {
+    private void emitRingEvent(String kind, String containerName, int eventType, int eventSource, int systemExitReasonCode, int frameId) {
         final FaceclawBleCommunicatorListener current = listener;
         if (current == null) {
+            FrameTimings.getInstance().finishFrame(frameId, "discarded: no listener attached");
             return;
         }
         final String containerNameSnapshot = containerName == null ? "" : containerName;
         mainHandler.post(() -> {
+            FrameTimings.getInstance().log(frameId, "dispatching input event on main thread");
             try {
-                current.onRingEvent(kind, containerNameSnapshot, eventType, eventSource, systemExitReasonCode);
+                current.onRingEvent(kind, containerNameSnapshot, eventType, eventSource, systemExitReasonCode, frameId);
             } catch (Throwable t) {
                 Log.w(TAG, "listener onRingEvent failed", t);
+                FrameTimings.getInstance().finishFrame(frameId, "discarded: listener onRingEvent failed");
+            }
+        });
+    }
+
+    /** Finish a frame owned by the communicator and tell the TS side, which may be awaiting it. */
+    private void finishFrame(int frameId, String outcome) {
+        if (frameId <= 0) {
+            return;
+        }
+        FrameTimings.getInstance().finishFrame(frameId, outcome);
+        final FaceclawBleCommunicatorListener current = listener;
+        if (current == null) {
+            return;
+        }
+        mainHandler.post(() -> {
+            try {
+                current.onFrameFinished(frameId, outcome);
+            } catch (Throwable t) {
+                Log.w(TAG, "listener onFrameFinished failed", t);
             }
         });
     }

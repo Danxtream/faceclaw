@@ -1,4 +1,5 @@
 import { GrayImage } from "../graphics/image";
+import { logCurrent, spanCurrent } from "./frame-timings";
 import { toUint8Array } from "../util/array-util";
 
 declare const com: any;
@@ -39,13 +40,16 @@ export function readActiveNotificationIcons(maxIcons: number): GrayImage[] {
 
   const now = Date.now();
   if (now - cachedAtMs < ICON_CACHE_MS) {
+    logCurrent("notification icons served from cache");
     return cachedIcons.map(icon => icon.clone());
   }
 
-  const bytes = toUint8Array(
-    com.faceclaw.app.FaceclawMediaNotificationListenerService.getActiveNotificationIconGrays(
-      ICON_SIZE,
-      maxIcons,
+  const bytes = spanCurrent("fetch-notification-icons", () =>
+    toUint8Array(
+      com.faceclaw.app.FaceclawMediaNotificationListenerService.getActiveNotificationIconGrays(
+        ICON_SIZE,
+        maxIcons,
+      ),
     ),
   );
   const iconByteLength = ICON_SIZE * ICON_SIZE;
@@ -65,9 +69,11 @@ export function readActiveNotificationIcons(maxIcons: number): GrayImage[] {
 export function readActiveNotifications(maxNotifications = 50): AndroidNotification[] {
   if (!global.isAndroid || maxNotifications <= 0) return [];
   try {
-    const json = String(
-      com.faceclaw.app.FaceclawMediaNotificationListenerService.getActiveNotificationsJson(
-        Math.max(0, Math.round(maxNotifications)),
+    const json = spanCurrent("fetch-notifications-json", () =>
+      String(
+        com.faceclaw.app.FaceclawMediaNotificationListenerService.getActiveNotificationsJson(
+          Math.max(0, Math.round(maxNotifications)),
+        ),
       ),
     );
     const parsed = JSON.parse(json);

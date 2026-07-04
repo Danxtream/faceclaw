@@ -129,11 +129,13 @@ public final class BleImageOptimizer {
     public static final class ImageUpdateStats {
         final int paintMs;
         final int tileCount;
+        final int frameId;
         long firstWriteStartedAtMs;
 
-        ImageUpdateStats(int paintMs, int tileCount) {
+        ImageUpdateStats(int paintMs, int tileCount, int frameId) {
             this.paintMs = Math.max(0, paintMs);
             this.tileCount = tileCount;
+            this.frameId = frameId;
         }
     }
 }

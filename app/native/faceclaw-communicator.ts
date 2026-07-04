@@ -1,4 +1,5 @@
 import { Utils } from "@nativescript/core";
+import * as frameTimings from "./frame-timings";
 
 declare const com: any;
 
@@ -32,6 +33,7 @@ export type RawInputEvent =
       eventType: number;
       eventSource: number;
       systemExitReasonCode: number;
+      frameId: number;
     }
   | {
       kind: "text-click";
@@ -39,6 +41,7 @@ export type RawInputEvent =
       eventType: number;
       eventSource: number;
       systemExitReasonCode: number;
+      frameId: number;
     }
   | {
       kind: "sys-event";
@@ -46,6 +49,7 @@ export type RawInputEvent =
       eventType: number;
       eventSource: number;
       systemExitReasonCode: number;
+      frameId: number;
     };
 
 function toJavaByteArray(bytes: Uint8Array): number[] {
@@ -67,6 +71,10 @@ export class FaceclawCommunicatorBridge {
   private readonly listenerProxy: any;
   private javaCallQueue: Promise<void> = Promise.resolve();
   private readonly frameMetricWaiters = new Set<(metrics: FrameMetrics) => void>();
+  // Recent frame-finished outcomes from the Java side, so waitForFrameFinished
+  // does not race against finishes that land before the wait starts.
+  private readonly finishedFrameOutcomes = new Map<number, string>();
+  private readonly frameFinishedWaiters = new Map<number, Set<(outcome: string) => void>>();
   private readonly logListeners = new Set<(line: string) => void>();
   private readonly stateListeners = new Set<(state: CommunicatorState) => void>();
   private readonly ringListeners = new Set<(event: RawInputEvent) => void>();
@@ -101,6 +109,7 @@ export class FaceclawCommunicatorBridge {
         eventType: number,
         eventSource: number,
         systemExitReasonCode: number,
+        frameId: number,
       ) => {
         const event = {
           kind: String(kind) as RawInputEvent["kind"],
@@ -108,7 +117,9 @@ export class FaceclawCommunicatorBridge {
           eventType: Number(eventType),
           eventSource: Number(eventSource),
           systemExitReasonCode: Number(systemExitReasonCode),
+          frameId: Number(frameId),
         };
+        frameTimings.logFrame(event.frameId, "input event received on JS side");
         this.emitAsync(this.ringListeners, event);
       },
       onBatteryState: (headsetBattery: number, headsetCharging: number) => {
@@ -133,6 +144,9 @@ export class FaceclawCommunicatorBridge {
           setTimeout(() => waiter(metrics), 0);
         }
         this.emitAsync(this.frameMetricsListeners, metrics);
+      },
+      onFrameFinished: (frameId: number, outcome: string) => {
+        this.recordFrameFinished(Number(frameId), String(outcome));
       },
     });
     this.communicator.setListener(this.listenerProxy);
@@ -201,6 +215,62 @@ export class FaceclawCommunicatorBridge {
     return this.communicator;
   }
 
+  private recordFrameFinished(frameId: number, outcome: string): void {
+    if (!Number.isFinite(frameId) || frameId <= 0) return;
+    this.finishedFrameOutcomes.set(frameId, outcome);
+    while (this.finishedFrameOutcomes.size > 128) {
+      const oldest = this.finishedFrameOutcomes.keys().next().value;
+      if (oldest === undefined) break;
+      this.finishedFrameOutcomes.delete(oldest);
+    }
+    const waiters = this.frameFinishedWaiters.get(frameId);
+    if (waiters) {
+      this.frameFinishedWaiters.delete(frameId);
+      for (const waiter of waiters) {
+        setTimeout(() => waiter(outcome), 0);
+      }
+    }
+  }
+
+  /**
+   * Resolve with the frame's outcome once the Java side finishes it (sent,
+   * discarded, or timed out), or with null after timeoutMs. Used as transmit
+   * backpressure: unlike waiting for frame metrics, this also resolves when a
+   * frame is discarded (e.g. deduped as unchanged), so no-op renders do not
+   * stall the render loop.
+   */
+  waitForFrameFinished(frameId: number, timeoutMs: number): Promise<string | null> {
+    const known = this.finishedFrameOutcomes.get(frameId);
+    if (known !== undefined) return Promise.resolve(known);
+    if (frameId <= 0) return Promise.resolve(null);
+    const delayMs = Math.max(1, Math.round(nonNegativeNumber(timeoutMs)));
+    return new Promise((resolve) => {
+      let settled = false;
+      const onFinished = (outcome: string) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutHandle);
+        resolve(outcome);
+      };
+      let waiters = this.frameFinishedWaiters.get(frameId);
+      if (!waiters) {
+        waiters = new Set();
+        this.frameFinishedWaiters.set(frameId, waiters);
+      }
+      waiters.add(onFinished);
+      const timeoutHandle = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        const pending = this.frameFinishedWaiters.get(frameId);
+        if (pending) {
+          pending.delete(onFinished);
+          if (pending.size === 0) this.frameFinishedWaiters.delete(frameId);
+        }
+        resolve(null);
+      }, delayMs);
+    });
+  }
+
   waitForNextFrameMetrics(timeoutMs: number): Promise<FrameMetrics | null> {
     const delayMs = Math.max(1, Math.round(nonNegativeNumber(timeoutMs)));
     return new Promise((resolve) => {
@@ -229,15 +299,17 @@ export class FaceclawCommunicatorBridge {
     await this.enqueueJavaCall(() => this.communicator.setG2ScreenOn(Boolean(screenOn)));
   }
 
-  async submitDashboardImage(image8bpp: Uint8Array, width: number, height: number, fingerprint: string, paintMs = -1): Promise<void> {
+  async submitDashboardImage(image8bpp: Uint8Array, width: number, height: number, fingerprint: string, paintMs = -1, frameId = 0): Promise<void> {
     const snapshot = new Uint8Array(image8bpp);
     await this.enqueueJavaCall(() => {
+      const javaBytes = frameTimings.span(frameId, "js-to-java-copy", () => toJavaByteArray(snapshot));
       this.communicator.submitDashboardImage(
-        toJavaByteArray(snapshot),
+        javaBytes,
         Math.round(width),
         Math.round(height),
         fingerprint,
         Math.round(nonNegativeNumber(paintMs)),
+        Math.round(nonNegativeNumber(frameId)),
       );
     });
   }

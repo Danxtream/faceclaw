@@ -1,5 +1,6 @@
 import { Utils } from "@nativescript/core";
 import { GrayImage } from "../graphics/image";
+import { spanCurrent } from "./frame-timings";
 import { toUint8Array } from "~/util/array-util";
 
 declare const com: any;
@@ -21,8 +22,10 @@ export function readSystemStatusIcons(): GrayImage[] {
   const context = Utils.android.getApplicationContext();
   if (!context) return [];
 
-  const bytes = toUint8Array(
-    com.faceclaw.app.FaceclawSystemStatusIconProvider.getSystemStatusIconGrays(context, ICON_SIZE),
+  const bytes = spanCurrent("fetch-system-status-icons", () =>
+    toUint8Array(
+      com.faceclaw.app.FaceclawSystemStatusIconProvider.getSystemStatusIconGrays(context, ICON_SIZE),
+    ),
   );
   const iconByteLength = ICON_SIZE * ICON_SIZE;
   const iconCount = Math.floor(bytes.length / iconByteLength);

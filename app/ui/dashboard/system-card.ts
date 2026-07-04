@@ -1,4 +1,5 @@
 import { GrayImage } from "../../graphics/image";
+import { spanCurrent } from "../../native/frame-timings";
 import { BATTERY_ICON_WIDTH, drawBattery } from "../../graphics/battery";
 import { readActiveNotificationIcons } from "../../native/notification-icons";
 import { readPhoneBatteryState } from "../../native/phone-battery";
@@ -149,6 +150,7 @@ function pad2(value: number): string {
 }
 
 export function drawSystemCard(image: GrayImage, bounds: DashboardPluginCardBounds): void {
+  spanCurrent("draw-system-card", () => {
     const now = new Date();
     const logo = getDashboardLogo();
 
@@ -159,5 +161,6 @@ export function drawSystemCard(image: GrayImage, bounds: DashboardPluginCardBoun
     image.drawText(mediumFont, infoX, bounds.y + 10, systemCardNameSetting.get(), 200);
     image.drawText(mediumFont, infoX, bounds.y + 32, formatDashboardDate(now), 200);
     drawSystemCardFlowItems(image, bounds);
+  });
 }
 

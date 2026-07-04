@@ -3,6 +3,7 @@ import { EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName 
 import { loadDeviceAddresses } from "./device-addresses";
 import { ensureBlePermissions, ensureVoicePermissions } from "./android-permissions";
 import { FaceclawCommunicatorBridge, type FrameMetrics, type RawInputEvent } from "../native/faceclaw-communicator";
+import * as frameTimings from "../native/frame-timings";
 import { startForegroundNotification, stopForegroundNotification, updateForegroundNotification } from "../native/foreground-service";
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
@@ -141,6 +142,7 @@ class DashboardController {
   private renderInProgress = false;
   private renderQueued = false;
   private queuedRenderReason: "initial" | "interval" = "interval";
+  private queuedFrameId = 0;
   private lastForegroundNotificationUpdateAtMs = 0;
   private lastConnectedPreviewUpdateAtMs = 0;
   private connectedPreviewUpdateSeq = 0;
@@ -532,32 +534,59 @@ class DashboardController {
     this.updateDisplayPreviewFromImage(image);
   }
 
-  private async requestRender(reason: "initial" | "interval"): Promise<void> {
+  /**
+   * Serialize renders; frameId identifies the input event or timer tick that
+   * asked for this render (one is started here for callers that don't have
+   * one). Ownership of the frame passes to renderDashboard and then to the
+   * Java side; requests that coalesce into an already-queued render finish
+   * immediately as discarded. When coalescing we keep the oldest waiting frame
+   * so measured latency reflects the worst-served request.
+   */
+  private async requestRender(reason: "initial" | "interval", frameId?: number): Promise<void> {
+    const newFrameId = frameId ?? frameTimings.startFrame(`render:${reason}`);
     this.queuedRenderReason = this.queuedRenderReason === "initial" ? "initial" : reason;
     if (this.renderInProgress) {
-      this.renderQueued = true;
+      if (this.renderQueued && this.queuedFrameId > 0) {
+        frameTimings.finishFrame(newFrameId, `discarded: coalesced into frame#${this.queuedFrameId}`);
+      } else {
+        this.renderQueued = true;
+        this.queuedFrameId = newFrameId;
+        frameTimings.logFrame(newFrameId, "render queued behind in-progress render");
+      }
       return;
     }
 
     this.renderInProgress = true;
+    let frameToRender = newFrameId;
     try {
-      do {
+      while (true) {
         const nextReason = this.queuedRenderReason;
         this.renderQueued = false;
         this.queuedRenderReason = "interval";
-        await this.renderDashboard(nextReason);
-      } while (this.renderQueued);
+        try {
+          await this.renderDashboard(nextReason, frameToRender);
+        } catch (error) {
+          frameTimings.finishFrame(frameToRender, `discarded: render failed: ${this.formatError(error)}`);
+          throw error;
+        }
+        if (!this.renderQueued || this.queuedFrameId <= 0) break;
+        frameToRender = this.queuedFrameId;
+        this.queuedFrameId = 0;
+      }
     } finally {
       this.renderInProgress = false;
     }
   }
 
-  private async renderDashboard(reason: "initial" | "interval"): Promise<void> {
+  private async renderDashboard(reason: "initial" | "interval", frameId: number): Promise<void> {
     console.log("renderDashboard", reason);
+    frameTimings.logFrame(frameId, `renderDashboard start (${reason})`);
     const paintStartedAtMs = Date.now();
-    const image = drawDashboard();
+    const image = frameTimings.span(frameId, "paint", () =>
+      frameTimings.runWithFrame(frameId, () => drawDashboard()),
+    );
     const paintMs = Date.now() - paintStartedAtMs;
-    const fingerprint = image.fingerprint();
+    const fingerprint = frameTimings.span(frameId, "fingerprint", () => image.fingerprint());
     const updatePreviewAfterTransmit = this.phase === "connected";
     if (!updatePreviewAfterTransmit) {
       this.updateDisplayPreviewFromImage(image);
@@ -567,14 +596,22 @@ class DashboardController {
         await this.communicator.setG2ScreenOn(true);
       }
       console.log("submitDashboardImage");
-      await this.communicator.submitDashboardImage(image.to8bppBuffer(), image.width, image.height, fingerprint, paintMs);
-      await this.communicator.waitForNextFrameMetrics(FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
+      const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
+      // The Java side owns the frame from here: it finishes it on last-packet
+      // ack, dedup, supersede, or timeout.
+      await this.communicator.submitDashboardImage(buffer, image.width, image.height, fingerprint, paintMs, frameId);
+      const outcome = await this.communicator.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
+      if (outcome === null) {
+        frameTimings.logFrame(frameId, "transmit backpressure wait timed out; render loop continuing");
+      }
       if (!dashboardState.screenOn) {
         await this.communicator.setG2ScreenOn(false);
       }
       if (updatePreviewAfterTransmit) {
         await this.updateConnectedDisplayPreviewFromImage(image);
       }
+    } else {
+      frameTimings.finishFrame(frameId, "discarded: no communicator, preview only");
     }
 
     this.updateConnectedForegroundNotification();
@@ -585,36 +622,53 @@ class DashboardController {
   }
 
   private async handleInputEvent(event: RawInputEvent): Promise<void> {
-    await receiveInput(event);
-
-    if (event.kind === "sys-event") {
-      this.lastSys = `${sourceName(event.eventSource)}/${eventName(event.eventType)}`;
-      this.appendLog(`sys-event ${this.lastSys}`);
-
-      if (
-        event.eventType === OsEventTypeList.FOREGROUND_EXIT_EVENT ||
-        event.eventType === OsEventTypeList.ABNORMAL_EXIT_EVENT ||
-        event.eventType === OsEventTypeList.SYSTEM_EXIT_EVENT
-      ) {
-        this.appendLog("display state invalidated by firmware exit event");
+    const frameId =
+      event.frameId > 0 ? event.frameId : frameTimings.startFrame(`input:${event.kind} (untracked source)`);
+    frameTimings.logFrame(frameId, `TS input handler start: ${event.kind} ${eventName(event.eventType)}`);
+    let renderRequested = false;
+    try {
+      frameTimings.spanStart(frameId, "handle-input");
+      try {
+        await receiveInput(event);
+      } finally {
+        frameTimings.spanEnd(frameId, "handle-input");
       }
 
-      if (event.eventSource === EventSourceType.TOUCH_EVENT_FROM_RING) {
-        this.lastInput = eventName(event.eventType);
-      }
-      await this.requestRender("interval");
-      return;
-    }
+      if (event.kind === "sys-event") {
+        this.lastSys = `${sourceName(event.eventSource)}/${eventName(event.eventType)}`;
+        this.appendLog(`sys-event ${this.lastSys}`);
 
-    if (event.kind === "text-click" && isDashboardContainerName(event.containerName)) {
-      if (
-        event.eventType === OsEventTypeList.SCROLL_TOP_EVENT ||
-        event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT
-      ) {
-        this.lastSys = `TEXT/${eventName(event.eventType)}`;
-        this.lastInput = `TEXT_${eventName(event.eventType)}`;
-        this.appendLog(`text-event ${this.lastSys}`);
-        await this.requestRender("interval");
+        if (
+          event.eventType === OsEventTypeList.FOREGROUND_EXIT_EVENT ||
+          event.eventType === OsEventTypeList.ABNORMAL_EXIT_EVENT ||
+          event.eventType === OsEventTypeList.SYSTEM_EXIT_EVENT
+        ) {
+          this.appendLog("display state invalidated by firmware exit event");
+        }
+
+        if (event.eventSource === EventSourceType.TOUCH_EVENT_FROM_RING) {
+          this.lastInput = eventName(event.eventType);
+        }
+        renderRequested = true;
+        await this.requestRender("interval", frameId);
+        return;
+      }
+
+      if (event.kind === "text-click" && isDashboardContainerName(event.containerName)) {
+        if (
+          event.eventType === OsEventTypeList.SCROLL_TOP_EVENT ||
+          event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT
+        ) {
+          this.lastSys = `TEXT/${eventName(event.eventType)}`;
+          this.lastInput = `TEXT_${eventName(event.eventType)}`;
+          this.appendLog(`text-event ${this.lastSys}`);
+          renderRequested = true;
+          await this.requestRender("interval", frameId);
+        }
+      }
+    } finally {
+      if (!renderRequested) {
+        frameTimings.finishFrame(frameId, "discarded: input did not trigger a render");
       }
     }
   }
@@ -805,6 +859,7 @@ class DashboardController {
   }
 
   private buildSyntheticRingInput(kind: "click" | "double-click" | "scroll-up" | "scroll-down"): RawInputEvent {
+    const frameId = frameTimings.startFrame(`input:synthetic:${kind}`);
     switch (kind) {
       case "click":
         return {
@@ -813,6 +868,7 @@ class DashboardController {
           eventType: OsEventTypeList.CLICK_EVENT,
           eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
           systemExitReasonCode: 0,
+          frameId,
         };
       case "double-click":
         return {
@@ -821,6 +877,7 @@ class DashboardController {
           eventType: OsEventTypeList.DOUBLE_CLICK_EVENT,
           eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
           systemExitReasonCode: 0,
+          frameId,
         };
       case "scroll-up":
         return {
@@ -829,6 +886,7 @@ class DashboardController {
           eventType: OsEventTypeList.SCROLL_TOP_EVENT,
           eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
           systemExitReasonCode: 0,
+          frameId,
         };
       case "scroll-down":
       default:
@@ -838,6 +896,7 @@ class DashboardController {
           eventType: OsEventTypeList.SCROLL_BOTTOM_EVENT,
           eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
           systemExitReasonCode: 0,
+          frameId,
         };
     }
   }

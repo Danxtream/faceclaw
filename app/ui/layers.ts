@@ -1,5 +1,6 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { BdfFont } from "../graphics/bdffont";
+import { spanCurrent } from "../native/frame-timings";
 import { type ConfigSettingString } from "./dashboard-settings";
 
 export type DashboardInputEvent =
@@ -79,18 +80,20 @@ export class LayerStack {
   private paintLayer(index: number): GrayImage {
     const layer = this.layers[index]!;
     let cachedBelow: GrayImage | null = null;
-    return layer.paint(this.ctx, () => {
-      if (cachedBelow) {
+    return spanCurrent(`paint[${index}]:${layer.constructor.name}`, () =>
+      layer.paint(this.ctx, () => {
+        if (cachedBelow) {
+          return cachedBelow;
+        }
+        if (index <= 0) {
+          cachedBelow = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+        } else if (layer.paintOverBase) {
+          cachedBelow = this.paintLayer(0);
+        } else {
+          cachedBelow = this.paintLayer(index - 1);
+        }
         return cachedBelow;
-      }
-      if (index <= 0) {
-        cachedBelow = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
-      } else if (layer.paintOverBase) {
-        cachedBelow = this.paintLayer(0);
-      } else {
-        cachedBelow = this.paintLayer(index - 1);
-      }
-      return cachedBelow;
-    });
+      }),
+    );
   }
 }
