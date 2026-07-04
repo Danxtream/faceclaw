@@ -295,6 +295,10 @@ export class MainViewModel extends Observable {
     dashboardController.setActiveTextSettingValue(args.object?.text ?? args.value ?? "");
   }
 
+  onTextSettingReturnPress(): void {
+    dashboardController.finishActiveTextSettingEdit();
+  }
+
   onOpenEvenAppSettingsTap(): void {
     dashboardController.openEvenAppSettings();
   }

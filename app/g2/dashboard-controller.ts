@@ -16,6 +16,7 @@ import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import {
   applyDashboardScreenTimeout,
+  closeDashboardTextSettingEditor,
   dashboardState,
   drawDashboard,
   noteDashboardPhoneTextInput,
@@ -527,6 +528,23 @@ class DashboardController {
     this.emit();
     if (finishedSetting === nightscoutSiteUrlSetting || finishedSetting === nightscoutApiTokenSetting) {
       void this.refreshNightscoutAfterSettingsChange();
+    }
+  }
+
+  /**
+   * Finish the active edit from the phone side (e.g. the IME's done key):
+   * ends the edit session and navigates the glasses out of the edit page.
+   */
+  finishActiveTextSettingEdit(): void {
+    if (!this.activeTextSetting) return;
+    this.endTextSettingEdit();
+    if (!closeDashboardTextSettingEditor()) return;
+    if (this.phase === "connected" && this.communicator) {
+      void this.requestRender("interval").catch((error) => {
+        this.appendLog(`edit close render failed: ${this.formatError(error)}`);
+      });
+    } else {
+      this.updateDisplayPreviewFromImage(drawDashboard());
     }
   }
 

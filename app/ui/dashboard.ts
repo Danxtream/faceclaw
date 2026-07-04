@@ -5,7 +5,7 @@ import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
 import { EventSourceType, OsEventTypeList } from "../g2/events";
 import { getDashboardPlugin, type DashboardPluginCardBounds, type DashboardPluginState } from "./dashboard-plugins";
-import { isNightscoutSettingsConfigured, screenTimeoutSettingToMs, screenTimeoutSetting, type DashboardSlotId, DashboardPluginId, bottomRightSlotSetting, bottomLeftSlotSetting, dashboardSlotIds } from "./dashboard-settings";
+import { EditTextSettingLayer, isNightscoutSettingsConfigured, screenTimeoutSettingToMs, screenTimeoutSetting, type DashboardSlotId, DashboardPluginId, bottomRightSlotSetting, bottomLeftSlotSetting, dashboardSlotIds } from "./dashboard-settings";
 import { Layer, LayerActions, LayerStack, type DashboardInputEvent, type LayerContext } from "./layers";
 import { SingleNotificationLayer } from "./notifications";
 import { TelepromptLayer } from "./apps/teleprompt";
@@ -51,7 +51,7 @@ const dashboardActions: LayerActions = {
   playBuzzerNote: () => {},
 };
 const dashboardFont = getDefaultSmallFont();
-export const TOP_LEFT_MENU_LAYOUT = { x: 8, y: 8, width: 272, height: 128 };
+export const TOP_LEFT_MENU_LAYOUT = { x: 8, y: 8, width: 272 };
 
 function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputEvent {
   if (event.kind === "sys-event") {
@@ -134,6 +134,14 @@ export function logToDashboard(message: string): void {
 
 export function setDashboardActions(actions: Partial<LayerActions>): void {
   dashboardLayers.setActions(actions);
+}
+
+/**
+ * Close the glasses-side text-setting edit page, e.g. when the user finishes
+ * typing on the phone. Returns whether the display changed.
+ */
+export function closeDashboardTextSettingEditor(): boolean {
+  return dashboardLayers.popIfTop((layer) => layer instanceof EditTextSettingLayer);
 }
 
 export function drawDashboard(): GrayImage {

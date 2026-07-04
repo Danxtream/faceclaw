@@ -1,14 +1,18 @@
-import { GrayImage } from "../graphics/image";
+import { G2_LENS_HEIGHT, GrayImage } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
 import { getDefaultSmallFont, type BdfFont } from "../graphics/bdffont";
+import { clamp } from "../util/numeric-util";
 import { DashboardInputEvent, Layer, LayerContext, PaintBelow } from "./layers";
 
 const DEFAULT_MENU_X = 8;
 const DEFAULT_MENU_Y = 8;
 const DEFAULT_MENU_WIDTH = 272;
-const DEFAULT_MENU_HEIGHT = 128;
+// Menus grow with their item count, from half the screen (matching the old
+// fixed quarter-screen-era look) up to the full screen, then scroll.
+const DEFAULT_MENU_MIN_HEIGHT = G2_LENS_HEIGHT / 2 - 2 * DEFAULT_MENU_Y;
 const MENU_TITLE_HEIGHT = 16;
 const MENU_ROW_HEIGHT = 20;
+const MENU_BODY_PADDING = 8;
 const MENU_HIGHLIGHT_Y_OFFSET = 0;
 const MENU_TOGGLE_SWITCH_Y_OFFSET = 1;
 const MENU_HIGHLIGHT_HEIGHT = MENU_ROW_HEIGHT - 1;
@@ -19,7 +23,10 @@ export type MenuLayout = {
   x: number;
   y: number;
   width: number;
-  height: number;
+  /** Smallest box to draw even when items don't fill it. Default: top half of the screen. */
+  minHeight?: number;
+  /** Height cap before the menu starts scrolling. Default: the full screen. */
+  maxHeight?: number;
 };
 
 export type MenuItemRenderArgs = {
@@ -78,6 +85,7 @@ export function drawRightValueMenuItem(
 
 export class MenuLayer implements Layer {
   private selectedIndex = 0;
+  private scrollRow = 0;
 
   constructor(
     private readonly title: string | null,
@@ -86,14 +94,24 @@ export class MenuLayer implements Layer {
       x: DEFAULT_MENU_X,
       y: DEFAULT_MENU_Y,
       width: DEFAULT_MENU_WIDTH,
-      height: DEFAULT_MENU_HEIGHT,
     },
     public readonly paintOverBase = false,
   ) {}
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
     const font = getDefaultSmallFont();
-    const { x, y, width, height } = this.layout;
+    const { x, y, width } = this.layout;
+    const chromeTop = (this.title ? MENU_TITLE_HEIGHT : 0) + MENU_BODY_PADDING;
+    const minHeight = this.layout.minHeight ?? DEFAULT_MENU_MIN_HEIGHT;
+    const maxHeight = Math.min(
+      this.layout.maxHeight ?? G2_LENS_HEIGHT - y - DEFAULT_MENU_Y,
+      G2_LENS_HEIGHT - y,
+    );
+    const contentHeight = chromeTop + this.items.length * MENU_ROW_HEIGHT + MENU_BODY_PADDING;
+    const height = clamp(contentHeight, Math.min(minHeight, maxHeight), maxHeight);
+    const visibleRowCount = Math.max(1, ((height - chromeTop - MENU_BODY_PADDING) / MENU_ROW_HEIGHT) | 0);
+    this.clampScrollToSelection(visibleRowCount);
+
     const image = paintBelow();
     image.fillRoundedRect(x, y, width, height, 0);
     image.drawRoundedRect(x, y, width, height, 72);
@@ -101,20 +119,21 @@ export class MenuLayer implements Layer {
       image.drawText(font, x + 12, y + 8, this.title, 220);
     }
 
-    const bodyY = y + (this.title ? MENU_TITLE_HEIGHT : 0) + 8;
-    for (let index = 0; index < this.items.length; index++) {
+    const bodyY = y + chromeTop;
+    const lastVisibleRow = Math.min(this.items.length, this.scrollRow + visibleRowCount);
+    for (let index = this.scrollRow; index < lastVisibleRow; index++) {
       const item = this.items[index]!;
-      const y = bodyY + index * MENU_ROW_HEIGHT;
+      const rowY = bodyY + (index - this.scrollRow) * MENU_ROW_HEIGHT;
       const selected = index === this.selectedIndex;
       if (selected) {
-        image.fillRoundedRect(x + 12, y + MENU_HIGHLIGHT_Y_OFFSET, width - 24, MENU_HIGHLIGHT_HEIGHT, MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL);
-        image.drawRoundedRect(x + 12, y + MENU_HIGHLIGHT_Y_OFFSET, width - 24, MENU_HIGHLIGHT_HEIGHT, MENU_HIGHLIGHT_SELECTED_BORDER_STROKE);
+        image.fillRoundedRect(x + 12, rowY + MENU_HIGHLIGHT_Y_OFFSET, width - 24, MENU_HIGHLIGHT_HEIGHT, MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL);
+        image.drawRoundedRect(x + 12, rowY + MENU_HIGHLIGHT_Y_OFFSET, width - 24, MENU_HIGHLIGHT_HEIGHT, MENU_HIGHLIGHT_SELECTED_BORDER_STROKE);
       }
       if (item.render) {
         item.render({
           image,
           x: x + 22,
-          y,
+          y: rowY,
           width: width - 44,
           height: MENU_ROW_HEIGHT - 3,
           selected,
@@ -122,11 +141,33 @@ export class MenuLayer implements Layer {
           ctx,
         });
       } else {
-        image.drawText(font, x + 22, y + 3, item.label, selected ? 255 : 200);
+        image.drawText(font, x + 22, rowY + 3, item.label, selected ? 255 : 200);
       }
     }
 
+    if (this.items.length > visibleRowCount) {
+      this.drawScrollbar(image, x + width - 7, bodyY, visibleRowCount);
+    }
+
     return image;
+  }
+
+  private clampScrollToSelection(visibleRowCount: number): void {
+    if (this.selectedIndex < this.scrollRow) {
+      this.scrollRow = this.selectedIndex;
+    } else if (this.selectedIndex >= this.scrollRow + visibleRowCount) {
+      this.scrollRow = this.selectedIndex - visibleRowCount + 1;
+    }
+    this.scrollRow = clamp(this.scrollRow, 0, Math.max(0, this.items.length - visibleRowCount));
+  }
+
+  private drawScrollbar(image: GrayImage, trackX: number, trackY: number, visibleRowCount: number): void {
+    const trackHeight = visibleRowCount * MENU_ROW_HEIGHT - 4;
+    image.fillRect(trackX, trackY, 3, trackHeight, 30);
+    const thumbHeight = Math.max(8, (trackHeight * visibleRowCount / this.items.length) | 0);
+    const maxScrollRow = this.items.length - visibleRowCount;
+    const thumbY = trackY + (((trackHeight - thumbHeight) * this.scrollRow / maxScrollRow) | 0);
+    image.fillRect(trackX, thumbY, 3, thumbHeight, 120);
   }
 
   async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {

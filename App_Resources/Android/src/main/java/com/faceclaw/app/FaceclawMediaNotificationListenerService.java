@@ -183,6 +183,31 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
         return out.toByteArray();
     }
 
+    /**
+     * Grayscale icon (iconSize*iconSize bytes) for one active notification,
+     * identified by its key; empty array when the notification or its icon is
+     * unavailable. Shares the extraction/scaling pipeline with the tray icon
+     * strip above.
+     */
+    public static byte[] getNotificationIconGrayForKey(String key, int iconSize) {
+        FaceclawMediaNotificationListenerService service = activeService;
+        int size = Math.max(1, Math.min(96, iconSize));
+        if (service == null) {
+            return new byte[0];
+        }
+        StatusBarNotification statusBarNotification = findActiveNotificationByKey(service, key);
+        if (statusBarNotification == null || statusBarNotification.getNotification() == null) {
+            return new byte[0];
+        }
+        Drawable drawable = loadNotificationIcon(service, statusBarNotification.getNotification());
+        if (drawable == null) {
+            return new byte[0];
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream(size * size);
+        appendIconGrayBytes(drawable, size, out, service, -1, statusBarNotification.getPackageName());
+        return out.toByteArray();
+    }
+
     public static String getActiveNotificationsJson(int maxNotifications) {
         FaceclawMediaNotificationListenerService service = activeService;
         int limit = Math.max(0, Math.min(100, maxNotifications));
@@ -484,6 +509,9 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
      * runs at most once per icon-cache refresh on tiny bitmaps.
      */
     private static void dumpIconDebugPng(FaceclawMediaNotificationListenerService service, int index, String packageName, Bitmap bitmap) {
+        if (index < 0) {
+            return;
+        }
         try {
             java.io.File dir = new java.io.File(service.getExternalFilesDir(null), "debug-icons");
             if (!dir.exists() && !dir.mkdirs()) {

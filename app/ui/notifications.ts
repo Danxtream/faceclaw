@@ -7,9 +7,11 @@ import {
   dismissNotification,
   invokeNotificationAction,
   readActiveNotifications,
+  readNotificationIconByKey,
   type AndroidNotification,
   type AndroidNotificationAction,
 } from "../native/notification-icons";
+import { noteStaleDataUsed, renderPassAllowsStaleData } from "../util/render-freshness";
 import { type DashboardInputEvent, type Layer, type LayerContext, type PaintBelow } from "./layers";
 
 const PAGE_X = 12;
@@ -18,10 +20,22 @@ const LIST_TOP = 38;
 const LIST_BOTTOM = G2_LENS_HEIGHT;
 const CARD_X = 20;
 const CARD_WIDTH = G2_LENS_WIDTH - 40;
-const CARD_TEXT_WIDTH = CARD_WIDTH - 24;
+const ICON_SIZE = 24;
+const ICON_TEXT_GAP = 8;
+const CARD_TEXT_X = 10 + ICON_SIZE + ICON_TEXT_GAP;
+const CARD_TEXT_WIDTH = CARD_WIDTH - CARD_TEXT_X - 14;
 const LINE_HEIGHT = 14;
 const CARD_GAP = 6;
 const MAX_NOTIFICATIONS = 50;
+
+/** Icon for a paint pass: allow-stale, reporting staleness to the render loop. */
+function iconForNotification(key: string): GrayImage | null {
+  const { icon, stale } = readNotificationIconByKey(key, renderPassAllowsStaleData());
+  if (stale) {
+    noteStaleDataUsed();
+  }
+  return icon;
+}
 
 type CardLayout = {
   notification: AndroidNotification;
@@ -69,7 +83,10 @@ export class NotificationsListLayer implements Layer {
     for (let index = 0; index < layouts.length; index++) {
       const layout = layouts[index]!;
       if (cursorY + layout.height >= LIST_TOP && cursorY <= LIST_BOTTOM) {
-        drawNotificationCard(image, font, layout, CARD_X, cursorY, CARD_WIDTH, index === selectedIndex);
+        // Icons are only resolved for cards actually drawn, so a long list
+        // does not fetch icons for everything below the fold.
+        const icon = iconForNotification(layout.notification.key);
+        drawNotificationCard(image, font, layout, CARD_X, cursorY, CARD_WIDTH, index === selectedIndex, icon);
       }
       cursorY += layout.height + CARD_GAP;
       if (cursorY > LIST_BOTTOM + 80) break;
@@ -139,7 +156,7 @@ export class SingleNotificationLayer implements Layer {
 
     const menu = buildDetailMenu(notification);
     this.selectedMenuIndex = clamp(this.selectedMenuIndex, 0, Math.max(0, menu.length - 1));
-    drawDetailContent(image, font, notification);
+    drawDetailContent(image, font, notification, iconForNotification(notification.key));
     drawDetailMenu(image, font, menu, this.selectedMenuIndex);
     return image;
   }
@@ -230,14 +247,18 @@ function drawNotificationCard(
   y: number,
   width: number,
   selected: boolean,
+  icon: GrayImage | null,
 ): void {
   const fill = selected ? 15 : 0;
   const stroke = selected ? 110 : 38;
   image.fillRoundedRect(x, y, width, layout.height, fill, 8);
   image.drawRoundedRect(x, y, width, layout.height, stroke, 8);
+  if (icon) {
+    image.bitBlt(icon, x + 10, y + 8);
+  }
   for (let index = 0; index < layout.lines.length; index++) {
     const value = index === 0 ? 140 : selected ? 235 : 185;
-    image.drawText(font, x + 10, y + 7 + index * LINE_HEIGHT, layout.lines[index]!, value);
+    image.drawText(font, x + CARD_TEXT_X, y + 7 + index * LINE_HEIGHT, layout.lines[index]!, value);
   }
 }
 
@@ -254,11 +275,16 @@ function scrollForSelected(layouts: CardLayout[], selectedIndex: number, viewpor
   return clamp(centered | 0, 0, maxScroll);
 }
 
-function drawDetailContent(image: GrayImage, font: BdfFont, notification: AndroidNotification): void {
+function drawDetailContent(image: GrayImage, font: BdfFont, notification: AndroidNotification, icon: GrayImage | null): void {
   const contentX = 24;
   const contentWidth = 360;
   image.drawText(font, PAGE_X + 12, PAGE_Y + 9, "Notification", 220);
-  image.drawText(font, contentX, 42, `${notification.appName || notification.packageName}  ${formatRelativeTime(notification.postTime)}`, 150);
+  let appLineX = contentX;
+  if (icon) {
+    image.bitBlt(icon, contentX, 36);
+    appLineX = contentX + ICON_SIZE + ICON_TEXT_GAP;
+  }
+  image.drawText(font, appLineX, 42, `${notification.appName || notification.packageName}  ${formatRelativeTime(notification.postTime)}`, 150);
 
   const lines: string[] = [];
   lines.push(...wrapText(font, notification.title || "(untitled)", contentWidth));

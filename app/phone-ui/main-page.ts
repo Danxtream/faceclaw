@@ -74,6 +74,9 @@ function applySettingsTextFieldContrast(textField: TextField): void {
 
   nativeTextField.setTextColor(android.graphics.Color.rgb(34, 34, 34))
   nativeTextField.setHintTextColor(android.graphics.Color.rgb(102, 102, 102))
+  // Editing an existing value usually means replacing it: select all on focus
+  // so typing starts fresh but the current value stays visible.
+  nativeTextField.setSelectAllOnFocus(true)
 }
 
 function focusSystemNameField(page: Page): void {

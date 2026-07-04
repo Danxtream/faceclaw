@@ -57,6 +57,15 @@ export class LayerStack {
     }
   }
 
+  /** Pop the top layer only if it matches; returns whether a layer was popped. */
+  popIfTop(predicate: (layer: Layer) => boolean): boolean {
+    if (this.layers.length > 1 && predicate(this.layers[this.layers.length - 1]!)) {
+      this.layers.pop();
+      return true;
+    }
+    return false;
+  }
+
   clearToBase(): void {
     this.layers.splice(1);
   }

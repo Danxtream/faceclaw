@@ -1,5 +1,6 @@
 import { ApplicationSettings } from "@nativescript/core";
 import { getDefaultSmallFont } from "~/graphics/bdffont";
+import { wrapText } from "~/graphics/textwrap";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, MenuLayer } from "./menu";
 import { DashboardInputEvent, Layer, type LayerContext } from "./layers";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "~/graphics/image";
@@ -403,7 +404,7 @@ function truncateSetting(value: string, maxLength = 22): string {
   return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
-class EditTextSettingLayer implements Layer {
+export class EditTextSettingLayer implements Layer {
   constructor(private readonly setting: ConfigSettingString) {}
 
   paint(): GrayImage {
@@ -411,8 +412,10 @@ class EditTextSettingLayer implements Layer {
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     image.drawRect(12, 12, G2_LENS_WIDTH - 24, G2_LENS_HEIGHT - 24, 52);
     image.drawText(font, 22, 16, this.setting.glassesEditTitle, 220);
-    image.drawText(font, 22, 52, "Look at the phone app", 200);
-    image.drawText(font, 22, 70, "to type a value.", 200);
+    const message = wrapText(font, "Look at the phone app to type a value.", G2_LENS_WIDTH - 48);
+    for (let index = 0; index < message.length; index++) {
+      image.drawText(font, 22, 52 + index * 14, message[index]!, 200);
+    }
     image.drawText(font, 22, 110, truncateSetting(this.setting.get(), 52), 220);
     image.drawText(font, 22, 252, "Double-click to go back", 110);
     return image;

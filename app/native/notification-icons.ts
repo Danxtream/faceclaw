@@ -9,8 +9,15 @@ const ICON_CACHE_MS = 5_000;
 
 let cachedIcons: GrayImage[] = [];
 let cachedAtMs = 0;
+const keyedIconCache = new Map<string, { icon: GrayImage | null; atMs: number }>();
+const KEYED_ICON_CACHE_MAX = 128;
 let notificationListenerProxy: any | null = null;
 const notificationPostedListeners = new Set<(notificationKey: string) => void>();
+
+function invalidateIconCaches(): void {
+  cachedAtMs = 0;
+  keyedIconCache.clear();
+}
 
 export type AndroidNotificationAction = {
   index: number;
@@ -84,6 +91,55 @@ export function readActiveNotificationIcons(maxIcons: number, allowStale: boolea
   return { icons: icons.map(icon => icon.clone()), stale: false };
 }
 
+export type NotificationIconResult = {
+  icon: GrayImage | null;
+  /** True when the icon came from an expired (or empty) cache under allowStale. */
+  stale: boolean;
+};
+
+/**
+ * Icon for one notification, identified by its key, with the same allow-stale
+ * contract as readActiveNotificationIcons: an allowStale call never blocks on
+ * the notification listener service, and stale=true asks the caller to repaint
+ * with allowStale=false once the current frame is done. A null icon with
+ * stale=false is definitive (notification gone or icon unavailable) and is
+ * cached too, so failing icons do not refetch every paint.
+ */
+export function readNotificationIconByKey(key: string, allowStale: boolean): NotificationIconResult {
+  if (!global.isAndroid || !key) return { icon: null, stale: false };
+
+  const now = Date.now();
+  const cached = keyedIconCache.get(key);
+  if (cached && now - cached.atMs < ICON_CACHE_MS) {
+    return { icon: cached.icon?.clone() ?? null, stale: false };
+  }
+  if (allowStale) {
+    return { icon: cached?.icon?.clone() ?? null, stale: true };
+  }
+
+  const bytes = spanCurrent("fetch-notification-icon", () =>
+    toUint8Array(
+      com.faceclaw.app.FaceclawMediaNotificationListenerService.getNotificationIconGrayForKey(
+        key,
+        ICON_SIZE,
+      ),
+    ),
+  );
+  let icon: GrayImage | null = null;
+  if (bytes.length >= ICON_SIZE * ICON_SIZE) {
+    icon = new GrayImage(ICON_SIZE, ICON_SIZE, 0);
+    icon.pixels.set(bytes.subarray(0, ICON_SIZE * ICON_SIZE));
+  }
+  keyedIconCache.delete(key);
+  keyedIconCache.set(key, { icon, atMs: now });
+  while (keyedIconCache.size > KEYED_ICON_CACHE_MAX) {
+    const oldestKey = keyedIconCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    keyedIconCache.delete(oldestKey);
+  }
+  return { icon: icon?.clone() ?? null, stale: false };
+}
+
 export function readActiveNotifications(maxNotifications = 50): AndroidNotification[] {
   if (!global.isAndroid || maxNotifications <= 0) return [];
   try {
@@ -104,7 +160,7 @@ export function readActiveNotifications(maxNotifications = 50): AndroidNotificat
 
 export function invokeNotificationAction(notificationKey: string, actionIndex: number): boolean {
   if (!global.isAndroid || !notificationKey) return false;
-  cachedAtMs = 0;
+  invalidateIconCaches();
   return Boolean(
     com.faceclaw.app.FaceclawMediaNotificationListenerService.invokeNotificationAction(
       notificationKey,
@@ -115,7 +171,7 @@ export function invokeNotificationAction(notificationKey: string, actionIndex: n
 
 export function dismissNotification(notificationKey: string): boolean {
   if (!global.isAndroid || !notificationKey) return false;
-  cachedAtMs = 0;
+  invalidateIconCaches();
   return Boolean(
     com.faceclaw.app.FaceclawMediaNotificationListenerService.dismissNotification(notificationKey),
   );
@@ -161,7 +217,7 @@ function ensureNotificationPostedListener(): void {
   if (!global.isAndroid || notificationListenerProxy) return;
   notificationListenerProxy = new com.faceclaw.app.FaceclawNotificationListener({
     onNotificationPosted: (notificationKey: string) => {
-      cachedAtMs = 0;
+      invalidateIconCaches();
       const key = String(notificationKey);
       const listeners = Array.from(notificationPostedListeners);
       setTimeout(() => {

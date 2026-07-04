@@ -71,6 +71,7 @@
                 id="settingsTextField"
                 text="{{ activeTextSettingValue }}"
                 textChange="{{ onTextSettingTextChange }}"
+                returnPress="{{ onTextSettingReturnPress }}"
                 autocorrect="false"
                 autocapitalizationType="words"
                 returnKeyType="done" />
