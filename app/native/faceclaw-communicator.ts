@@ -266,6 +266,16 @@ export class FaceclawCommunicatorBridge {
     return this.enqueueJavaCall(() => Boolean(this.communicator.sendShutdown(exitMode)));
   }
 
+  async playBuzzerNote(note: number, oct: number, beat: number): Promise<void> {
+    await this.enqueueJavaCall(() => {
+      this.communicator.playBuzzerNote(
+        Math.round(note),
+        Math.round(oct),
+        Math.round(beat),
+      );
+    });
+  }
+
   async close(): Promise<void> {
     await this.enqueueJavaCall(() => this.communicator.close());
   }

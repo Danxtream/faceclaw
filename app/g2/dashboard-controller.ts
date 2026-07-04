@@ -155,6 +155,7 @@ class DashboardController {
       setTranscribeRenderActive: (active) => this.setTranscribeRenderActive(active),
       startDedicatedVoiceInput: (mode) => this.startDedicatedVoiceInput(mode),
       stopDedicatedVoiceInput: () => this.stopDedicatedVoiceInput(),
+      playBuzzerNote: (note, oct, beat) => this.playBuzzerNote(note, oct, beat),
     });
     this.offAndroidNotification = onAndroidNotificationPosted((notificationKey) => {
       void this.handleAndroidNotificationPosted(notificationKey).catch((error) => {
@@ -672,6 +673,13 @@ class DashboardController {
   private stopDedicatedVoiceInput(): void {
     voiceControlBridge.stop();
     this.startVoiceControlIfEnabled();
+  }
+
+  private async playBuzzerNote(note: number, oct: number, beat: number): Promise<void> {
+    if (this.phase !== "connected" || !this.communicator) {
+      return;
+    }
+    await this.communicator.playBuzzerNote(note, oct, beat);
   }
 
   private setStopwatchRenderActive(active: boolean): void {

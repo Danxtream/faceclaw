@@ -48,6 +48,7 @@ const dashboardActions: LayerActions = {
   setTranscribeRenderActive: () => {},
   startDedicatedVoiceInput: () => {},
   stopDedicatedVoiceInput: () => {},
+  playBuzzerNote: () => {},
 };
 const dashboardFont = getDefaultSmallFont();
 export const TOP_LEFT_MENU_LAYOUT = { x: 8, y: 8, width: 272, height: 128 };

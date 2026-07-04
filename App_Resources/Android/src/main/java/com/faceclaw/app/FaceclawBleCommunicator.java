@@ -243,6 +243,30 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         interruptibleSleep.interrupt();
     }
 
+    /** Play one quantized buzzer tone via CFW load_image_z mode 5 kind 1. */
+    public void playBuzzerNote(int note, int oct, int beat) {
+        synchronized (lock) {
+            if (!running || !sessionReady || !fixedLayoutCreated) {
+                logLine("skip buzzer note; session not ready");
+                return;
+            }
+            byte[] payload = BleProtocol.buildBuzzerNotePayload(note, oct, beat);
+            OutboundMessage message = messageBuilder.imagePayload(
+                DASHBOARD_TILE,
+                nextMapSessionId(),
+                payload,
+                "buzzer note=" + note + " oct=" + oct + " beat=" + beat,
+                connectionOptions.sendImagesToLeft
+            );
+            message.onTimeout = () -> {
+                handleTransportFailure("buzzer note ack timeout");
+            };
+            pendingMessages.addLast(message);
+            logLine("queue " + message.label);
+        }
+        interruptibleSleep.interrupt();
+    }
+
     public Bitmap createPreviewBitmap(int[] colors, int width, int height) {
         if (colors == null) {
             throw new IllegalArgumentException("colors are required");

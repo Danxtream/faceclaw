@@ -14,9 +14,11 @@ export type NightscoutSettings = {
   siteUrl: string;
   apiToken: string;
 };
+export type BatteryDisplayMode = "icon" | "percentage";
 export type SystemCardSettings = {
   showFaceclawLogo: boolean;
   showBatteryIndicators: boolean;
+  batteryDisplayMode: BatteryDisplayMode;
   showAndroidNotifications: boolean;
   showSignalStrength: boolean;
 };
@@ -197,6 +199,15 @@ export const showBatteryIndicatorsSetting = new ConfigSettingBoolean({
   defaultValue: true,
 });
 
+export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMode>({
+  id: "batteryDisplayMode",
+  label: "Battery display",
+  storageKey: "dashboard.systemCard.batteryDisplayMode",
+  defaultValue: "icon",
+  values: ["icon", "percentage"],
+  formatValue: batteryDisplayModeLabel,
+});
+
 export const showAndroidNotificationsSetting = new ConfigSettingBoolean({
   id: "showAndroidNotifications",
   label: "Show Android Notifications",
@@ -265,6 +276,10 @@ export function screenTimeoutSettingToMs(value: ScreenTimeoutSetting): number | 
 
 export function screenTimeoutLabel(value: ScreenTimeoutSetting): string {
   return value === "never" ? "Never" : value;
+}
+
+export function batteryDisplayModeLabel(value: BatteryDisplayMode): string {
+  return value === "icon" ? "Icon" : "Percentage";
 }
 
 export function loadNightscoutSettings(): NightscoutSettings {

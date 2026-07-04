@@ -10,6 +10,7 @@ import { TelepromptLayer } from "../apps/teleprompt";
 import { StopwatchLayer } from "../apps/stopwatch";
 import { TranscribeLayer } from "../apps/transcribe";
 import { ScreenTestLayer } from "../apps/screen-test";
+import { BuzzerDemoLayer } from "../apps/buzzer-demo";
 import { AboutPage } from "./about-page";
 import { GrayImage } from "~/graphics/image";
 
@@ -103,6 +104,12 @@ function createAppsMenuLayer(): MenuLayer {
         label: "Screen test",
         onSelect: (ctx) => {
           ctx.stack.push(new ScreenTestLayer());
+        },
+      },
+      {
+        label: "Buzzer demo",
+        onSelect: (ctx) => {
+          ctx.stack.push(new BuzzerDemoLayer());
         },
       },
     ],

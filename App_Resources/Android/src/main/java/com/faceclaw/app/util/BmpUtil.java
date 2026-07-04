@@ -116,4 +116,45 @@ public class BmpUtil {
               | ((bmp[12] & 0xff) << 16)
               | ((bmp[13] & 0xff) << 24);
     }
+
+    /**
+     * Strip the BMP header and row padding, producing the headerless 4bpp wire
+     * format expected by CFW load_image_z mode 6: top-down rows, stride =
+     * ceil(width/2), high nibble = left pixel.
+     */
+    public static byte[] pack4bppFromBmp(byte[] bmp) {
+        if (bmp == null || bmp.length < 0x36 || bmp[0] != 0x42 || bmp[1] != 0x4d) {
+            return new byte[0];
+        }
+        int width = readUint32Le(bmp, 18);
+        int heightSigned = readInt32Le(bmp, 22);
+        int height = heightSigned < 0 ? -heightSigned : heightSigned;
+        int pixelOffset = readBmpPixelOffset(bmp);
+        if (width <= 0 || height <= 0 || pixelOffset < 0 || pixelOffset >= bmp.length) {
+            return new byte[0];
+        }
+        int packedStride = (width + 1) >> 1;
+        int bmpStride = (packedStride + 3) & ~3;
+        if (pixelOffset + (long) bmpStride * height > bmp.length) {
+            return new byte[0];
+        }
+        byte[] out = new byte[packedStride * height];
+        for (int y = 0; y < height; y++) {
+            int srcY = height - 1 - y;
+            int srcRow = pixelOffset + srcY * bmpStride;
+            System.arraycopy(bmp, srcRow, out, y * packedStride, packedStride);
+        }
+        return out;
+    }
+
+    private static int readUint32Le(byte[] buf, int offset) {
+        return (buf[offset] & 0xff)
+              | ((buf[offset + 1] & 0xff) << 8)
+              | ((buf[offset + 2] & 0xff) << 16)
+              | ((buf[offset + 3] & 0xff) << 24);
+    }
+
+    private static int readInt32Le(byte[] buf, int offset) {
+        return readUint32Le(buf, offset);
+    }
 }

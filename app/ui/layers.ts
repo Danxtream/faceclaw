@@ -18,6 +18,7 @@ export type LayerActions = {
   setTranscribeRenderActive: (active: boolean) => Promise<void> | void;
   startDedicatedVoiceInput: (mode: "wakeword" | "full") => Promise<void> | void;
   stopDedicatedVoiceInput: () => Promise<void> | void;
+  playBuzzerNote: (note: number, oct: number, beat: number) => Promise<void> | void;
 };
 
 export type PaintBelow = () => GrayImage;

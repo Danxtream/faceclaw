@@ -74,7 +74,7 @@ public final class BleImageOptimizer {
         final int tileIndex;
         final BleProtocol.ImageTileOptions tile;
         final byte[] bmp;      // raw 4bpp BMP, kept for the displayed-tile dedup cache
-        final byte[] payload;  // bytes actually streamed: zlib BMP when it shrinks, else == bmp
+        final byte[] payload;  // bytes actually streamed: mode-6 zlib 4bpp when it shrinks, else == bmp
         final int sessionId;
         List<BleProtocol.ImageFragment> fragments = Collections.emptyList();
 
@@ -88,27 +88,24 @@ public final class BleImageOptimizer {
     }
 
     /**
-     * zlib-deflate a tile BMP for transmission when CFW image decompression is
-     * enabled and it actually shrinks the payload. The CFW's load_image_z
-     * inflates any image buffer whose first byte is a zlib stream (CM nibble 8);
-     * a raw BMP (starts 0x42) is loaded unchanged, so the raw fallback is always
-     * safe and mixing raw/compressed tiles is fine. java.util.zip.Deflater's
-     * default is the zlib wrapper (2-byte header + adler32) at windowBits 15,
-     * matching the firmware inflate.
+     * zlib-deflate headerless 4bpp pixels for CFW load_image_z mode 6 when it
+     * shrinks the payload. Wire format: [6][zlib stream]. A raw BMP (starts 'B')
+     * is sent verbatim when compression does not help.
      */
     static byte[] maybeCompress(byte[] bmp) {
-        if (!ConnectionOptions.COMPRESS_IMAGES_ZLIB || bmp == null || bmp.length == 0) {
+        if (bmp == null || bmp.length == 0) {
             return bmp;
         }
-        byte[] z = deflate(bmp);
-        // CFW wire format: a compressed payload is [mode byte][zlib stream]. Mode 1
-        // = zlib of a 4bpp BMP (load_image_z inflates it and hands the BMP to the
-        // stock loader). A raw BMP (starts 'B') is still sent verbatim.
-        if (z == null || z.length + 1 >= bmp.length) {
+        byte[] packed = BmpUtil.pack4bppFromBmp(bmp);
+        if (packed.length == 0) {
+            return bmp;
+        }
+        byte[] z = deflate(packed);
+        if (z == null || z.length + 1 >= packed.length) {
             return bmp;
         }
         byte[] out = new byte[z.length + 1];
-        out[0] = 1;
+        out[0] = 6;
         System.arraycopy(z, 0, out, 1, z.length);
         return out;
     }

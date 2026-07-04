@@ -54,6 +54,29 @@ public class MessageBuilder {
         );
     }
 
+    public OutboundMessage imagePayload(
+        BleProtocol.ImageTileOptions tile,
+        int sessionId,
+        byte[] payload,
+        String label,
+        boolean leftArm
+    ) {
+        BleProtocol.ImageFragment fragment =
+            new BleProtocol.ImageFragment(0, payload, payload.length);
+        int magic = magicPool.allocate();
+        return new OutboundMessage(
+            "sound",
+            label,
+            BleProtocol.SID_EVENHUB,
+            BleProtocol.FLAG_REQUEST,
+            magic,
+            BleProtocol.buildImageRawData(tile, sessionId, payload.length, fragment, magic),
+            ACK_TIMEOUT_MS,
+            -1,
+            leftArm
+        );
+    }
+
     public OutboundMessage imageFragment(BleProtocol.ImageFragment fragment, BleImageOptimizer.TileImagePlan plan, boolean requestAck, boolean leftArm) {
         int magic = requestAck ? magicPool.allocate() : 0;
         return new OutboundMessage(

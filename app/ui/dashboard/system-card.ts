@@ -7,7 +7,7 @@ import { type DashboardPluginCardBounds } from "../dashboard-plugins";
 import { dashboardState } from "../dashboard";
 import { getDefaultMediumFont, getDefaultSmallFont } from "~/graphics/bdffont";
 import { getDashboardLogo } from "~/graphics/logo";
-import { showAndroidNotificationsSetting, showBatteryIndicatorsSetting, showFaceclawLogoSetting, showSignalStrengthSetting, systemCardNameSetting } from "../dashboard-settings";
+import { batteryDisplayModeSetting, showAndroidNotificationsSetting, showBatteryIndicatorsSetting, showFaceclawLogoSetting, showSignalStrengthSetting, systemCardNameSetting } from "../dashboard-settings";
 
 const NOTIFICATION_ICON_SIZE = 24;
 const SYSTEM_CARD_ITEM_HEIGHT = 38;
@@ -70,6 +70,10 @@ function systemCardFlowItemWidth(item: SystemCardFlowItem): number {
   if (item.type === "notification") {
     return NOTIFICATION_ICON_SIZE;
   }
+  if (batteryDisplayModeSetting.get() === "percentage") {
+    const percentText = formatBatteryPercent(item.percentCharge);
+    return Math.max(smallFont.measureText(percentText), smallFont.measureText(item.label));
+  }
   return Math.max(BATTERY_ICON_WIDTH, smallFont.measureText(item.label));
 }
 
@@ -98,12 +102,42 @@ function addBatteryItem(
   });
 }
 
+function formatBatteryPercent(percentCharge: number): string {
+  const clamped = Math.max(0, Math.min(100, Math.round(percentCharge)));
+  return `${clamped}%`;
+}
+
 function drawBatteryFlowItem(image: GrayImage, x: number, y: number, item: Extract<SystemCardFlowItem, { type: "battery" }>): void {
   const itemWidth = systemCardFlowItemWidth(item);
   const labelX = x + Math.max(0, ((itemWidth - smallFont.measureText(item.label)) / 2) | 0);
   image.drawText(smallFont, labelX, y + BATTERY_ITEM_Y_OFFSET, item.label, 150);
+  if (batteryDisplayModeSetting.get() === "percentage") {
+    drawBatteryPercentFlowItem(image, x, y, item, itemWidth);
+    return;
+  }
   const battery = drawBattery(item.percentCharge, item.isCharging);
   image.bitBlt(battery, x + ((itemWidth - battery.width) / 2) | 0, y + 16 + BATTERY_ITEM_Y_OFFSET);
+}
+
+function drawBatteryPercentFlowItem(
+  image: GrayImage,
+  x: number,
+  y: number,
+  item: Extract<SystemCardFlowItem, { type: "battery" }>,
+  itemWidth: number,
+): void {
+  const percentText = formatBatteryPercent(item.percentCharge);
+  const textWidth = smallFont.measureText(percentText);
+  const textX = x + Math.max(0, ((itemWidth - textWidth) / 2) | 0);
+  const textY = y + 16 + BATTERY_ITEM_Y_OFFSET;
+  if (item.isCharging) {
+    const padX = 2;
+    const padY = 1;
+    image.fillRect(textX - padX, textY - padY, textWidth + padX * 2, smallFont.lineHeight + padY * 2, 255);
+    image.drawText(smallFont, textX, textY, percentText, 0);
+    return;
+  }
+  image.drawText(smallFont, textX, textY, percentText, 200);
 }
 
 function formatDashboardDate(now: Date): string {
