@@ -40,6 +40,7 @@ export let dashboardState: DashboardState = {
 };
 
 const dashboardActions: LayerActions = {
+  requestRender: () => {},
   disconnect: () => {},
   startTextSettingEdit: () => {},
   endTextSettingEdit: () => {},

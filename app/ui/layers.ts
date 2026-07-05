@@ -11,6 +11,8 @@ export type DashboardInputEvent =
   | { type: "unknown"; kind: string; eventSource: number; eventType: number };
 
 export type LayerActions = {
+  /** Ask for a dashboard repaint+transmit, e.g. when async data arrives. */
+  requestRender: () => void;
   disconnect: () => Promise<void> | void;
   startTextSettingEdit: (setting: ConfigSettingString) => Promise<void> | void;
   endTextSettingEdit: () => Promise<void> | void;
@@ -24,6 +26,14 @@ export type LayerActions = {
 
 export type PaintBelow = () => GrayImage;
 
+function notifyRemoved(layer: Layer | undefined): void {
+  try {
+    layer?.onRemoved?.();
+  } catch (error) {
+    console.warn("layer onRemoved failed", error);
+  }
+}
+
 export interface LayerContext {
   readonly stack: LayerStack;
   readonly actions: LayerActions;
@@ -33,6 +43,8 @@ export interface Layer {
   readonly paintOverBase?: boolean;
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage;
   handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> | void;
+  /** Called when the layer leaves the stack by any path (pop or clearToBase). */
+  onRemoved?(): void;
 }
 
 export class LayerStack {
@@ -53,21 +65,23 @@ export class LayerStack {
 
   pop(): void {
     if (this.layers.length > 1) {
-      this.layers.pop();
+      notifyRemoved(this.layers.pop());
     }
   }
 
   /** Pop the top layer only if it matches; returns whether a layer was popped. */
   popIfTop(predicate: (layer: Layer) => boolean): boolean {
     if (this.layers.length > 1 && predicate(this.layers[this.layers.length - 1]!)) {
-      this.layers.pop();
+      notifyRemoved(this.layers.pop());
       return true;
     }
     return false;
   }
 
   clearToBase(): void {
-    this.layers.splice(1);
+    for (const layer of this.layers.splice(1)) {
+      notifyRemoved(layer);
+    }
   }
 
   isAtBase(): boolean {

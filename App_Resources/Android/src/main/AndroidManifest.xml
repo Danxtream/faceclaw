@@ -30,12 +30,16 @@
 	     NameNotFoundException for any package we cannot see. -->
 	<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
 
+	<!-- usesCleartextTraffic: the g2mirror terminal-mirroring protocol runs
+	     plain ws:// over tailscale (transport security is the network's job),
+	     which Android's default policy would otherwise block. -->
 	<application
 		android:name="com.tns.NativeScriptApplication"
 		android:allowBackup="true"
 		android:icon="@mipmap/ic_launcher"
 		android:label="@string/app_name"
 		android:theme="@style/AppTheme"
+		android:usesCleartextTraffic="true"
 		android:hardwareAccelerated="true">
 
 		<activity

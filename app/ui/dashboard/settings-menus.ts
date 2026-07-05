@@ -1,5 +1,5 @@
 import { dashboardState, TOP_LEFT_MENU_LAYOUT } from "../dashboard";
-import { batteryDisplayModeSetting, dashboardSlotIds, enumSettingMenuItem, showSignalStrengthSetting, showAndroidNotificationsSetting, showBatteryIndicatorsSetting, showFaceclawLogoSetting, systemCardNameSetting, textSettingMenuItem, toggleSettingMenuItem, voiceControlEnabledSetting, dashboardSlotSettings, nightscoutSiteUrlSetting, nightscoutApiTokenSetting, screenTimeoutSetting } from "../dashboard-settings";
+import { batteryDisplayModeSetting, dashboardSlotIds, enumSettingMenuItem, rawScreenshotsEnabledSetting, showSignalStrengthSetting, showAndroidNotificationsSetting, showBatteryIndicatorsSetting, showFaceclawLogoSetting, systemCardNameSetting, textSettingMenuItem, toggleSettingMenuItem, voiceControlEnabledSetting, dashboardSlotSettings, nightscoutSiteUrlSetting, nightscoutApiTokenSetting, screenTimeoutSetting } from "../dashboard-settings";
 import { MenuLayer } from "../menu";
 
 export function createSettingsMenuLayer(): MenuLayer {
@@ -30,6 +30,22 @@ export function createSettingsMenuLayer(): MenuLayer {
           ctx.stack.push(createIntegrationsMenuLayer());
         },
       },
+      {
+        label: "Developer",
+        onSelect: (ctx) => {
+          ctx.stack.push(createDeveloperSettingsMenuLayer());
+        },
+      },
+    ],
+    TOP_LEFT_MENU_LAYOUT,
+  );
+}
+
+function createDeveloperSettingsMenuLayer(): MenuLayer {
+  return new MenuLayer(
+    "Settings > Developer",
+    [
+      toggleSettingMenuItem(rawScreenshotsEnabledSetting),
     ],
     TOP_LEFT_MENU_LAYOUT,
   );

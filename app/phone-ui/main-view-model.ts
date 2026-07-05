@@ -15,6 +15,7 @@ export class MainViewModel extends Observable {
   private _evenAppConflictWarningVisible = false;
   private _firmwareWarningMessage = "";
   private _firmwareWarningVisible = false;
+  private _rawScreenshotsEnabled = false;
   private _showLog = false;
   private _phase: "disconnected" | "connecting" | "connected" | "disconnecting" = "disconnected";
 
@@ -32,6 +33,7 @@ export class MainViewModel extends Observable {
       this.evenAppConflictWarningVisible = snapshot.evenAppConflictWarningVisible;
       this.firmwareWarningMessage = snapshot.firmwareWarningMessage;
       this.firmwareWarningVisible = snapshot.firmwareWarningVisible;
+      this.rawScreenshotsEnabled = snapshot.rawScreenshotsEnabled;
     });
   }
 
@@ -228,6 +230,30 @@ export class MainViewModel extends Observable {
 
   get firmwareWarningVisibility(): "visible" | "collapse" {
     return this._firmwareWarningVisible ? "visible" : "collapse";
+  }
+
+  get rawScreenshotsEnabled(): boolean {
+    return this._rawScreenshotsEnabled;
+  }
+
+  set rawScreenshotsEnabled(value: boolean) {
+    if (this._rawScreenshotsEnabled !== value) {
+      this._rawScreenshotsEnabled = value;
+      this.notifyPropertyChange("rawScreenshotsEnabled", value);
+      this.notifyPropertyChange("screenshotButtonVisibility", this.screenshotButtonVisibility);
+    }
+  }
+
+  get screenshotButtonVisibility(): "visible" | "collapse" {
+    return this._rawScreenshotsEnabled ? "visible" : "collapse";
+  }
+
+  onScreenshotTap(): void {
+    try {
+      dashboardController.saveRawDashboardScreenshot();
+    } catch (error) {
+      console.error("raw screenshot failed", error);
+    }
   }
 
   get phase(): "disconnected" | "connecting" | "connected" | "disconnecting" {

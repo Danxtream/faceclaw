@@ -30,10 +30,13 @@ import {
 import {
   nightscoutApiTokenSetting,
   nightscoutSiteUrlSetting,
+  onAnySettingChanged,
+  rawScreenshotsEnabledSetting,
   systemCardNameSetting,
   voiceControlEnabledSetting,
   type ConfigSettingString,
 } from "../ui/dashboard-settings";
+import { saveRawScreenshot } from "../native/raw-screenshot";
 
 type ConnectionPhase = "disconnected" | "connecting" | "connected" | "disconnecting";
 
@@ -49,6 +52,7 @@ export type DashboardSnapshot = {
   evenAppConflictWarningVisible: boolean;
   firmwareWarningMessage: string;
   firmwareWarningVisible: boolean;
+  rawScreenshotsEnabled: boolean;
 };
 
 type DashboardListener = (snapshot: DashboardSnapshot) => void;
@@ -158,6 +162,11 @@ class DashboardController {
 
   constructor() {
     setDashboardActions({
+      requestRender: () => {
+        void this.requestRender("interval").catch((error) => {
+          this.appendLog(`requested render failed: ${this.formatError(error)}`);
+        });
+      },
       disconnect: () => this.disconnect(),
       startTextSettingEdit: (setting) => this.startTextSettingEdit(setting),
       endTextSettingEdit: () => this.endTextSettingEdit(),
@@ -173,6 +182,19 @@ class DashboardController {
         this.appendLog(`notification wake failed: ${this.formatError(error)}`);
       });
     });
+    // Settings toggled from the glasses can change what the phone UI shows
+    // (e.g. the raw-screenshot button), so re-emit the snapshot on any change.
+    onAnySettingChanged(() => this.emit());
+  }
+
+  /**
+   * Save the current dashboard as the raw headerless 4bpp frame buffer the
+   * wire compressor sees; test data for compression experiments.
+   */
+  saveRawDashboardScreenshot(): string {
+    const path = saveRawScreenshot(drawDashboard());
+    this.appendLog(`raw screenshot saved: ${path}`);
+    return path;
   }
 
   subscribe(listener: DashboardListener): () => void {
@@ -196,6 +218,7 @@ class DashboardController {
       evenAppConflictWarningVisible: this.evenAppConflictMessage.length > 0,
       firmwareWarningMessage: this.firmwareWarningMessage,
       firmwareWarningVisible: this.firmwareWarningMessage.length > 0,
+      rawScreenshotsEnabled: rawScreenshotsEnabledSetting.get(),
     };
   }
 

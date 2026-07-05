@@ -25,6 +25,7 @@
                         <Button row="1" col="2" text="Click" tap="{{ onSyntheticRightTap }}" />
                         <Button row="2" col="1" text="Swipe down" tap="{{ onSyntheticDownTap }}" />
                     </GridLayout>
+                    <Button text="Save raw screenshot" tap="{{ onScreenshotTap }}" visibility="{{ screenshotButtonVisibility }}" />
                 </StackLayout>
                 <Label row="2" text="{{ status }}" class="m-t-16" textWrap="true" />
                 <ScrollView id="logScrollView" row="3" class="m-t-16" visibility="{{ showLogVisibility }}">
@@ -49,12 +50,15 @@
                         width="{{ landscapeDisplayPreviewWidth }}"
                         height="{{ landscapeDisplayPreviewHeight }}" />
                 </StackLayout>
-                <GridLayout row="0" col="1" rows="auto,auto,auto" columns="*,*,*" class="m-l-16">
-                    <Button row="0" col="1" text="Swipe up" tap="{{ onSyntheticUpTap }}" />
-                    <Button row="1" col="0" text="Double-click" tap="{{ onSyntheticLeftTap }}" />
-                    <Button row="1" col="2" text="Click" tap="{{ onSyntheticRightTap }}" />
-                    <Button row="2" col="1" text="Swipe down" tap="{{ onSyntheticDownTap }}" />
-                </GridLayout>
+                <StackLayout row="0" col="1" class="m-l-16">
+                    <GridLayout rows="auto,auto,auto" columns="*,*,*">
+                        <Button row="0" col="1" text="Swipe up" tap="{{ onSyntheticUpTap }}" />
+                        <Button row="1" col="0" text="Double-click" tap="{{ onSyntheticLeftTap }}" />
+                        <Button row="1" col="2" text="Click" tap="{{ onSyntheticRightTap }}" />
+                        <Button row="2" col="1" text="Swipe down" tap="{{ onSyntheticDownTap }}" />
+                    </GridLayout>
+                    <Button text="Save raw screenshot" tap="{{ onScreenshotTap }}" visibility="{{ screenshotButtonVisibility }}" />
+                </StackLayout>
                 <Label row="1" col="0" colSpan="2" text="{{ status }}" class="m-t-16" textWrap="true" />
                 <ScrollView id="logScrollViewLandscape" row="2" col="0" colSpan="2" class="m-t-16" visibility="{{ showLogVisibility }}">
                     <Label text="{{ log }}" textWrap="true" verticalAlignment="top" />

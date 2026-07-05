@@ -34,6 +34,24 @@ type ConfigSettingOptions<TValue, TId extends string> = {
   formatValue?: (value: TValue) => string;
 };
 
+// Fired after any setting's set(); lets phone-side UI that depends on
+// settings toggled from the glasses (e.g. the raw-screenshot button) update
+// without waiting for an unrelated snapshot emit.
+const settingChangeListeners = new Set<() => void>();
+
+export function onAnySettingChanged(listener: () => void): () => void {
+  settingChangeListeners.add(listener);
+  return () => {
+    settingChangeListeners.delete(listener);
+  };
+}
+
+function notifySettingChanged(): void {
+  for (const listener of Array.from(settingChangeListeners)) {
+    listener();
+  }
+}
+
 export abstract class ConfigSetting<TValue, TId extends string = string> {
   readonly id: TId;
   readonly label: string;
@@ -69,6 +87,7 @@ export class ConfigSettingBoolean<TId extends string = string> extends ConfigSet
 
   set(value: boolean): boolean {
     ApplicationSettings.setBoolean(this.storageKey, value);
+    notifySettingChanged();
     return value;
   }
 
@@ -107,6 +126,7 @@ export class ConfigSettingEnum<TValue extends string, TId extends string = strin
   set(value: TValue): TValue {
     const normalized = this.normalizer(value);
     ApplicationSettings.setString(this.storageKey, normalized);
+    notifySettingChanged();
     return normalized;
   }
 
@@ -141,6 +161,7 @@ export class ConfigSettingString<TId extends string = string> extends ConfigSett
   set(value: string): string {
     const normalized = this.normalizer(value);
     ApplicationSettings.setString(this.storageKey, normalized);
+    notifySettingChanged();
     return normalized;
   }
 }
@@ -237,6 +258,40 @@ export const voiceControlEnabledSetting = new ConfigSettingBoolean({
   label: "Enable",
   storageKey: "voice.enabled",
   defaultValue: false,
+});
+
+export const rawScreenshotsEnabledSetting = new ConfigSettingBoolean({
+  id: "raw-screenshots-enabled",
+  label: "Take raw screenshots",
+  storageKey: "developer.rawScreenshots",
+  defaultValue: false,
+});
+
+export const terminalHostSetting = new ConfigSettingString({
+  id: "terminal-host",
+  label: "Host",
+  storageKey: "terminal.host",
+  defaultValue: "",
+  editorTitle: "g2mirror host (tailscale IP)",
+  glassesEditTitle: "Edit terminal host",
+});
+
+export const terminalPortSetting = new ConfigSettingString({
+  id: "terminal-port",
+  label: "Port",
+  storageKey: "terminal.port",
+  defaultValue: "8737",
+  editorTitle: "g2mirror port",
+  glassesEditTitle: "Edit terminal port",
+});
+
+export const terminalAuthTokenSetting = new ConfigSettingString({
+  id: "terminal-auth-token",
+  label: "Auth token",
+  storageKey: "terminal.authToken",
+  defaultValue: "",
+  editorTitle: "g2mirror auth token",
+  glassesEditTitle: "Edit terminal auth token",
 });
 
 export const nightscoutSiteUrlSetting = new ConfigSettingString({

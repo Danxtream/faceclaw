@@ -7,6 +7,7 @@ import { MenuLayer } from "../menu";
 import { NotificationsListLayer } from "../notifications";
 import { createNightscoutSettingsMenuLayer, createSettingsMenuLayer } from "./settings-menus";
 import { TelepromptLayer } from "../apps/teleprompt";
+import { TerminalAppLayer } from "../apps/terminal";
 import { StopwatchLayer } from "../apps/stopwatch";
 import { TranscribeLayer } from "../apps/transcribe";
 import { ScreenTestLayer } from "../apps/screen-test";
@@ -98,6 +99,12 @@ function createAppsMenuLayer(): MenuLayer {
           const layer = new TranscribeLayer();
           ctx.stack.push(layer);
           layer.start(ctx);
+        },
+      },
+      {
+        label: "Terminal",
+        onSelect: (ctx) => {
+          ctx.stack.push(new TerminalAppLayer(ctx.actions));
         },
       },
       {

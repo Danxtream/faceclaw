@@ -3,6 +3,8 @@ import org.apache.tools.ant.taskdefs.condition.Os
 // You can add your native dependencies here
 dependencies {
 //  implementation 'androidx.multidex:multidex:2.0.1'
+  // WebSocket transport for the g2mirror terminal-mirroring client.
+  implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 }
 
 def faceclawSherpaOnnxVersion = "1.13.0"
