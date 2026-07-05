@@ -37,6 +37,7 @@ import {
   type ConfigSettingString,
 } from "../ui/dashboard-settings";
 import { saveRawScreenshot } from "../native/raw-screenshot";
+import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 
 type ConnectionPhase = "disconnected" | "connecting" | "connected" | "disconnecting";
 
@@ -53,6 +54,7 @@ export type DashboardSnapshot = {
   firmwareWarningMessage: string;
   firmwareWarningVisible: boolean;
   rawScreenshotsEnabled: boolean;
+  batteryOptimizationWarningVisible: boolean;
 };
 
 type DashboardListener = (snapshot: DashboardSnapshot) => void;
@@ -128,6 +130,7 @@ class DashboardController {
   private evenNotificationActive = false;
   private evenAppConflictMessage = "";
   private firmwareWarningMessage = "";
+  private batteryOptimizationWarningVisible = false;
   private displayPreview: ImageSource | null = createInitialDisplayPreview();
   private readonly listeners = new Set<DashboardListener>();
 
@@ -219,10 +222,38 @@ class DashboardController {
       firmwareWarningMessage: this.firmwareWarningMessage,
       firmwareWarningVisible: this.firmwareWarningMessage.length > 0,
       rawScreenshotsEnabled: rawScreenshotsEnabledSetting.get(),
+      batteryOptimizationWarningVisible: this.batteryOptimizationWarningVisible,
     };
   }
 
+  /**
+   * Re-check the Doze exemption (cheap system call, but cached so snapshot()
+   * stays trivial). Called on connect, page load, and after the user answers
+   * the system exemption dialog.
+   */
+  refreshBatteryOptimizationStatus(): void {
+    const warningVisible = !isIgnoringBatteryOptimizations();
+    if (warningVisible !== this.batteryOptimizationWarningVisible) {
+      this.batteryOptimizationWarningVisible = warningVisible;
+      this.emit();
+    }
+  }
+
+  requestBatteryOptimizationExemption(): void {
+    requestIgnoreBatteryOptimizations();
+    // The system dialog is asynchronous and there is no result callback from
+    // this context; poll briefly so the banner clears once granted.
+    let checksLeft = 12;
+    const poll = setInterval(() => {
+      this.refreshBatteryOptimizationStatus();
+      if (!this.batteryOptimizationWarningVisible || --checksLeft <= 0) {
+        clearInterval(poll);
+      }
+    }, 5_000);
+  }
+
   refreshEvenAppStatus(): void {
+    this.refreshBatteryOptimizationStatus();
     const state = readEvenAppNotificationState();
     const wasActive = this.evenNotificationActive;
     this.evenNotificationActive = state.evenNotificationActive;
@@ -268,6 +299,7 @@ class DashboardController {
     this.lastInput = "waiting...";
     this.lastSys = "none yet";
     this.firmwareWarningMessage = "";
+    this.refreshBatteryOptimizationStatus();
     resetDashboardSleepTimerAndWake();
     this.refreshEvenAppStatus();
     this.setPhase("connecting");

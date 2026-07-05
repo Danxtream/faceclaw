@@ -16,6 +16,7 @@ export class MainViewModel extends Observable {
   private _firmwareWarningMessage = "";
   private _firmwareWarningVisible = false;
   private _rawScreenshotsEnabled = false;
+  private _batteryOptimizationWarningVisible = false;
   private _showLog = false;
   private _phase: "disconnected" | "connecting" | "connected" | "disconnecting" = "disconnected";
 
@@ -34,6 +35,7 @@ export class MainViewModel extends Observable {
       this.firmwareWarningMessage = snapshot.firmwareWarningMessage;
       this.firmwareWarningVisible = snapshot.firmwareWarningVisible;
       this.rawScreenshotsEnabled = snapshot.rawScreenshotsEnabled;
+      this.batteryOptimizationWarningVisible = snapshot.batteryOptimizationWarningVisible;
     });
   }
 
@@ -254,6 +256,26 @@ export class MainViewModel extends Observable {
     } catch (error) {
       console.error("raw screenshot failed", error);
     }
+  }
+
+  get batteryOptimizationWarningVisible(): boolean {
+    return this._batteryOptimizationWarningVisible;
+  }
+
+  set batteryOptimizationWarningVisible(value: boolean) {
+    if (this._batteryOptimizationWarningVisible !== value) {
+      this._batteryOptimizationWarningVisible = value;
+      this.notifyPropertyChange("batteryOptimizationWarningVisible", value);
+      this.notifyPropertyChange("batteryOptimizationWarningVisibility", this.batteryOptimizationWarningVisibility);
+    }
+  }
+
+  get batteryOptimizationWarningVisibility(): "visible" | "collapse" {
+    return this._batteryOptimizationWarningVisible ? "visible" : "collapse";
+  }
+
+  onAllowBackgroundUsageTap(): void {
+    dashboardController.requestBatteryOptimizationExemption();
   }
 
   get phase(): "disconnected" | "connecting" | "connected" | "disconnecting" {

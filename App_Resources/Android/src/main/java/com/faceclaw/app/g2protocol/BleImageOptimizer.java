@@ -85,6 +85,102 @@ public final class BleImageOptimizer {
             this.payload = maybeCompress(this.bmp);
             this.sessionId = sessionId;
         }
+
+        /**
+         * Plan with an explicit wire payload (e.g. a mode-3 incremental update).
+         * bmp must still be the FULL new frame: it feeds the displayed-frame
+         * dedup cache, which after an applied incremental equals the full frame.
+         */
+        TileImagePlan(int tileIndex, BleProtocol.ImageTileOptions tile, byte[] bmp, int sessionId, byte[] payloadOverride) {
+            this.tileIndex = tileIndex;
+            this.tile = tile;
+            this.bmp = BmpUtil.copyTileBmp(bmp);
+            this.payload = payloadOverride;
+            this.sessionId = sessionId;
+        }
+    }
+
+    /**
+     * Build a mode-3 bounding-box incremental payload, or null when a full
+     * update should be sent instead (frames not comparable, or the changed
+     * region spans the whole screen). Wire format:
+     *   [3][left/4][top/2][width/4][height/2][zlib of headerless 4bpp region]
+     * The region is top-down rows of the NEW frame, stride width/2 bytes. The
+     * box is aligned so left/width are multiples of 4 pixels and top/height
+     * multiples of 2 rows, letting each coordinate fit one byte and avoiding
+     * 4bpp byte-boundary corner cases. Identical frames yield null too; the
+     * caller's dedup check should normally catch that first.
+     */
+    public static byte[] buildIncrementalImagePayload(byte[] previousBmp, byte[] newBmp) {
+        int width = BmpUtil.readBmpWidth(newBmp);
+        int height = BmpUtil.readBmpHeight(newBmp);
+        if (width <= 0 || height <= 0
+                || width != BmpUtil.readBmpWidth(previousBmp)
+                || height != BmpUtil.readBmpHeight(previousBmp)) {
+            return null;
+        }
+        byte[] previous = BmpUtil.pack4bppFromBmp(previousBmp);
+        byte[] next = BmpUtil.pack4bppFromBmp(newBmp);
+        int stride = (width + 1) >> 1;
+        if (previous.length != stride * height || next.length != stride * height) {
+            return null;
+        }
+
+        // Changed bounding box in packed-byte coordinates (1 byte = 2 pixels).
+        int minByteX = stride;
+        int maxByteX = -1;
+        int minY = height;
+        int maxY = -1;
+        for (int y = 0; y < height; y++) {
+            int rowOffset = y * stride;
+            for (int x = 0; x < stride; x++) {
+                if (previous[rowOffset + x] != next[rowOffset + x]) {
+                    if (x < minByteX) minByteX = x;
+                    if (x > maxByteX) maxByteX = x;
+                    if (y < minY) minY = y;
+                    maxY = y;
+                    // The rest of the row only matters for maxByteX; scan from
+                    // the right end to finish this row quickly.
+                    for (int rx = stride - 1; rx > maxByteX; rx--) {
+                        if (previous[rowOffset + rx] != next[rowOffset + rx]) {
+                            maxByteX = rx;
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        if (maxY < 0) {
+            return null; // identical
+        }
+
+        // Pixel-space box, aligned: left/width to multiples of 4, top/height to
+        // multiples of 2, clamped to the frame.
+        int left = (minByteX * 2) & ~3;
+        int rightExclusive = Math.min(width, (((maxByteX + 1) * 2) + 3) & ~3);
+        int top = minY & ~1;
+        int bottomExclusive = Math.min(height, (maxY + 2) & ~1);
+        int boxWidth = rightExclusive - left;
+        int boxHeight = bottomExclusive - top;
+        if (boxWidth >= width && boxHeight >= height) {
+            return null; // whole screen changed; full update is strictly better
+        }
+
+        int regionStride = boxWidth >> 1;
+        byte[] region = new byte[regionStride * boxHeight];
+        for (int y = 0; y < boxHeight; y++) {
+            System.arraycopy(next, (top + y) * stride + (left >> 1), region, y * regionStride, regionStride);
+        }
+        byte[] compressed = deflate(region);
+        byte[] out = new byte[5 + compressed.length];
+        out[0] = 3;
+        out[1] = (byte) (left / 4);
+        out[2] = (byte) (top / 2);
+        out[3] = (byte) (boxWidth / 4);
+        out[4] = (byte) (boxHeight / 2);
+        System.arraycopy(compressed, 0, out, 5, compressed.length);
+        return out;
     }
 
     /**

@@ -29,6 +29,10 @@
 	     package visibility filtering otherwise makes Icon.loadDrawable fail with
 	     NameNotFoundException for any package we cannot see. -->
 	<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
+	<!-- Deep Doze ignores our G2-screen wakelock unless the user exempts the app
+	     from battery optimization; this lets us show the system exemption dialog
+	     instead of sending users hunting through Settings. -->
+	<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
 
 	<!-- usesCleartextTraffic: the g2mirror terminal-mirroring protocol runs
 	     plain ws:// over tailscale (transport security is the network's job),

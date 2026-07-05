@@ -107,6 +107,21 @@ public class BmpUtil {
         putUint32Le(buf, offset, value);
     }
 
+    public static int readBmpWidth(byte[] bmp) {
+        if (bmp == null || bmp.length < 0x36 || bmp[0] != 0x42 || bmp[1] != 0x4d) {
+            return 0;
+        }
+        return readUint32Le(bmp, 18);
+    }
+
+    public static int readBmpHeight(byte[] bmp) {
+        if (bmp == null || bmp.length < 0x36 || bmp[0] != 0x42 || bmp[1] != 0x4d) {
+            return 0;
+        }
+        int heightSigned = readInt32Le(bmp, 22);
+        return heightSigned < 0 ? -heightSigned : heightSigned;
+    }
+
     public static int readBmpPixelOffset(byte[] bmp) {
         if (bmp == null || bmp.length < 14 || bmp[0] != 0x42 || bmp[1] != 0x4d) {
             return -1;

@@ -28,4 +28,12 @@ public class ConnectionOptions {
     final boolean sendImagesToLeft = true;
     final boolean skipSessionIds = true;
     final int WINDOW_SIZE = 1;
+    // Send changed-region (mode 3 bounding box) updates instead of full frames
+    // when the previous frame is known to be displayed. Requires firmware with
+    // the experimental bbox-incremental mode. Disabled: the firmware-side
+    // display buffer is not always the previous frame (occasionally two frames
+    // back, apparently display-driver buffer swapping), so partial updates
+    // composite onto stale content per-lens. Re-enable once the firmware
+    // guarantees the compositing base.
+    final boolean INCREMENTAL_FRAMES = false;
 }

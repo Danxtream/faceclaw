@@ -17,6 +17,10 @@
                         <Button text="Open Even app settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary" />
                     </StackLayout>
                     <Label text="{{ firmwareWarningMessage }}" textWrap="true" visibility="{{ firmwareWarningVisibility }}" />
+                    <StackLayout visibility="{{ batteryOptimizationWarningVisibility }}">
+                        <Label text="Android will slow Faceclaw to a crawl when the phone screen is off unless it is exempt from battery optimization." textWrap="true" />
+                        <Button text="Allow unrestricted background usage" tap="{{ onAllowBackgroundUsageTap }}" class="-primary" />
+                    </StackLayout>
                 </StackLayout>
                 <StackLayout row="1">
                     <GridLayout rows="auto,auto,auto" columns="*,*,*" class="m-t-8">
@@ -41,6 +45,10 @@
                     <Button text="Open Even app settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary" />
                 </StackLayout>
                 <Label text="{{ firmwareWarningMessage }}" textWrap="true" visibility="{{ firmwareWarningVisibility }}" />
+                <StackLayout visibility="{{ batteryOptimizationWarningVisibility }}">
+                    <Label text="Android will slow Faceclaw to a crawl when the phone screen is off unless it is exempt from battery optimization." textWrap="true" />
+                    <Button text="Allow unrestricted background usage" tap="{{ onAllowBackgroundUsageTap }}" class="-primary" />
+                </StackLayout>
             </StackLayout>
             <GridLayout row="1" rows="auto,auto,*" columns="*,260">
                 <StackLayout row="0" col="0" visibility="{{ displayPreviewVisibility }}" horizontalAlignment="left">

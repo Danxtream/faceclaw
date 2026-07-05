@@ -1246,10 +1246,23 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
 
         FrameTimings.getInstance().spanStart(frameId, "compress-and-plan");
-        BleImageOptimizer.TileImagePlan plan =
-            new BleImageOptimizer.TileImagePlan(0, DASHBOARD_TILE, bmp, nextMapSessionId());
+        // Incremental (mode 3 bounding box) update when the previous frame is
+        // known-displayed; displayedBmp is cleared on connect/reset/timeout
+        // paths, so a non-empty value means display state is trusted.
+        byte[] incrementalPayload = null;
+        if (connectionOptions.INCREMENTAL_FRAMES && displayedBmp.length > 0) {
+            incrementalPayload = BleImageOptimizer.buildIncrementalImagePayload(displayedBmp, bmp);
+        }
+        BleImageOptimizer.TileImagePlan plan = incrementalPayload != null
+            ? new BleImageOptimizer.TileImagePlan(0, DASHBOARD_TILE, bmp, nextMapSessionId(), incrementalPayload)
+            : new BleImageOptimizer.TileImagePlan(0, DASHBOARD_TILE, bmp, nextMapSessionId());
         plan.fragments = BleImageOptimizer.planImageFragments(plan.payload, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
         FrameTimings.getInstance().spanEnd(frameId, "compress-and-plan");
+        if (incrementalPayload != null) {
+            FrameTimings.getInstance().log(frameId, "incremental update bbox="
+                + ((incrementalPayload[3] & 0xff) * 4) + "x" + ((incrementalPayload[4] & 0xff) * 2)
+                + "+" + ((incrementalPayload[1] & 0xff) * 4) + "+" + ((incrementalPayload[2] & 0xff) * 2));
+        }
 
         int updateId = nextImageUpdateId++;
         int messageCount = plan.fragments.size();
