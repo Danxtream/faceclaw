@@ -18,6 +18,9 @@ public class ConnectionOptions {
     public static final int HEARTBEAT_URGENT_MS = 6_000;
     public static final int BATTERY_REFRESH_INTERVAL_MS = 5 * 60_000;
     public static final int BATTERY_INPUT_QUIET_MS = 5_000;
+    // Poll cadence while in charging mode; also bounds how quickly we notice
+    // the glasses coming back out of the case.
+    public static final int CHARGING_BATTERY_POLL_MS = 30_000;
     public static final int IMAGE_FRAGMENT_SIZE = 3800;
     public static final int IMAGE_RETRY_DELAY_MS = 2_000;
     public static final int MAX_CONSECUTIVE_ACK_TIMEOUTS = 8;

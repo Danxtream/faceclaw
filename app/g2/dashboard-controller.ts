@@ -39,7 +39,7 @@ import {
 import { saveRawScreenshot } from "../native/raw-screenshot";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 
-type ConnectionPhase = "disconnected" | "connecting" | "connected" | "disconnecting";
+type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" | "disconnecting";
 
 export type DashboardSnapshot = {
   phase: ConnectionPhase;
@@ -326,11 +326,18 @@ class DashboardController {
         const mappedPhase =
           state.phase === "connected"
             ? "connected"
-            : state.phase === "disconnecting"
-              ? "disconnecting"
-              : state.phase === "disconnected"
-                ? "disconnected"
-                : "connecting";
+            : state.phase === "charging"
+              ? "charging"
+              : state.phase === "disconnecting"
+                ? "disconnecting"
+                : state.phase === "disconnected"
+                  ? "disconnected"
+                  : "connecting";
+        if (mappedPhase === "charging" && this.phase !== "charging") {
+          // Nobody is wearing the glasses; drop the G2-screen wakelock so the
+          // phone can sleep normally while they charge.
+          void this.communicator?.setG2ScreenOn(false).catch(() => {});
+        }
         this.setPhase(mappedPhase);
         this.setStatus(state.status);
       });
@@ -345,7 +352,7 @@ class DashboardController {
           headset: state.battery,
           headsetCharging: state.chargingStatus > 0,
         });
-        if (this.phase === "connected" && this.communicator) {
+        if ((this.phase === "connected" || this.phase === "charging") && this.communicator) {
           void this.requestRender("interval").catch((error) => {
             const message = this.formatError(error);
             this.appendLog(`battery update failed: ${message}`);
@@ -699,6 +706,14 @@ class DashboardController {
     const updatePreviewAfterTransmit = this.phase === "connected";
     if (!updatePreviewAfterTransmit) {
       this.updateDisplayPreviewFromImage(image);
+    }
+    if (this.communicator && this.phase === "charging") {
+      // Glasses are in the charging case; keep the phone preview fresh but
+      // send nothing.
+      frameTimings.finishFrame(frameId, "discarded: glasses charging");
+      this.updateConnectedForegroundNotification();
+      console.log("renderDashbaord finished (charging)");
+      return;
     }
     if (this.communicator) {
       if (dashboardState.screenOn) {

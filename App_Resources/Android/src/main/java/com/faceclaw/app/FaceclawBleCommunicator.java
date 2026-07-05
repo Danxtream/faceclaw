@@ -90,6 +90,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int headsetCharging = -1;
     private boolean audioCaptureActive;
     private boolean firmwareInfoQueried;
+    // Glasses are in the charging case: nobody is wearing them, so display
+    // communication pauses and only battery polls flow (see driveSession).
+    private boolean chargingMode;
     private volatile FaceclawAudioPacketListener audioPacketListener;
     private PowerManager.WakeLock g2ScreenWakeLock;
 
@@ -537,6 +540,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 fixedLayoutCreated = false;
                 warmedUp = false;
                 startupProbePending = false;
+                chargingMode = false;
                 audioCaptureActive = false;
                 audioPacketListener = null;
                 clearAllMessagesLocked("connection lost");
@@ -782,44 +786,61 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     }
                 }
 
-                if (messageToPrewrite == null
-                        && !shutdownRequested
-                        && !fixedLayoutCreated
-                        && pendingMessages.isEmpty()
-                        && inFlightMessages.isEmpty()) {
-                    Log.i(TAG, "enqueueing create layout");
-                    enqueueCreateLayoutLocked();
-                } else if (messageToPrewrite != null) {
-                    // Prewrite outside the lock; the logical message remains pending until
-                    // its final BLE frame is sent after the current protocol ACK.
-                }
-                if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && !warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
-                    Log.i(TAG, "enqueueing warmup");
-                    enqueueWarmupLocked();
-                }
+                if (chargingMode) {
+                    // Glasses are in the case: no display traffic, only battery
+                    // polls (which also detect the end of charging).
+                    finishDesiredFrameLocked("discarded: glasses charging");
+                    if (sessionReady && inFlightMessages.isEmpty() && !pendingMessages.isEmpty()) {
+                        messageToWrite = pendingMessages.removeFirst();
+                        Log.i(TAG, "sending pending message (charging): " + messageToWrite.label);
+                    } else if (sessionReady && pendingMessages.isEmpty() && inFlightMessages.isEmpty()
+                            && now - lastBatteryRefreshAtMs >= ConnectionOptions.CHARGING_BATTERY_POLL_MS) {
+                        Log.i(TAG, "Writing charging-mode battery poll");
+                        messageToWrite = createBatteryQueryMessageLocked();
+                        lastBatteryRefreshAtMs = now;
+                    } else {
+                        return 1_000;
+                    }
+                } else {
+                    if (messageToPrewrite == null
+                            && !shutdownRequested
+                            && !fixedLayoutCreated
+                            && pendingMessages.isEmpty()
+                            && inFlightMessages.isEmpty()) {
+                        Log.i(TAG, "enqueueing create layout");
+                        enqueueCreateLayoutLocked();
+                    } else if (messageToPrewrite != null) {
+                        // Prewrite outside the lock; the logical message remains pending until
+                        // its final BLE frame is sent after the current protocol ACK.
+                    }
+                    if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && !warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
+                        Log.i(TAG, "enqueueing warmup");
+                        enqueueWarmupLocked();
+                    }
 
-                if (messageToPrewrite == null && handleHeartbeat()) {
-                    return ConnectionOptions.IDLE_SLEEP_MS;
-                }
+                    if (messageToPrewrite == null && handleHeartbeat()) {
+                        return ConnectionOptions.IDLE_SLEEP_MS;
+                    }
 
-                if (messageToPrewrite == null && sessionReady && inFlightMessages.isEmpty() && !pendingMessages.isEmpty()) {
-                    OutboundMessage pending = pendingMessages.peekFirst();
-                    messageToWrite = pendingMessages.removeFirst();
-                    Log.i(TAG, "sending pending message: " + messageToWrite.label);
-                } else if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()
-                        && now >= imageRetryAfterMs
-                        && !getDesiredFingerprint().equals(displayedFingerprint)) {
-                    Log.i(TAG, "Enqueued image update");
-                    enqueueDesiredImageLocked();
-                    return 0;
-                } else if (messageToPrewrite == null && shouldPollBatteryLocked(now)) {
-                    Log.i(TAG, "Writing battery query");
-                    messageToWrite = createBatteryQueryMessageLocked();
-                    lastBatteryRefreshAtMs = now;
-                } else if (messageToPrewrite == null && (!pendingMessages.isEmpty() || !inFlightMessages.isEmpty())) {
-                    return ConnectionOptions.IDLE_SLEEP_MS;
-                } else if (messageToPrewrite == null) {
-                    return 250;
+                    if (messageToPrewrite == null && sessionReady && inFlightMessages.isEmpty() && !pendingMessages.isEmpty()) {
+                        OutboundMessage pending = pendingMessages.peekFirst();
+                        messageToWrite = pendingMessages.removeFirst();
+                        Log.i(TAG, "sending pending message: " + messageToWrite.label);
+                    } else if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()
+                            && now >= imageRetryAfterMs
+                            && !getDesiredFingerprint().equals(displayedFingerprint)) {
+                        Log.i(TAG, "Enqueued image update");
+                        enqueueDesiredImageLocked();
+                        return 0;
+                    } else if (messageToPrewrite == null && shouldPollBatteryLocked(now)) {
+                        Log.i(TAG, "Writing battery query");
+                        messageToWrite = createBatteryQueryMessageLocked();
+                        lastBatteryRefreshAtMs = now;
+                    } else if (messageToPrewrite == null && (!pendingMessages.isEmpty() || !inFlightMessages.isEmpty())) {
+                        return ConnectionOptions.IDLE_SLEEP_MS;
+                    } else if (messageToPrewrite == null) {
+                        return 250;
+                    }
                 }
             }
 
@@ -1360,6 +1381,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 headsetBattery = snapshot.battery;
                 headsetCharging = snapshot.charging;
                 emitBatteryState(headsetBattery, headsetCharging);
+                updateChargingModeLocked(snapshot.charging > 0, snapshot.battery);
             }
             BleProtocol.FirmwareInfo firmwareInfo = BleProtocol.parseSettingsFirmwareInfo(message.ackPayload);
             if (firmwareInfo != null) {
@@ -1370,6 +1392,53 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             logLine("Battery query timed out");
         };
         return message;
+    }
+
+    /**
+     * Track whether the glasses are in the charging case. Charging means nobody
+     * is wearing them: display communication pauses (no heartbeats, so the
+     * firmware tears down its EvenHub context on its own) and only battery polls
+     * continue. When charging stops, tear the transport down and let the normal
+     * reconnect loop rebuild the session, layout, and first frame.
+     */
+    private void updateChargingModeLocked(boolean charging, int battery) {
+        if (charging == chargingMode) {
+            if (chargingMode) {
+                setStateDisplay("charging", chargingStatusText(battery));
+            }
+            return;
+        }
+        if (charging) {
+            chargingMode = true;
+            clearAllMessagesLocked("glasses charging");
+            fixedLayoutCreated = false;
+            warmedUp = false;
+            startupProbePending = false;
+            displayedFingerprint = "";
+            displayedBmp = new byte[0];
+            finishDesiredFrameLocked("discarded: glasses charging");
+            logLine("glasses are charging; pausing display communication");
+            setStateDisplay("charging", chargingStatusText(battery));
+        } else {
+            chargingMode = false;
+            logLine("glasses removed from charger; reconnecting");
+            handleTransportFailure("charging ended");
+        }
+    }
+
+    private static String chargingStatusText(int battery) {
+        return battery >= 0
+            ? "Glasses charging. Battery " + battery + "%."
+            : "Glasses charging.";
+    }
+
+    private void finishDesiredFrameLocked(String outcome) {
+        int frameIdToFinish;
+        synchronized (desiredTilesLock) {
+            frameIdToFinish = desiredFrameId;
+            desiredFrameId = 0;
+        }
+        finishFrame(frameIdToFinish, outcome);
     }
 
     private boolean hasPendingOrInflightKindLocked(String kind) {
@@ -1513,6 +1582,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             warmedUp = false;
             startupProbePending = false;
             shutdownRequested = false;
+            chargingMode = false;
             imageRetryAfterMs = 0;
             displayedFingerprint = "";
             displayedBmp = new byte[0];
@@ -1531,6 +1601,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         sessionReady = false;
         fixedLayoutCreated = false;
         warmedUp = false;
+        chargingMode = false;
         rightConnected = false;
         leftConnected = false;
         ringConnected = false;

@@ -7,6 +7,7 @@ export type CommunicatorPhase =
   | "disconnected"
   | "connecting"
   | "connected"
+  | "charging"
   | "retrying"
   | "disconnecting";
 

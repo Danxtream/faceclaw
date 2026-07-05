@@ -18,7 +18,7 @@ export class MainViewModel extends Observable {
   private _rawScreenshotsEnabled = false;
   private _batteryOptimizationWarningVisible = false;
   private _showLog = false;
-  private _phase: "disconnected" | "connecting" | "connected" | "disconnecting" = "disconnected";
+  private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
 
   constructor() {
     super();
@@ -278,11 +278,11 @@ export class MainViewModel extends Observable {
     dashboardController.requestBatteryOptimizationExemption();
   }
 
-  get phase(): "disconnected" | "connecting" | "connected" | "disconnecting" {
+  get phase(): "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" {
     return this._phase;
   }
 
-  set phase(value: "disconnected" | "connecting" | "connected" | "disconnecting") {
+  set phase(value: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting") {
     if (this._phase !== value) {
       this._phase = value;
       this.notifyPropertyChange("phase", value);
@@ -296,6 +296,7 @@ export class MainViewModel extends Observable {
       case "connecting":
         return "Connecting...";
       case "connected":
+      case "charging":
         return "Disconnect";
       case "disconnecting":
         return "Disconnecting...";
@@ -312,7 +313,7 @@ export class MainViewModel extends Observable {
     if (!this.canRun) return;
 
     try {
-      if (this.phase === "connected") {
+      if (this.phase === "connected" || this.phase === "charging") {
         await dashboardController.disconnect();
       } else {
         await dashboardController.connect();
