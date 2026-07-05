@@ -8,6 +8,8 @@ export type DashboardInputEvent =
   | { type: "double-click"; source: "ring" | "left-arm" | "right-arm" }
   | { type: "scroll-up" }
   | { type: "scroll-down" }
+  | { type: "long-press"; source: "ring" | "left-arm" | "right-arm" }
+  | { type: "long-press-release"; source: "ring" | "left-arm" | "right-arm" }
   | { type: "unknown"; kind: string; eventSource: number; eventType: number };
 
 export type LayerActions = {

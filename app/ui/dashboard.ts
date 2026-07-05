@@ -70,6 +70,13 @@ function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputEvent {
       return { type: "scroll-down" };
     } else if (event.eventType === OsEventTypeList.SCROLL_TOP_EVENT) {
       return { type: "scroll-up" };
+    } else if (event.eventType === OsEventTypeList.RING_LONG_PRESS_EVENT) {
+      // CFW-forwarded long-press (replaces the firmware's force-quit dialog).
+      // The CFW gates this to the ring, so eventSource may be 0 (unknown);
+      // eventSourceToString falls back to "ring".
+      return { type: "long-press", source: eventSourceToString(event.eventSource) };
+    } else if (event.eventType === OsEventTypeList.RING_LONG_PRESS_RELEASE_EVENT) {
+      return { type: "long-press-release", source: eventSourceToString(event.eventSource) };
     }
   } else if (event.kind === "text-click") {
     if (event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
@@ -123,6 +130,10 @@ function eventToString(event: DashboardInputEvent): string {
       return `Scroll up`;
     case "scroll-down":
       return `Scroll down`;
+    case "long-press":
+      return `Long press from ${event.source}`;
+    case "long-press-release":
+      return `Long press release from ${event.source}`;
     default:
     case "unknown":
       return `Unknown event: ${event.kind} ${event.eventSource} ${event.eventType}`;
