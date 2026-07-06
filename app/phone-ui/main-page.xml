@@ -85,7 +85,7 @@
                 textChange="{{ onTextSettingTextChange }}"
                 returnPress="{{ onTextSettingReturnPress }}"
                 autocorrect="false"
-                autocapitalizationType="words"
+                autocapitalizationType="none"
                 returnKeyType="done" />
         </StackLayout>
     </GridLayout>

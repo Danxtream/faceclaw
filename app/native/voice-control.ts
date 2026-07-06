@@ -24,6 +24,7 @@ export type PushToTalkOptions = {
   communicator: any;
   provider: VoiceProviderKind;
   elevenLabsApiKey: string;
+  saveRecording: boolean;
 };
 
 export class FaceclawVoiceControlBridge {
@@ -59,6 +60,7 @@ export class FaceclawVoiceControlBridge {
     if (this.started) this.stop();
     this.ensureController();
     this.controller?.setCommunicator(options.communicator);
+    this.controller?.setSaveRecordings(options.saveRecording);
 
     if (options.provider === "elevenlabs" && options.elevenLabsApiKey.trim()) {
       this.cloudClient = new ElevenLabsSttClient({

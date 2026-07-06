@@ -122,7 +122,7 @@ export class G2MirrorClient {
       },
     });
     try {
-      this.ws = new com.faceclaw.app.FaceclawWebSocket(url, this.listenerProxy);
+      this.ws = new com.faceclaw.app.FaceclawWebSocket(url, this.listenerProxy, null, null);
     } catch (error) {
       this.ws = null;
       this.handleConnectionLost(`Connection failed: ${shortenError(String((error as Error)?.message ?? error))}`);

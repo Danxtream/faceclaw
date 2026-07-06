@@ -1,5 +1,5 @@
 import { dashboardState, TOP_LEFT_MENU_LAYOUT } from "../dashboard";
-import { batteryDisplayModeSetting, dashboardSlotIds, elevenLabsApiKeySetting, enumSettingMenuItem, rawScreenshotsEnabledSetting, showSignalStrengthSetting, showAndroidNotificationsSetting, showBatteryIndicatorsSetting, showFaceclawLogoSetting, systemCardNameSetting, textSettingMenuItem, toggleSettingMenuItem, voiceProviderSetting, dashboardSlotSettings, nightscoutSiteUrlSetting, nightscoutApiTokenSetting, screenTimeoutSetting } from "../dashboard-settings";
+import { batteryDisplayModeSetting, dashboardSlotIds, elevenLabsApiKeySetting, enumSettingMenuItem, rawScreenshotsEnabledSetting, saveVoiceRecordingsSetting, showSignalStrengthSetting, showAndroidNotificationsSetting, showBatteryIndicatorsSetting, showFaceclawLogoSetting, systemCardNameSetting, textSettingMenuItem, toggleSettingMenuItem, voiceProviderSetting, dashboardSlotSettings, nightscoutSiteUrlSetting, nightscoutApiTokenSetting, screenTimeoutSetting } from "../dashboard-settings";
 import { MenuLayer } from "../menu";
 
 export function createSettingsMenuLayer(): MenuLayer {
@@ -46,6 +46,7 @@ function createDeveloperSettingsMenuLayer(): MenuLayer {
     "Settings > Developer",
     [
       toggleSettingMenuItem(rawScreenshotsEnabledSetting),
+      toggleSettingMenuItem(saveVoiceRecordingsSetting),
     ],
     TOP_LEFT_MENU_LAYOUT,
   );

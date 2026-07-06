@@ -278,6 +278,13 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   formatValue: (value) => (value === "elevenlabs" ? "ElevenLabs" : "On-device"),
 });
 
+export const saveVoiceRecordingsSetting = new ConfigSettingBoolean({
+  id: "save-voice-recordings",
+  label: "Save voice recordings",
+  storageKey: "developer.saveVoiceRecordings",
+  defaultValue: false,
+});
+
 export const elevenLabsApiKeySetting = new ConfigSettingString({
   id: "elevenlabs-api-key",
   label: "ElevenLabs key",

@@ -33,6 +33,7 @@ import {
   nightscoutSiteUrlSetting,
   onAnySettingChanged,
   rawScreenshotsEnabledSetting,
+  saveVoiceRecordingsSetting,
   systemCardNameSetting,
   voiceProviderSetting,
   type ConfigSettingString,
@@ -280,8 +281,15 @@ class DashboardController {
 
   setActiveTextSettingValue(value: string): void {
     noteDashboardPhoneTextInput();
-    if (!this.activeTextSetting) return;
-    this.updateTextSetting(this.activeTextSetting, value);
+    const setting = this.activeTextSetting;
+    if (!setting) return;
+    if (setting.get() === value) return;
+    setting.set(value);
+    // Deliberately do NOT emit() here. The phone TextField is the source of
+    // truth while typing; echoing activeTextSettingValue back into its two-way
+    // binding on every keystroke drops fast/pasted characters (observed: a
+    // 51-char API key stored as its first 46 chars). Just refresh the preview.
+    this.previewOrRenderAfterTextSettingChange(setting.label);
   }
 
   async connect(): Promise<void> {
@@ -574,6 +582,7 @@ class DashboardController {
           communicator: communicator.getNativeCommunicator(),
           provider: voiceProviderSetting.get(),
           elevenLabsApiKey: elevenLabsApiKeySetting.get(),
+          saveRecording: saveVoiceRecordingsSetting.get(),
         });
       })
       .catch((error) => {

@@ -344,7 +344,13 @@ export class MainViewModel extends Observable {
     dashboardController.setActiveTextSettingValue(args.object?.text ?? args.value ?? "");
   }
 
-  onTextSettingReturnPress(): void {
+  onTextSettingReturnPress(args: { object?: { text?: string } }): void {
+    // Commit the field's actual text at done-time, in case the final
+    // keystroke's textChange hadn't landed yet.
+    const text = args?.object?.text;
+    if (typeof text === "string") {
+      dashboardController.setActiveTextSettingValue(text);
+    }
     dashboardController.finishActiveTextSettingEdit();
   }
 
