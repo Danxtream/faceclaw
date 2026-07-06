@@ -6,8 +6,10 @@ purpose of the file is to pass control to the app’s first module.
 
 import { Application } from '@nativescript/core'
 import { registerShareIntentHandler } from './native/share-intents'
+import { runWorkerSpike } from './workers/worker-spike'
 
 registerShareIntentHandler()
+runWorkerSpike()
 
 Application.run({ moduleName: 'app-root' })
 
