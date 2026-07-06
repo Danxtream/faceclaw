@@ -25,6 +25,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 
@@ -87,6 +88,8 @@ public class FaceclawVoiceController {
     private int transcriptSampleCount;
     private long lastTranscriptDecodeAtMs;
     private String lastTranscript = "";
+    private volatile boolean saveRecordings;
+    private java.io.ByteArrayOutputStream recordingPcm;
     private long queuedPackets;
     private long queueDroppedPackets;
     private long decodedSamples;
@@ -106,6 +109,11 @@ public class FaceclawVoiceController {
 
     public void setCommunicator(FaceclawBleCommunicator communicator) {
         this.communicator = communicator;
+    }
+
+    /** When true, the decoded mic PCM for each session is saved as a WAV. */
+    public void setSaveRecordings(boolean saveRecordings) {
+        this.saveRecordings = saveRecordings;
     }
 
     public void start() {
@@ -184,6 +192,7 @@ public class FaceclawVoiceController {
                 stream = keywordSpotter.createStream();
             }
             lc3Decoder = new FaceclawLc3Decoder();
+            recordingPcm = saveRecordings ? new java.io.ByteArrayOutputStream(SAMPLE_RATE * 2 * 4) : null;
             if (!startG2Audio()) {
                 emitStatus("Could not start G2 microphone input.");
                 return;
@@ -205,6 +214,7 @@ public class FaceclawVoiceController {
             emitStatus("Voice control failed: " + error.getMessage());
         } finally {
             stopG2Audio();
+            writeRecordingIfAny();
             releaseSherpa();
             releaseLc3();
             synchronized (lock) {
@@ -212,6 +222,69 @@ public class FaceclawVoiceController {
                 workerThread = null;
             }
         }
+    }
+
+    private void appendRecording(short[] pcm, int count) {
+        java.io.ByteArrayOutputStream out = recordingPcm;
+        if (out == null) {
+            return;
+        }
+        for (int i = 0; i < count; i++) {
+            short s = pcm[i];
+            out.write(s & 0xff);
+            out.write((s >> 8) & 0xff);
+        }
+    }
+
+    /** Save the session's decoded mic PCM as a 16 kHz mono 16-bit WAV. */
+    private void writeRecordingIfAny() {
+        java.io.ByteArrayOutputStream out = recordingPcm;
+        recordingPcm = null;
+        if (out == null || out.size() == 0) {
+            return;
+        }
+        try {
+            byte[] pcmBytes = out.toByteArray();
+            java.io.File dir = new java.io.File(appContext.getExternalFilesDir(null), "voice-recordings");
+            if (!dir.exists() && !dir.mkdirs()) {
+                Log.w(TAG, "could not create voice-recordings dir");
+                return;
+            }
+            String stamp = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss-SSS", java.util.Locale.US)
+                    .format(new java.util.Date());
+            java.io.File file = new java.io.File(dir, "voice-" + stamp + ".wav");
+            try (java.io.FileOutputStream fos = new java.io.FileOutputStream(file)) {
+                fos.write(buildWavHeader(pcmBytes.length, SAMPLE_RATE, 1, 16));
+                fos.write(pcmBytes);
+            }
+            Log.i(TAG, "saved voice recording " + file.getAbsolutePath()
+                    + " samples=" + (pcmBytes.length / 2)
+                    + " sec=" + String.format(java.util.Locale.US, "%.2f", pcmBytes.length / 2.0 / SAMPLE_RATE));
+        } catch (Throwable t) {
+            Log.w(TAG, "failed to save voice recording", t);
+        }
+    }
+
+    private static byte[] buildWavHeader(int pcmBytes, int sampleRate, int channels, int bitsPerSample) {
+        int byteRate = sampleRate * channels * bitsPerSample / 8;
+        int blockAlign = channels * bitsPerSample / 8;
+        int dataSize = pcmBytes;
+        int riffSize = 36 + dataSize;
+        java.nio.ByteBuffer b = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.put("RIFF".getBytes(StandardCharsets.US_ASCII));
+        b.putInt(riffSize);
+        b.put("WAVE".getBytes(StandardCharsets.US_ASCII));
+        b.put("fmt ".getBytes(StandardCharsets.US_ASCII));
+        b.putInt(16);            // PCM fmt chunk size
+        b.putShort((short) 1);   // PCM
+        b.putShort((short) channels);
+        b.putInt(sampleRate);
+        b.putInt(byteRate);
+        b.putShort((short) blockAlign);
+        b.putShort((short) bitsPerSample);
+        b.put("data".getBytes(StandardCharsets.US_ASCII));
+        b.putInt(dataSize);
+        return b.array();
     }
 
     private KeywordSpotterConfig buildConfig(File modelDir) {
@@ -332,6 +405,9 @@ public class FaceclawVoiceController {
                 continue;
             }
             decodedSamples += count;
+            if (recordingPcm != null) {
+                appendRecording(pcm, count);
+            }
             if (mode == VoiceInputMode.CLOUD) {
                 emitPcm(pcm, count);
             } else if (mode == VoiceInputMode.ONBOARD) {
@@ -554,8 +630,9 @@ public class FaceclawVoiceController {
                 + " decodeErrors=" + decodeErrors
                 + " wrongArm=" + wrongArmPackets
                 + " audioSec=" + String.format(java.util.Locale.US, "%.1f", decodedSamples / (double) SAMPLE_RATE);
-        Log.i(TAG, status + " expectedIntervalMs=" + EXPECTED_PACKET_INTERVAL_MS);
-        emitStatus(status);
+        // Audio-pipeline stats are diagnostic; keep them in logcat only, out of
+        // the on-glasses voice UI.
+        Log.i(TAG, status.replace('\n', ' ') + " expectedIntervalMs=" + EXPECTED_PACKET_INTERVAL_MS);
     }
 
     private void emitStatus(String status) {

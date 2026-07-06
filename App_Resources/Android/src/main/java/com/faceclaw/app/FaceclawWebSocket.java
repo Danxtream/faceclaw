@@ -25,10 +25,9 @@ public class FaceclawWebSocket {
     private final WebSocket socket;
     private volatile boolean closeRequested;
 
-    public FaceclawWebSocket(String url, final FaceclawWebSocketListener listener) {
-        this(url, listener, null, null);
-    }
-
+    // Single constructor (no overloads) so NativeScript constructor resolution
+    // can never pick a variant that drops the auth header; callers with no
+    // header pass null/null.
     public FaceclawWebSocket(String url, final FaceclawWebSocketListener listener, String headerName, String headerValue) {
         if (url == null || url.trim().isEmpty()) {
             throw new IllegalArgumentException("url is required");
@@ -41,6 +40,15 @@ public class FaceclawWebSocket {
             builder.addHeader(headerName, headerValue);
         }
         Request request = builder.build();
+        // Redacted diagnostics: confirm the auth header is actually present on
+        // the handshake and carries a plausible value (not empty/truncated).
+        StringBuilder headerLog = new StringBuilder();
+        for (String name : request.headers().names()) {
+            String value = request.header(name);
+            headerLog.append(name).append('=').append(redact(value)).append(' ');
+        }
+        Log.i(TAG, "ws connect host=" + request.url().host() + request.url().encodedPath()
+                + " headers=[" + headerLog.toString().trim() + "]");
         socket = getClient().newWebSocket(request, new WebSocketListener() {
             @Override public void onOpen(WebSocket webSocket, Response response) {
                 mainHandler.post(() -> {
@@ -105,6 +113,15 @@ public class FaceclawWebSocket {
             }
         }
         return client;
+    }
+
+    private static String redact(String value) {
+        if (value == null) {
+            return "null";
+        }
+        int len = value.length();
+        String prefix = value.substring(0, Math.min(4, len));
+        return "len" + len + ":" + prefix + "...";
     }
 
     public boolean sendText(String message) {
