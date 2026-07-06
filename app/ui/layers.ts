@@ -18,11 +18,12 @@ export type LayerActions = {
   disconnect: () => Promise<void> | void;
   startTextSettingEdit: (setting: ConfigSettingString) => Promise<void> | void;
   endTextSettingEdit: () => Promise<void> | void;
-  setVoiceControlEnabled: (enabled: boolean) => Promise<void> | void;
   setStopwatchRenderActive: (active: boolean) => Promise<void> | void;
   setTranscribeRenderActive: (active: boolean) => Promise<void> | void;
-  startDedicatedVoiceInput: (mode: "wakeword" | "full") => Promise<void> | void;
-  stopDedicatedVoiceInput: () => Promise<void> | void;
+  /** Start voice capture with the provider chosen in settings. */
+  startVoiceCapture: () => Promise<void> | void;
+  /** Stop voice capture; for a cloud provider this also commits for a final result. */
+  stopVoiceCapture: () => Promise<void> | void;
   playBuzzerNote: (note: number, oct: number, beat: number) => Promise<void> | void;
 };
 

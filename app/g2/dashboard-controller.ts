@@ -28,12 +28,13 @@ import {
   setDashboardActions,
 } from "../ui/dashboard";
 import {
+  elevenLabsApiKeySetting,
   nightscoutApiTokenSetting,
   nightscoutSiteUrlSetting,
   onAnySettingChanged,
   rawScreenshotsEnabledSetting,
   systemCardNameSetting,
-  voiceControlEnabledSetting,
+  voiceProviderSetting,
   type ConfigSettingString,
 } from "../ui/dashboard-settings";
 import { saveRawScreenshot } from "../native/raw-screenshot";
@@ -173,11 +174,10 @@ class DashboardController {
       disconnect: () => this.disconnect(),
       startTextSettingEdit: (setting) => this.startTextSettingEdit(setting),
       endTextSettingEdit: () => this.endTextSettingEdit(),
-      setVoiceControlEnabled: (enabled) => this.setVoiceControlEnabled(enabled),
       setStopwatchRenderActive: (active) => this.setStopwatchRenderActive(active),
       setTranscribeRenderActive: (active) => this.setTranscribeRenderActive(active),
-      startDedicatedVoiceInput: (mode) => this.startDedicatedVoiceInput(mode),
-      stopDedicatedVoiceInput: () => this.stopDedicatedVoiceInput(),
+      startVoiceCapture: () => this.startVoiceCapture(),
+      stopVoiceCapture: () => this.stopVoiceCapture(),
       playBuzzerNote: (note, oct, beat) => this.playBuzzerNote(note, oct, beat),
     });
     this.offAndroidNotification = onAndroidNotificationPosted((notificationKey) => {
@@ -417,7 +417,6 @@ class DashboardController {
       await nightscoutBridge.start();
       await communicator.start();
       await this.requestRender("initial");
-      this.startVoiceControlIfEnabled();
       this.dashboardTimer = setInterval(() => {
         void this.requestRender("interval").catch((error) => {
           const message = this.formatError(error);
@@ -558,30 +557,32 @@ class DashboardController {
     this.emit();
   }
 
-  private async setVoiceControlEnabled(enabled: boolean): Promise<void> {
-    if (enabled) {
-      try {
-        // Treat Android mic permission as the consent gate for voice control,
-        // even when the current source is the G2 mic over BLE.
-        await ensureVoicePermissions();
-      } catch (error) {
-        this.appendLog(`voice control permission failed: ${this.formatError(error)}`);
-        return;
-      }
+  /**
+   * Begin voice capture with the provider chosen in settings. Used by both
+   * push-to-talk and the Transcribe app. Android mic permission is the consent
+   * gate even though the audio source is the G2 mic over BLE.
+   */
+  private startVoiceCapture(): void {
+    if (this.phase !== "connected" || !this.communicator) {
+      return;
     }
-
-    voiceControlEnabledSetting.set(enabled);
-    this.appendLog(`Voice control ${enabled ? "enabled" : "disabled"}.`);
-    if (enabled) {
-      this.startVoiceControlIfEnabled();
-    } else {
-      voiceControlBridge.stop();
-    }
-    if (this.phase === "connected" && this.communicator) {
-      await this.requestRender("interval").catch((error) => {
-        this.appendLog(`voice setting render failed: ${this.formatError(error)}`);
+    const communicator = this.communicator;
+    void ensureVoicePermissions()
+      .then(() => {
+        if (this.phase !== "connected" || this.communicator !== communicator) return;
+        voiceControlBridge.startPushToTalk({
+          communicator: communicator.getNativeCommunicator(),
+          provider: voiceProviderSetting.get(),
+          elevenLabsApiKey: elevenLabsApiKeySetting.get(),
+        });
+      })
+      .catch((error) => {
+        this.appendLog(`voice permission failed: ${this.formatError(error)}`);
       });
-    }
+  }
+
+  private stopVoiceCapture(): void {
+    voiceControlBridge.stopPushToTalk();
   }
 
   private endTextSettingEdit(): void {
@@ -837,27 +838,6 @@ class DashboardController {
     }
     const image = drawDashboard();
     this.updateDisplayPreviewFromImage(image);
-  }
-
-  private startVoiceControlIfEnabled(): void {
-    if (!this.communicator) return;
-    if (!voiceControlEnabledSetting.get()) return;
-    this.updateConnectedForegroundNotification();
-    voiceControlBridge.start(this.communicator.getNativeCommunicator(), "wakeword");
-  }
-
-  private async startDedicatedVoiceInput(mode: "wakeword" | "full"): Promise<void> {
-    if (!this.communicator) {
-      throw new Error("Voice input needs an active G2 connection.");
-    }
-    await ensureVoicePermissions();
-    this.updateConnectedForegroundNotification();
-    voiceControlBridge.start(this.communicator.getNativeCommunicator(), mode);
-  }
-
-  private stopDedicatedVoiceInput(): void {
-    voiceControlBridge.stop();
-    this.startVoiceControlIfEnabled();
   }
 
   private async playBuzzerNote(note: number, oct: number, beat: number): Promise<void> {

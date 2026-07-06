@@ -26,13 +26,21 @@ public class FaceclawWebSocket {
     private volatile boolean closeRequested;
 
     public FaceclawWebSocket(String url, final FaceclawWebSocketListener listener) {
+        this(url, listener, null, null);
+    }
+
+    public FaceclawWebSocket(String url, final FaceclawWebSocketListener listener, String headerName, String headerValue) {
         if (url == null || url.trim().isEmpty()) {
             throw new IllegalArgumentException("url is required");
         }
         if (listener == null) {
             throw new IllegalArgumentException("listener is required");
         }
-        Request request = new Request.Builder().url(url.trim()).build();
+        Request.Builder builder = new Request.Builder().url(url.trim());
+        if (headerName != null && !headerName.isEmpty() && headerValue != null) {
+            builder.addHeader(headerName, headerValue);
+        }
+        Request request = builder.build();
         socket = getClient().newWebSocket(request, new WebSocketListener() {
             @Override public void onOpen(WebSocket webSocket, Response response) {
                 mainHandler.post(() -> {

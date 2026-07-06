@@ -1,5 +1,4 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
-import { getDefaultSmallFont } from "../graphics/bdffont";
 import { type RawInputEvent } from "../native/faceclaw-communicator";
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
@@ -9,6 +8,7 @@ import { EditTextSettingLayer, isNightscoutSettingsConfigured, screenTimeoutSett
 import { Layer, LayerActions, LayerStack, type DashboardInputEvent, type LayerContext } from "./layers";
 import { SingleNotificationLayer } from "./notifications";
 import { TelepromptLayer } from "./apps/teleprompt";
+import { VoiceInputLayer } from "./apps/voice-input";
 import { drawSystemCard } from "./dashboard/system-card";
 import { createRootMenuLayer } from "./dashboard/root-menu";
 
@@ -44,15 +44,18 @@ const dashboardActions: LayerActions = {
   disconnect: () => {},
   startTextSettingEdit: () => {},
   endTextSettingEdit: () => {},
-  setVoiceControlEnabled: () => {},
   setStopwatchRenderActive: () => {},
   setTranscribeRenderActive: () => {},
-  startDedicatedVoiceInput: () => {},
-  stopDedicatedVoiceInput: () => {},
+  startVoiceCapture: () => {},
+  stopVoiceCapture: () => {},
   playBuzzerNote: () => {},
 };
-const dashboardFont = getDefaultSmallFont();
 export const TOP_LEFT_MENU_LAYOUT = { x: 8, y: 8, width: 272 };
+
+// The push-to-talk dialog is a singleton on the layer stack; tracked here so
+// long-press-release (a global event) can reach it and so a second long-press
+// doesn't stack duplicates.
+let activeVoiceInputLayer: VoiceInputLayer | null = null;
 
 function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputEvent {
   if (event.kind === "sys-event") {
@@ -115,6 +118,23 @@ export async function receiveInput(event: RawInputEvent): Promise<void> {
         dashboardLayers.push(createRootMenuLayer());
       }
     }
+    return;
+  }
+  // Push-to-talk is intercepted globally so it works over any UI: long-press
+  // opens the voice dialog and starts the mic; releasing it stops the mic.
+  if (inputEvent.type === "long-press") {
+    if (!activeVoiceInputLayer) {
+      const layer = new VoiceInputLayer(dashboardActions, () => {
+        if (activeVoiceInputLayer === layer) activeVoiceInputLayer = null;
+      });
+      activeVoiceInputLayer = layer;
+      dashboardLayers.push(layer);
+      layer.startCapture();
+    }
+    return;
+  }
+  if (inputEvent.type === "long-press-release") {
+    activeVoiceInputLayer?.endCapture();
     return;
   }
   await dashboardLayers.handleInput(inputEvent);

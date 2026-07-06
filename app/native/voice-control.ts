@@ -1,15 +1,29 @@
 import { Utils } from "@nativescript/core";
 
+import { ElevenLabsSttClient } from "./elevenlabs-stt";
+import { toUint8Array } from "../util/array-util";
+
 declare const com: any;
 
 export type VoiceControlState = {
   status: string;
 };
 
-export type VoiceInputMode = "off" | "wakeword" | "full";
+export type VoiceProviderKind = "onboard" | "elevenlabs";
+
 export type VoiceTranscriptEvent = {
+  /**
+   * Complete best transcript of the current utterance. REPLACE semantics —
+   * render as-is, replacing any previous partial. Not a delta.
+   */
   text: string;
   isFinal: boolean;
+};
+
+export type PushToTalkOptions = {
+  communicator: any;
+  provider: VoiceProviderKind;
+  elevenLabsApiKey: string;
 };
 
 export class FaceclawVoiceControlBridge {
@@ -20,7 +34,8 @@ export class FaceclawVoiceControlBridge {
   private listenerProxy: any | null = null;
   private status = "Voice control stopped.";
   private started = false;
-  private mode: VoiceInputMode = "off";
+  // Non-null while a cloud provider owns the transcript; Java only decodes PCM.
+  private cloudClient: ElevenLabsSttClient | null = null;
 
   onStatus(listener: (state: VoiceControlState) => void): () => void {
     this.statusListeners.add(listener);
@@ -38,30 +53,55 @@ export class FaceclawVoiceControlBridge {
     return () => this.transcriptListeners.delete(listener);
   }
 
-  start(communicator?: any, mode: VoiceInputMode = "wakeword"): void {
-    if (mode === "off") {
-      this.stop();
+  /** Begin push-to-talk capture with the selected provider. */
+  startPushToTalk(options: PushToTalkOptions): void {
+    if (!global.isAndroid) return;
+    if (this.started) this.stop();
+    this.ensureController();
+    this.controller?.setCommunicator(options.communicator);
+
+    if (options.provider === "elevenlabs" && options.elevenLabsApiKey.trim()) {
+      this.cloudClient = new ElevenLabsSttClient({
+        apiKey: options.elevenLabsApiKey.trim(),
+        onTranscript: (event) => this.emitTranscript(event.text, event.isFinal),
+        onStatus: (status) => this.setStatus(status),
+        onError: (message) => this.setStatus(message),
+      });
+      this.cloudClient.start();
+      this.started = true;
+      this.controller?.start("cloud");
       return;
     }
-    if (!global.isAndroid) return;
-    this.ensureController();
-    if (communicator) {
-      this.controller?.setCommunicator(communicator);
+
+    if (options.provider === "elevenlabs") {
+      this.setStatus("No ElevenLabs key set; using on-device voice.");
     }
-    if (this.started && this.mode !== mode) {
-      this.controller?.stop();
-      this.started = false;
-    }
+    this.cloudClient = null;
     this.started = true;
-    this.mode = mode;
-    this.controller?.start(mode);
+    this.controller?.start("onboard");
+  }
+
+  /** End push-to-talk: stop the mic and, for cloud, commit for a final result. */
+  stopPushToTalk(): void {
+    if (!this.started) {
+      this.cloudClient?.finish();
+      return;
+    }
+    // Order matters for cloud: stopping the Java controller flushes any final
+    // decode/PCM; then commit so ElevenLabs finalizes the transcript. The
+    // socket is closed once the committed transcript arrives, or on stop().
+    this.controller?.stop();
+    this.started = false;
+    this.cloudClient?.finish();
   }
 
   stop(): void {
-    if (!this.started || !global.isAndroid) return;
+    if (global.isAndroid) {
+      this.controller?.stop();
+    }
     this.started = false;
-    this.mode = "off";
-    this.controller?.stop();
+    this.cloudClient?.stop();
+    this.cloudClient = null;
     this.setStatus("Voice control stopped.");
   }
 
@@ -82,13 +122,20 @@ export class FaceclawVoiceControlBridge {
         }
       },
       onTranscript: (text: string, isFinal: boolean) => {
-        const event = { text: String(text), isFinal: Boolean(isFinal) };
-        for (const listener of this.transcriptListeners) {
-          listener(event);
-        }
+        this.emitTranscript(String(text), Boolean(isFinal));
+      },
+      onPcm: (pcm: any) => {
+        this.cloudClient?.acceptPcm(toUint8Array(pcm));
       },
     });
     this.controller.setListener(this.listenerProxy);
+  }
+
+  private emitTranscript(text: string, isFinal: boolean): void {
+    const event = { text, isFinal };
+    for (const listener of this.transcriptListeners) {
+      listener(event);
+    }
   }
 
   private setStatus(status: string): void {

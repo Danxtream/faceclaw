@@ -36,11 +36,15 @@ public class FaceclawVoiceController {
     private static final int EXPECTED_PACKET_INTERVAL_MS = 50;
     private static final int LATE_PACKET_INTERVAL_MS = 90;
     private static final int STATS_INTERVAL_MS = 5_000;
-    private static final int TRANSCRIPT_DECODE_INTERVAL_MS = 900;
-    private static final int TRANSCRIPT_MIN_SAMPLES = SAMPLE_RATE / 2;
-    private static final int TRANSCRIPT_MAX_SAMPLES = SAMPLE_RATE * 8;
-    private static final int TRANSCRIPT_SILENCE_ENDPOINT_SAMPLES = (int) (SAMPLE_RATE * 1.2);
-    private static final float TRANSCRIPT_SILENCE_PEAK = 0.015f;
+    // Push-to-talk utterance boundaries come from the button, so we accumulate
+    // the whole utterance and re-decode it in full for each live partial. The
+    // decode is of the complete audio each time, so the emitted text is the
+    // model's current best transcript of everything spoken so far (REPLACE,
+    // never a delta) — re-decoding a growing buffer and diffing prefixes was
+    // the source of the duplicated/garbled output.
+    private static final int TRANSCRIPT_DECODE_INTERVAL_MS = 700;
+    private static final int TRANSCRIPT_MIN_SAMPLES = SAMPLE_RATE / 3;
+    private static final int TRANSCRIPT_MAX_SAMPLES = SAMPLE_RATE * 30;
     private static final int TRANSCRIPT_LOG_PREVIEW_CHARS = 80;
     private static final String ASSET_ROOT = "faceclaw-voice";
     private static final String MODEL_DIR = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01";
@@ -60,8 +64,9 @@ public class FaceclawVoiceController {
     };
 
     private enum VoiceInputMode {
-        WAKEWORD,
-        FULL
+        WAKEWORD, // on-phone keyword spotting (kept for later; not currently wired)
+        ONBOARD,  // on-phone Moonshine transcription
+        CLOUD     // decode locally, emit PCM for a cloud recognizer on the TS side
     }
 
     private final Context appContext;
@@ -80,11 +85,8 @@ public class FaceclawVoiceController {
     private FaceclawLc3Decoder lc3Decoder;
     private float[] transcriptSamples = new float[TRANSCRIPT_MAX_SAMPLES];
     private int transcriptSampleCount;
-    private int transcriptSilentSamples;
-    private boolean transcriptHadSpeech;
     private long lastTranscriptDecodeAtMs;
     private String lastTranscript = "";
-    private float lastTranscriptPeak;
     private long queuedPackets;
     private long queueDroppedPackets;
     private long decodedSamples;
@@ -157,35 +159,47 @@ public class FaceclawVoiceController {
     }
 
     private VoiceInputMode parseMode(String requestedMode) {
-        return "full".equals(requestedMode) ? VoiceInputMode.FULL : VoiceInputMode.WAKEWORD;
+        if ("cloud".equals(requestedMode)) {
+            return VoiceInputMode.CLOUD;
+        }
+        if ("onboard".equals(requestedMode) || "full".equals(requestedMode)) {
+            return VoiceInputMode.ONBOARD;
+        }
+        return VoiceInputMode.WAKEWORD;
     }
 
     private void runLoop() {
         try {
             VoiceInputMode currentMode = mode;
-            emitStatus(currentMode == VoiceInputMode.FULL
-                    ? "Voice control loading transcription model..."
-                    : "Voice control loading wake-word model...");
-            if (currentMode == VoiceInputMode.FULL) {
+            if (currentMode == VoiceInputMode.ONBOARD) {
+                emitStatus("Loading transcription model...");
                 File modelDir = installAsrModelFiles();
                 recognizer = new OfflineRecognizer(buildRecognizerConfig(modelDir));
                 resetTranscriptState();
                 lastTranscript = "";
-            } else {
+            } else if (currentMode == VoiceInputMode.WAKEWORD) {
+                emitStatus("Loading wake-word model...");
                 File modelDir = installModelFiles();
                 keywordSpotter = new KeywordSpotter(buildConfig(modelDir));
                 stream = keywordSpotter.createStream();
             }
             lc3Decoder = new FaceclawLc3Decoder();
             if (!startG2Audio()) {
-                emitStatus("Voice control could not start G2 microphone input.");
+                emitStatus("Could not start G2 microphone input.");
                 return;
             }
 
-            emitStatus(currentMode == VoiceInputMode.FULL
-                    ? "Voice control transcribing from the G2 mic."
-                    : "Voice control listening for \"screen on\" from the G2 mic.");
+            emitStatus(currentMode == VoiceInputMode.CLOUD
+                    ? "Listening (cloud)..."
+                    : currentMode == VoiceInputMode.ONBOARD
+                        ? "Listening..."
+                        : "Listening for \"screen on\"...");
             processG2Audio();
+            // Button released / stop requested: emit one final full-utterance
+            // transcript so the UI can freeze it.
+            if (currentMode == VoiceInputMode.ONBOARD) {
+                decodeTranscript(true);
+            }
         } catch (Throwable error) {
             Log.e(TAG, "Voice control failed", error);
             emitStatus("Voice control failed: " + error.getMessage());
@@ -318,13 +332,19 @@ public class FaceclawVoiceController {
                 continue;
             }
             decodedSamples += count;
-            float[] samples = new float[count];
-            for (int i = 0; i < count; i++) {
-                samples[i] = pcm[i] / 32768.0f;
-            }
-            if (mode == VoiceInputMode.FULL) {
+            if (mode == VoiceInputMode.CLOUD) {
+                emitPcm(pcm, count);
+            } else if (mode == VoiceInputMode.ONBOARD) {
+                float[] samples = new float[count];
+                for (int i = 0; i < count; i++) {
+                    samples[i] = pcm[i] / 32768.0f;
+                }
                 processRecognizer(samples);
             } else {
+                float[] samples = new float[count];
+                for (int i = 0; i < count; i++) {
+                    samples[i] = pcm[i] / 32768.0f;
+                }
                 currentStream.acceptWaveform(samples, SAMPLE_RATE);
                 processKeywordSpotter(currentStream);
             }
@@ -350,29 +370,19 @@ public class FaceclawVoiceController {
 
     private void processRecognizer(float[] samples) {
         appendTranscriptSamples(samples);
-        updateTranscriptSilence(samples);
-
-        if (transcriptSampleCount >= TRANSCRIPT_MAX_SAMPLES) {
-            decodeTranscriptSegment(true);
-            resetTranscriptState();
-            lastTranscript = "";
-            return;
-        }
-
         long now = SystemClock.elapsedRealtime();
-        if (transcriptSampleCount >= TRANSCRIPT_MIN_SAMPLES && now - lastTranscriptDecodeAtMs >= TRANSCRIPT_DECODE_INTERVAL_MS) {
-            decodeTranscriptSegment(false);
+        if (transcriptSampleCount >= TRANSCRIPT_MIN_SAMPLES
+                && now - lastTranscriptDecodeAtMs >= TRANSCRIPT_DECODE_INTERVAL_MS) {
+            decodeTranscript(false);
             lastTranscriptDecodeAtMs = now;
-        }
-
-        if (transcriptHadSpeech && transcriptSilentSamples >= TRANSCRIPT_SILENCE_ENDPOINT_SAMPLES) {
-            decodeTranscriptSegment(true);
-            resetTranscriptState();
-            lastTranscript = "";
         }
     }
 
     private void appendTranscriptSamples(float[] samples) {
+        // The utterance is bounded by the push-to-talk button; the cap is only a
+        // safety limit. If it's hit, keep the most recent audio and let the
+        // transcript track that window (the beginning is unlikely to still be on
+        // screen after 30s anyway).
         int available = TRANSCRIPT_MAX_SAMPLES - transcriptSampleCount;
         if (samples.length > available) {
             int drop = samples.length - available;
@@ -387,83 +397,55 @@ public class FaceclawVoiceController {
         transcriptSampleCount += samples.length;
     }
 
-    private void updateTranscriptSilence(float[] samples) {
-        float peak = 0.0f;
-        for (float sample : samples) {
-            float abs = Math.abs(sample);
-            if (abs > peak) {
-                peak = abs;
-            }
-        }
-        if (peak > lastTranscriptPeak) {
-            lastTranscriptPeak = peak;
-        }
-        if (peak < TRANSCRIPT_SILENCE_PEAK) {
-            transcriptSilentSamples += samples.length;
-        } else {
-            transcriptSilentSamples = 0;
-            transcriptHadSpeech = true;
-        }
-    }
-
-    private void decodeTranscriptSegment(boolean isFinal) {
+    /**
+     * Decode the entire accumulated utterance and emit the model's current best
+     * full transcript (REPLACE semantics — the caller displays it as-is).
+     */
+    private void decodeTranscript(boolean isFinal) {
         OfflineRecognizer currentRecognizer = recognizer;
         if (currentRecognizer == null || transcriptSampleCount <= 0) {
+            if (isFinal) {
+                emitTranscript(lastTranscript, true);
+            }
             return;
         }
         OfflineStream offlineStream = currentRecognizer.createStream();
+        String text;
         try {
             offlineStream.acceptWaveform(Arrays.copyOf(transcriptSamples, transcriptSampleCount), SAMPLE_RATE);
             currentRecognizer.decode(offlineStream);
-            emitRecognizerResult(currentRecognizer.getResult(offlineStream), isFinal, transcriptSampleCount, lastTranscriptPeak);
+            OfflineRecognizerResult result = currentRecognizer.getResult(offlineStream);
+            String raw = result == null ? "" : result.getText();
+            text = raw == null ? "" : raw.trim();
         } finally {
             offlineStream.release();
         }
-    }
-
-    private void emitRecognizerResult(OfflineRecognizerResult result, boolean isFinal, int sampleCount, float peak) {
-        String text = result == null ? "" : result.getText();
-        if (text == null) {
-            text = "";
-        }
-        String trimmed = text.trim();
-        String preview = trimmed.length() <= TRANSCRIPT_LOG_PREVIEW_CHARS
-                ? trimmed
-                : trimmed.substring(0, TRANSCRIPT_LOG_PREVIEW_CHARS) + "...";
+        lastTranscript = text;
+        String preview = text.length() <= TRANSCRIPT_LOG_PREVIEW_CHARS
+                ? text : text.substring(0, TRANSCRIPT_LOG_PREVIEW_CHARS) + "...";
         Log.i(TAG, "Moonshine decode final=" + isFinal
-                + " audioSec=" + String.format(java.util.Locale.US, "%.2f", sampleCount / (double) SAMPLE_RATE)
-                + " peak=" + String.format(java.util.Locale.US, "%.4f", peak)
-                + " textLen=" + trimmed.length()
-                + " text=\"" + preview + "\"");
-        emitStatus("Moonshine decode "
-                + String.format(java.util.Locale.US, "%.1fs", sampleCount / (double) SAMPLE_RATE)
-                + ", textLen=" + trimmed.length());
-        if (text.equals(lastTranscript)) {
-            if (isFinal && lastTranscript.length() > 0) {
-                emitTranscript("", true);
-                lastTranscript = "";
-            }
-            return;
-        }
-        String delta = text;
-        if (lastTranscript.length() > 0 && text.startsWith(lastTranscript)) {
-            delta = text.substring(lastTranscript.length());
-        }
-        if (delta.trim().length() > 0) {
-            emitTranscript(delta, false);
-        }
-        lastTranscript = isFinal ? "" : text;
-        if (isFinal) {
-            emitTranscript("", true);
-        }
+                + " audioSec=" + String.format(java.util.Locale.US, "%.2f", transcriptSampleCount / (double) SAMPLE_RATE)
+                + " textLen=" + text.length() + " text=\"" + preview + "\"");
+        emitTranscript(text, isFinal);
     }
 
     private void resetTranscriptState() {
         transcriptSampleCount = 0;
-        transcriptSilentSamples = 0;
-        transcriptHadSpeech = false;
         lastTranscriptDecodeAtMs = 0;
-        lastTranscriptPeak = 0.0f;
+    }
+
+    private void emitPcm(short[] pcm, int count) {
+        FaceclawVoiceControllerListener currentListener = listener;
+        if (currentListener == null || count <= 0) {
+            return;
+        }
+        byte[] le = new byte[count * 2];
+        for (int i = 0; i < count; i++) {
+            short s = pcm[i];
+            le[i * 2] = (byte) (s & 0xff);
+            le[i * 2 + 1] = (byte) ((s >> 8) & 0xff);
+        }
+        mainHandler.post(() -> currentListener.onPcm(le));
     }
 
     private void stopG2Audio() {

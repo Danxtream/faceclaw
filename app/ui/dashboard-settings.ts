@@ -267,6 +267,27 @@ export const rawScreenshotsEnabledSetting = new ConfigSettingBoolean({
   defaultValue: false,
 });
 
+export type VoiceProvider = "onboard" | "elevenlabs";
+
+export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
+  id: "voice-provider",
+  label: "Provider",
+  storageKey: "voice.provider",
+  defaultValue: "onboard",
+  values: ["onboard", "elevenlabs"],
+  formatValue: (value) => (value === "elevenlabs" ? "ElevenLabs" : "On-device"),
+});
+
+export const elevenLabsApiKeySetting = new ConfigSettingString({
+  id: "elevenlabs-api-key",
+  label: "ElevenLabs key",
+  storageKey: "voice.elevenLabsApiKey",
+  defaultValue: "",
+  editorTitle: "ElevenLabs API key",
+  glassesEditTitle: "Edit ElevenLabs key",
+  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+});
+
 export const terminalHostSetting = new ConfigSettingString({
   id: "terminal-host",
   label: "Host",
@@ -448,8 +469,10 @@ export function textSettingMenuItem<TId extends string = string>(
       void ctx.actions.startTextSettingEdit(setting);
       ctx.stack.push(new EditTextSettingLayer(setting));
     },
-    render: ({ image, x, y, width, selected }) => {
-      image.drawText(getDefaultSmallFont(), x, y + 3, `${setting.label}: ${truncateSetting(setting.get())}`, 200);
+    render: ({ image, x, y }) => {
+      // displayValue honors the setting's formatValue, so secrets (API keys,
+      // tokens) can mask themselves instead of rendering in the clear.
+      image.drawText(getDefaultSmallFont(), x, y + 3, `${setting.label}: ${truncateSetting(setting.displayValue())}`, 200);
     }
   };
 }
