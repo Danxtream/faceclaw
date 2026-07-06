@@ -62,6 +62,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private boolean fixedLayoutCreated;
     private boolean warmedUp;
     private boolean shutdownRequested;
+    // CFW firmware-debug-flags overlay (mode 7). Desired value pushed from TS; the
+    // sub-op last sent this session (-1 = not yet), reset on (re)connect so the
+    // overlay state is re-asserted on every reconnect and whenever the value changes.
+    private volatile boolean firmwareDebugFlagsEnabled;
+    private int firmwareDebugFlagsLastSent = -1;
     private boolean startupProbePending;
 
     private long reconnectAfterMs;
@@ -84,6 +89,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int nextTransportSeq = 0x40;
     private int nextMapSessionId = 0;
     private int nextImageUpdateId = 1;
+    // Wire frame id for mode-3 deltas (CFW reorder/skip/dup diagnostic). uint16,
+    // advanced by 1 per emitted delta; kept in [1, 0xfffe] to avoid the CFW's
+    // 0xffff "empty" sentinel.
+    private int nextImageFrameId = 1;
     private int lastShutdownAckMagic = 0;
     private long lastShutdownExitAtMs = 0;
     private int headsetBattery = -1;
@@ -181,6 +190,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     public void setG2ScreenOn(boolean screenOn) {
         mainHandler.post(() -> updateG2ScreenWakeLock(screenOn));
+    }
+
+    public void setFirmwareDebugFlags(boolean enabled) {
+        // Just record it; the drive loop emits the mode-7 control message when the
+        // session is warmed up and idle, and re-emits when this value changes.
+        firmwareDebugFlagsEnabled = enabled;
     }
 
     public boolean startG2AudioCapture(FaceclawAudioPacketListener listener) {
@@ -818,6 +833,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         enqueueWarmupLocked();
                     }
 
+                    if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && warmedUp
+                            && (firmwareDebugFlagsEnabled ? 2 : 1) != firmwareDebugFlagsLastSent
+                            && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
+                        Log.i(TAG, "enqueueing firmware debug flags " + (firmwareDebugFlagsEnabled ? "show" : "hide"));
+                        enqueueFirmwareDebugFlagsLocked();
+                    }
+
                     if (messageToPrewrite == null && handleHeartbeat()) {
                         return ConnectionOptions.IDLE_SLEEP_MS;
                     }
@@ -1165,6 +1187,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void enqueueCreateLayoutLocked() {
+        // New session/container: re-assert the firmware-debug-flags overlay once it's
+        // warmed up again (the mode-7 send is gated on this having reset).
+        firmwareDebugFlagsLastSent = -1;
         OutboundMessage message = messageBuilder.createLayout(DASHBOARD_TILE);
         message.onAck = () -> {
             startupProbePending = false;
@@ -1246,6 +1271,25 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         logLine("queue blank warmup");
     }
 
+    /**
+     * Send the CFW mode-7 diagnostic-flag control op to the dashboard container:
+     * [7][2] to show the on-glasses debug-flag overlay, [7][1] to hide it. Uses the
+     * arbitrary-payload image path (no bmp/dedup/frame-timing interaction) and does
+     * nothing on stock firmware (which ignores unknown image modes).
+     */
+    private void enqueueFirmwareDebugFlagsLocked() {
+        boolean show = firmwareDebugFlagsEnabled;
+        int sub = show ? 2 : 1;
+        byte[] payload = new byte[] { (byte) 7, (byte) sub };
+        OutboundMessage message = messageBuilder.imagePayload(
+            DASHBOARD_TILE, nextMapSessionId(), payload,
+            "fw-debug-flags " + (show ? "show" : "hide"),
+            connectionOptions.sendImagesToLeft);
+        pendingMessages.addLast(message);
+        firmwareDebugFlagsLastSent = sub;
+        logLine("queue firmware debug flags " + (show ? "show" : "hide"));
+    }
+
     private void enqueueDesiredImageLocked() {
         String fingerprint = getDesiredFingerprint();
         byte[] bmp;
@@ -1272,7 +1316,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // paths, so a non-empty value means display state is trusted.
         byte[] incrementalPayload = null;
         if (connectionOptions.INCREMENTAL_FRAMES && displayedBmp.length > 0) {
-            incrementalPayload = BleImageOptimizer.buildIncrementalImagePayload(displayedBmp, bmp);
+            incrementalPayload = BleImageOptimizer.buildIncrementalImagePayload(displayedBmp, bmp, nextImageFrameId);
+            if (incrementalPayload != null) {
+                // advance only when a delta is actually emitted, so consecutive
+                // deltas carry consecutive ids (CFW skip/reorder detection)
+                nextImageFrameId = nextImageFrameId >= 0xfffe ? 1 : nextImageFrameId + 1;
+            }
         }
         BleImageOptimizer.TileImagePlan plan = incrementalPayload != null
             ? new BleImageOptimizer.TileImagePlan(0, DASHBOARD_TILE, bmp, nextMapSessionId(), incrementalPayload)

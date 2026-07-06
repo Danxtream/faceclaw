@@ -104,14 +104,18 @@ public final class BleImageOptimizer {
      * Build a mode-3 bounding-box incremental payload, or null when a full
      * update should be sent instead (frames not comparable, or the changed
      * region spans the whole screen). Wire format:
-     *   [3][left/4][top/2][width/4][height/2][zlib of headerless 4bpp region]
+     *   [3][left/4][top/2][width/4][height/2][fid_lo][fid_hi][zlib of headerless 4bpp region]
      * The region is top-down rows of the NEW frame, stride width/2 bytes. The
      * box is aligned so left/width are multiples of 4 pixels and top/height
      * multiples of 2 rows, letting each coordinate fit one byte and avoiding
      * 4bpp byte-boundary corner cases. Identical frames yield null too; the
      * caller's dedup check should normally catch that first.
+     *
+     * frameId is a little-endian uint16 the CFW uses to detect reordered,
+     * skipped or duplicated deltas (its diagnostic overlay); the caller advances
+     * it by 1 per emitted delta so consecutive deltas are consecutive.
      */
-    public static byte[] buildIncrementalImagePayload(byte[] previousBmp, byte[] newBmp) {
+    public static byte[] buildIncrementalImagePayload(byte[] previousBmp, byte[] newBmp, int frameId) {
         int width = BmpUtil.readBmpWidth(newBmp);
         int height = BmpUtil.readBmpHeight(newBmp);
         if (width <= 0 || height <= 0
@@ -173,13 +177,15 @@ public final class BleImageOptimizer {
             System.arraycopy(next, (top + y) * stride + (left >> 1), region, y * regionStride, regionStride);
         }
         byte[] compressed = deflate(region);
-        byte[] out = new byte[5 + compressed.length];
+        byte[] out = new byte[7 + compressed.length];
         out[0] = 3;
         out[1] = (byte) (left / 4);
         out[2] = (byte) (top / 2);
         out[3] = (byte) (boxWidth / 4);
         out[4] = (byte) (boxHeight / 2);
-        System.arraycopy(compressed, 0, out, 5, compressed.length);
+        out[5] = (byte) (frameId & 0xff);          // fid_lo
+        out[6] = (byte) ((frameId >> 8) & 0xff);   // fid_hi
+        System.arraycopy(compressed, 0, out, 7, compressed.length);
         return out;
     }
 

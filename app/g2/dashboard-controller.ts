@@ -30,6 +30,7 @@ import {
 import {
   elevenLabsApiKeySetting,
   nightscoutApiTokenSetting,
+  firmwareDebugFlagsSetting,
   nightscoutSiteUrlSetting,
   onAnySettingChanged,
   rawScreenshotsEnabledSetting,
@@ -188,7 +189,18 @@ class DashboardController {
     });
     // Settings toggled from the glasses can change what the phone UI shows
     // (e.g. the raw-screenshot button), so re-emit the snapshot on any change.
-    onAnySettingChanged(() => this.emit());
+    onAnySettingChanged(() => {
+      this.emit();
+      // Apply a firmware-debug-flags toggle live while connected (Java dedups).
+      this.pushFirmwareDebugFlags();
+    });
+  }
+
+  private pushFirmwareDebugFlags(): void {
+    if (!this.communicator) return;
+    void this.communicator
+      .setFirmwareDebugFlags(firmwareDebugFlagsSetting.get())
+      .catch(() => {});
   }
 
   /**
@@ -345,6 +357,11 @@ class DashboardController {
           // Nobody is wearing the glasses; drop the G2-screen wakelock so the
           // phone can sleep normally while they charge.
           void this.communicator?.setG2ScreenOn(false).catch(() => {});
+        }
+        if (mappedPhase === "connected" && this.phase !== "connected") {
+          // Push the CFW firmware-debug-flags overlay preference; Java emits the
+          // mode-7 control message once the dashboard container is warmed up.
+          this.pushFirmwareDebugFlags();
         }
         this.setPhase(mappedPhase);
         this.setStatus(state.status);

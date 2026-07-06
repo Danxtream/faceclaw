@@ -311,6 +311,10 @@ export class FaceclawCommunicatorBridge {
     await this.enqueueJavaCall(() => this.communicator.setG2ScreenOn(Boolean(screenOn)));
   }
 
+  async setFirmwareDebugFlags(enabled: boolean): Promise<void> {
+    await this.enqueueJavaCall(() => this.communicator.setFirmwareDebugFlags(Boolean(enabled)));
+  }
+
   async submitDashboardImage(image8bpp: Uint8Array, width: number, height: number, fingerprint: string, paintMs = -1, frameId = 0): Promise<void> {
     // Snapshot because the Java call is deferred; the buffer is passed as an
     // ArrayBuffer, which NativeScript marshals to a ByteBuffer without the

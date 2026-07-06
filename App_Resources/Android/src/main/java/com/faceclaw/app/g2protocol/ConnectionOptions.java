@@ -38,5 +38,5 @@ public class ConnectionOptions {
     // back, apparently display-driver buffer swapping), so partial updates
     // composite onto stale content per-lens. Re-enable once the firmware
     // guarantees the compositing base.
-    final boolean INCREMENTAL_FRAMES = false;
+    final boolean INCREMENTAL_FRAMES = true;
 }

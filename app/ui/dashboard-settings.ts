@@ -267,6 +267,13 @@ export const rawScreenshotsEnabledSetting = new ConfigSettingBoolean({
   defaultValue: false,
 });
 
+export const firmwareDebugFlagsSetting = new ConfigSettingBoolean({
+  id: "firmware-debug-flags",
+  label: "Firmware debug flags",
+  storageKey: "developer.firmwareDebugFlags",
+  defaultValue: false,
+});
+
 export type VoiceProvider = "onboard" | "elevenlabs";
 
 export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
