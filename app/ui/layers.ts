@@ -75,6 +75,11 @@ export class LayerStack {
     }
   }
 
+  /** Whether the top layer matches (without popping it). */
+  topMatches(predicate: (layer: Layer) => boolean): boolean {
+    return this.layers.length > 1 && predicate(this.layers[this.layers.length - 1]!);
+  }
+
   /** Pop the top layer only if it matches; returns whether a layer was popped. */
   popIfTop(predicate: (layer: Layer) => boolean): boolean {
     if (this.layers.length > 1 && predicate(this.layers[this.layers.length - 1]!)) {
@@ -92,6 +97,10 @@ export class LayerStack {
 
   isAtBase(): boolean {
     return this.layers.length === 1;
+  }
+
+  getBaseSize(): { width: number; height: number } {
+    return { width: this.baseWidth, height: this.baseHeight };
   }
 
   setActions(actions: Partial<LayerActions>): void {

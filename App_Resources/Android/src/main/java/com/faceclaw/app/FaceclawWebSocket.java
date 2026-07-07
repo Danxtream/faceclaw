@@ -14,14 +14,16 @@ import okhttp3.WebSocketListener;
 
 /**
  * Thin okhttp WebSocket wrapper for the TypeScript side. Text frames only
- * (the g2mirror protocol is JSON-in-text-frames). All listener callbacks are
- * posted to the main thread, where the NativeScript runtime expects them.
+ * (the g2mirror protocol is JSON-in-text-frames). Listener callbacks are
+ * posted to the Looper of the thread that constructed this object, so a JS
+ * isolate (main thread or app worker) always receives them on its own
+ * thread; a Looper-less constructing thread falls back to the main thread.
  */
 public class FaceclawWebSocket {
     private static final String TAG = "FaceclawWebSocket";
-    private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static volatile OkHttpClient sharedClient;
 
+    private final Handler callbackHandler;
     private final WebSocket socket;
     private volatile boolean closeRequested;
 
@@ -35,6 +37,8 @@ public class FaceclawWebSocket {
         if (listener == null) {
             throw new IllegalArgumentException("listener is required");
         }
+        Looper looper = Looper.myLooper();
+        callbackHandler = new Handler(looper != null ? looper : Looper.getMainLooper());
         Request.Builder builder = new Request.Builder().url(url.trim());
         if (headerName != null && !headerName.isEmpty() && headerValue != null) {
             builder.addHeader(headerName, headerValue);
@@ -51,7 +55,7 @@ public class FaceclawWebSocket {
                 + " headers=[" + headerLog.toString().trim() + "]");
         socket = getClient().newWebSocket(request, new WebSocketListener() {
             @Override public void onOpen(WebSocket webSocket, Response response) {
-                mainHandler.post(() -> {
+                callbackHandler.post(() -> {
                     try {
                         listener.onOpen();
                     } catch (Throwable t) {
@@ -61,7 +65,7 @@ public class FaceclawWebSocket {
             }
 
             @Override public void onMessage(WebSocket webSocket, String text) {
-                mainHandler.post(() -> {
+                callbackHandler.post(() -> {
                     try {
                         listener.onTextMessage(text);
                     } catch (Throwable t) {
@@ -75,7 +79,7 @@ public class FaceclawWebSocket {
             }
 
             @Override public void onClosed(WebSocket webSocket, int code, String reason) {
-                mainHandler.post(() -> {
+                callbackHandler.post(() -> {
                     try {
                         listener.onClosed(code, reason == null ? "" : reason);
                     } catch (Throwable t) {
@@ -89,7 +93,7 @@ public class FaceclawWebSocket {
                     return;
                 }
                 final String message = t == null ? "unknown websocket failure" : String.valueOf(t);
-                mainHandler.post(() -> {
+                callbackHandler.post(() -> {
                     try {
                         listener.onFailure(message);
                     } catch (Throwable inner) {

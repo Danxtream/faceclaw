@@ -3,8 +3,7 @@ import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
 import { getDashboardPlugin, type DashboardPluginCardBounds, type DashboardPluginState } from "./dashboard-plugins";
 import { EditTextSettingLayer, isNightscoutSettingsConfigured, type DashboardSlotId, DashboardPluginId, bottomRightSlotSetting, bottomLeftSlotSetting, dashboardSlotIds } from "./dashboard-settings";
-import { Layer, LayerActions, LayerStack, type DashboardInputEvent, type LayerContext } from "./layers";
-import { SingleNotificationLayer } from "./notifications";
+import { Layer, LayerActions, LayerStack, type DashboardInputEvent } from "./layers";
 import { TelepromptLayer } from "./apps/teleprompt";
 import { drawSystemCard } from "./dashboard/system-card";
 import { createRootMenuLayer } from "./dashboard/root-menu";
@@ -85,24 +84,6 @@ export function openTelepromptDocument(text?: string): void {
   dashboardLayers.clearToBase();
   dashboardLayers.push(createRootMenuLayer());
   dashboardLayers.push(new TelepromptLayer(dashboardState.telepromptDocumentText));
-}
-
-export function openAndroidNotificationFromSleep(notificationKey: string, nowMs = Date.now()): boolean {
-  if (!notificationKey || shell.isScreenOn()) return false;
-
-  shell.wake("window", nowMs);
-  dashboardLayers.clearToBase();
-  dashboardLayers.push(createRootMenuLayer());
-  dashboardLayers.push(new SingleNotificationLayer(notificationKey, {
-    origin: "new-notification-trigger",
-    closeNewNotificationTrigger: closeNewNotificationTrigger,
-  }));
-  return true;
-}
-
-function closeNewNotificationTrigger(ctx: LayerContext): void {
-  shell.sleep();
-  ctx.stack.clearToBase();
 }
 
 export function resetDashboardSleepTimerAndWake(nowMs = Date.now()): boolean {

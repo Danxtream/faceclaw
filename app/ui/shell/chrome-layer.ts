@@ -11,6 +11,8 @@ const ICON_MARGIN_X = ((SIDEBAR_WIDTH - ICON_SIZE) / 2) | 0;
 const ICON_SPACING = 8;
 const NOTIFICATION_ICON_SIZE = 24;
 const BORDER_VALUE = 40;
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export type ShellChromeWindow = {
   windowId: string;
@@ -82,7 +84,8 @@ export class ShellChromeLayer implements Layer {
     image.drawLine(SIDEBAR_WIDTH, TOP_BAR_HEIGHT - 1, G2_LENS_WIDTH - 1, TOP_BAR_HEIGHT - 1, BORDER_VALUE);
 
     const now = new Date();
-    const clock = `${now.getHours()}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const clock = `${WEEKDAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ` +
+      `${now.getHours()}:${String(now.getMinutes()).padStart(2, "0")}`;
     const clockX = SIDEBAR_WIDTH + 10;
     const textY = Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
     image.drawText(font, clockX, textY, clock, 210);

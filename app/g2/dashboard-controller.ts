@@ -18,7 +18,6 @@ import {
   closeDashboardTextSettingEditor,
   drawDashboard,
   logToDashboard,
-  openAndroidNotificationFromSleep,
   openTelepromptDocument,
   receiveDashboardWindowInput,
   resetDashboardSleepTimerAndWake,
@@ -29,7 +28,20 @@ import { inputEventToString, rawInputEventToInputEvent, shell, type ShellInputOu
 import { makeLetterWindowIcon } from "../ui/shell/chrome-layer";
 import { WorkerAppHost } from "../ui/shell/worker-window";
 import { createLauncherWindow, LAUNCHER_SURFACE_ID } from "../ui/shell/launcher-app";
+import {
+  createSettingsAppWindow,
+  SETTINGS_SURFACE_ID,
+  SETTINGS_WINDOW_ID,
+  type SettingsAppWindow,
+} from "../ui/shell/settings-app";
+import {
+  createNotificationsAppWindow,
+  NOTIFICATIONS_SURFACE_ID,
+  NOTIFICATIONS_WINDOW_ID,
+} from "../ui/shell/notifications-app";
+import { type InProcessWindow } from "../ui/shell/in-process-window";
 import { APP_VIEWPORT } from "../ui/shell/geometry";
+import { type LayerActions } from "../ui/layers";
 import {
   elevenLabsApiKeySetting,
   nightscoutApiTokenSetting,
@@ -180,12 +192,18 @@ class DashboardController {
   private queuedFrameId = 0;
   private shellRenderInProgress = false;
   private shellRenderQueued = false;
+  private nextShellRenderWantsFreshData = false;
   // Last painted surface images, for compositing the phone-side preview.
   private lastShellImage: GrayImage | null = null;
   private lastWindowImage: GrayImage | null = null;
-  // One shared worker hosts every stopwatch window; spawned on first launch.
-  private stopwatchHost: WorkerAppHost | null = null;
+  // One shared worker per app hosts all its windows; spawned on first launch.
+  private readonly appHosts = new Map<string, WorkerAppHost>();
   private nextWindowSerial = 1;
+  // The Settings app is in-process (its text editor syncs with the phone UI
+  // through this controller); tracked so edit flows reach its window.
+  private settingsApp: SettingsAppWindow | null = null;
+  private notificationsApp: InProcessWindow | null = null;
+  private sharedActions!: Omit<LayerActions, "requestRender">;
   private lastForegroundNotificationUpdateAtMs = 0;
   private lastConnectedPreviewUpdateAtMs = 0;
   // Consumed by the next renderDashboard: repaint with data sources not
@@ -202,6 +220,7 @@ class DashboardController {
       stopVoiceCapture: () => this.stopVoiceCapture(),
       playBuzzerNote: (note: number, oct: number, beat: number) => this.playBuzzerNote(note, oct, beat),
     };
+    this.sharedActions = sharedActions;
     setDashboardActions({
       ...sharedActions,
       requestRender: () => {
@@ -240,7 +259,12 @@ class DashboardController {
           ...sharedActions,
           requestRender: () => shell.foregroundWindow()?.requestRender(),
         },
-        apps: [{ appId: "stopwatch", label: "Stopwatch" }],
+        apps: [
+          { appId: "stopwatch", label: "Stopwatch" },
+          { appId: "terminal", label: "Terminal" },
+          { appId: "notifications", label: "Notifications" },
+          { appId: "settings", label: "Settings" },
+        ],
         launchApp: (appId) => this.launchApp(appId),
         submitFrame: (image, paintMs, frameId) =>
           this.submitWindowFrame(LAUNCHER_SURFACE_ID, image, paintMs, frameId),
@@ -736,11 +760,16 @@ class DashboardController {
 
   /**
    * Finish the active edit from the phone side (e.g. the IME's done key):
-   * ends the edit session and navigates the glasses out of the edit page.
+   * ends the edit session and navigates the glasses out of the edit page,
+   * in whichever window hosts it (the Settings app or the dashboard).
    */
   finishActiveTextSettingEdit(): void {
     if (!this.activeTextSetting) return;
     this.endTextSettingEdit();
+    if (this.settingsApp?.closeTextEditor()) {
+      this.settingsApp.requestRender();
+      return;
+    }
     if (!closeDashboardTextSettingEditor()) return;
     if (this.phase === "connected" && this.communicator) {
       void this.requestRender("interval").catch((error) => {
@@ -774,6 +803,11 @@ class DashboardController {
   }
 
   private previewOrRenderAfterTextSettingChange(label: string): void {
+    // Echo phone-side keystrokes into the glasses editor, wherever it lives.
+    if (this.settingsApp?.isTextEditorOnTop()) {
+      this.settingsApp.requestRender();
+      return;
+    }
     if (this.phase === "connected" && this.communicator) {
       void this.requestRender("interval").catch((error) => {
         this.appendLog(`${label} update failed: ${this.formatError(error)}`);
@@ -966,37 +1000,125 @@ class DashboardController {
     }
   }
 
+  /** Launch or focus the (in-process, singleton) Settings app. */
+  private async launchSettingsApp(): Promise<void> {
+    if (this.settingsApp) {
+      shell.focusWindow(SETTINGS_WINDOW_ID);
+      this.requestShellRender();
+      return;
+    }
+    const settingsApp = createSettingsAppWindow({
+      actions: {
+        ...this.sharedActions,
+        requestRender: () => {}, // rebound by createInProcessWindow
+      },
+      submitFrame: (image, paintMs, frameId) =>
+        this.submitWindowFrame(SETTINGS_SURFACE_ID, image, paintMs, frameId),
+      setSurfaceVisible: (visible) => this.setWindowSurfaceVisible(SETTINGS_SURFACE_ID, visible),
+      removeSurface: () => this.removeWindowSurface(SETTINGS_SURFACE_ID),
+      onClosed: () => {
+        // Closing mid-edit must not leave the phone-side editor dangling.
+        this.endTextSettingEdit();
+        this.settingsApp = null;
+      },
+    });
+    this.settingsApp = settingsApp;
+    shell.registerWindow(settingsApp.window);
+    // Configure the surface before foregrounding so the first frame has
+    // somewhere to land.
+    await this.configureWindowSurface(SETTINGS_SURFACE_ID, false);
+    shell.focusWindow(SETTINGS_WINDOW_ID);
+    this.requestShellRender();
+    this.appendLog("launched settings");
+  }
+
+  /** Launch or focus the (in-process, singleton) Notifications app. */
+  private async launchNotificationsApp(): Promise<void> {
+    if (this.notificationsApp) {
+      shell.focusWindow(NOTIFICATIONS_WINDOW_ID);
+      this.requestShellRender();
+      return;
+    }
+    const notificationsApp = createNotificationsAppWindow({
+      actions: {
+        ...this.sharedActions,
+        requestRender: () => {}, // rebound by createInProcessWindow
+      },
+      submitFrame: (image, paintMs, frameId) =>
+        this.submitWindowFrame(NOTIFICATIONS_SURFACE_ID, image, paintMs, frameId),
+      setSurfaceVisible: (visible) => this.setWindowSurfaceVisible(NOTIFICATIONS_SURFACE_ID, visible),
+      removeSurface: () => this.removeWindowSurface(NOTIFICATIONS_SURFACE_ID),
+      onClosed: () => {
+        this.notificationsApp = null;
+      },
+    });
+    this.notificationsApp = notificationsApp;
+    shell.registerWindow(notificationsApp.window);
+    await this.configureWindowSurface(NOTIFICATIONS_SURFACE_ID, false);
+    shell.focusWindow(NOTIFICATIONS_WINDOW_ID);
+    this.requestShellRender();
+    this.appendLog("launched notifications");
+  }
+
+  /** Get or spawn the worker host for an app. */
+  private ensureAppHost(appId: string): WorkerAppHost | null {
+    const existing = this.appHosts.get(appId);
+    if (existing) return existing;
+    // Worker paths must be string literals for the webpack worker loader.
+    let worker: Worker;
+    if (appId === "stopwatch") {
+      worker = new Worker("../workers/stopwatch-app.worker");
+    } else if (appId === "terminal") {
+      worker = new Worker("../workers/terminal-app.worker");
+    } else {
+      return null;
+    }
+    const host = new WorkerAppHost({
+      appId,
+      worker,
+      viewport: { width: APP_VIEWPORT.width, height: APP_VIEWPORT.height },
+      configureSurface: (surfaceId, visible) => this.configureWindowSurface(surfaceId, visible),
+      setSurfaceVisible: (surfaceId, visible) => this.setWindowSurfaceVisible(surfaceId, visible),
+      removeSurface: (surfaceId) => this.removeWindowSurface(surfaceId),
+      requestShellRender: () => this.requestShellRender(),
+    });
+    this.appHosts.set(appId, host);
+    return host;
+  }
+
   /**
-   * Launch an app from the launcher: allocate a window (in the app's shared
-   * worker, spawned on first launch), configure its surface, and foreground
-   * it. Launching an already-running app opens another window of it.
+   * Launch an app from the launcher: open a window in the app's shared
+   * worker (spawned on first launch) and foreground it. Launching an app
+   * with an open singleton window (the terminal hub, settings) focuses it.
    */
   private async launchApp(appId: string): Promise<void> {
-    if (appId !== "stopwatch") {
+    if (appId === "settings") {
+      await this.launchSettingsApp();
+      return;
+    }
+    if (appId === "notifications") {
+      await this.launchNotificationsApp();
+      return;
+    }
+    const host = this.ensureAppHost(appId);
+    if (!host) {
       this.appendLog(`unknown app: ${appId}`);
       return;
     }
-    if (!this.stopwatchHost) {
-      this.stopwatchHost = new WorkerAppHost("stopwatch", new Worker("../workers/stopwatch-app.worker"));
+    if (appId === "terminal") {
+      const existingHub = shell.getWindows().find((w) => w.windowId === "terminal:hub");
+      if (existingHub) {
+        shell.focusWindow(existingHub.windowId);
+        this.requestShellRender();
+        return;
+      }
+      host.openWindow({ windowId: "terminal:hub", title: "Terminal", iconLetter: "T", focus: true });
+      this.appendLog("launched terminal:hub");
+      return;
     }
     const serial = this.nextWindowSerial++;
-    const windowId = `stopwatch:${serial}`;
-    const surfaceId = `window:${windowId}`;
-    const window = this.stopwatchHost.openWindow({
-      windowId,
-      surfaceId,
-      title: `Stopwatch ${serial}`,
-      iconLetter: "S",
-      viewport: { width: APP_VIEWPORT.width, height: APP_VIEWPORT.height },
-      setSurfaceVisible: (visible) => this.setWindowSurfaceVisible(surfaceId, visible),
-      removeSurface: () => this.removeWindowSurface(surfaceId),
-    });
-    shell.registerWindow(window);
-    // Configure the surface before foregrounding so the worker's first frame
-    // has somewhere to land.
-    await this.configureWindowSurface(surfaceId, false);
-    shell.focusWindow(windowId);
-    this.requestShellRender();
+    const windowId = `${appId}:${serial}`;
+    host.openWindow({ windowId, title: `Stopwatch ${serial}`, iconLetter: "S", focus: true });
     this.appendLog(`launched ${windowId}`);
   }
 
@@ -1078,13 +1200,21 @@ class DashboardController {
 
   private async renderShell(): Promise<void> {
     const frameId = frameTimings.startFrame("render:shell");
-    beginRenderPass(true);
+    const wantFreshData = this.nextShellRenderWantsFreshData;
+    this.nextShellRenderWantsFreshData = false;
+    beginRenderPass(!wantFreshData);
     const paintStartedAtMs = Date.now();
     const image = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => shell.paintSurface()),
     );
     const paintMs = Date.now() - paintStartedAtMs;
-    endRenderPass();
+    const paintUsedStaleData = endRenderPass();
+    if (paintUsedStaleData) {
+      // Repaint with fresh data (e.g. notification icons) once this frame is
+      // out; mirrors renderDashboard's stale-data contract.
+      this.nextShellRenderWantsFreshData = true;
+      this.requestShellRender();
+    }
     this.lastShellImage = image;
     if (!this.communicator || this.phase === "charging") {
       frameTimings.finishFrame(frameId, "discarded: shell render with no active connection");
@@ -1123,22 +1253,24 @@ class DashboardController {
   }
 
   private async handleAndroidNotificationPosted(notificationKey: string): Promise<void> {
-    const changed = openAndroidNotificationFromSleep(notificationKey);
-    if (!changed) {
-      if (this.phase === "connected" && this.communicator) {
-        await this.requestRender("interval");
-      }
-      return;
-    }
-
-    this.appendLog("android notification woke dashboard");
-    if (this.phase === "connected" && this.communicator) {
+    // Keep the Notifications app's list fresh if it is open.
+    this.notificationsApp?.requestRender();
+    if (!notificationKey) {
       this.requestShellRender();
-      await this.requestRender("initial");
       return;
     }
-    const image = drawDashboard();
-    this.updateDisplayPreviewFromImage(image);
+    // New notifications open a shell modal over the app viewport; if the
+    // screen was off, wake for it and go back to sleep when it is closed.
+    // Waking while already on would steal focus, so only wake from sleep.
+    const wokeScreen = shell.isScreenOn() ? false : shell.wake("sidebar");
+    if (wokeScreen) {
+      this.appendLog("android notification woke the screen");
+    }
+    shell.openNotificationModal(notificationKey, wokeScreen);
+    this.requestShellRender();
+    if (this.phase === "connected" && this.communicator) {
+      await this.requestRender("interval");
+    }
   }
 
   private async playBuzzerNote(note: number, oct: number, beat: number): Promise<void> {

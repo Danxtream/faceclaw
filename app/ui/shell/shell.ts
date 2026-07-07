@@ -4,7 +4,9 @@ import type { RawInputEvent } from "../../native/faceclaw-communicator";
 import { DashboardInputEvent, LayerActions, LayerStack } from "../layers";
 import { MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer } from "../apps/voice-input";
+import { SingleNotificationLayer } from "../notifications";
 import { ShellChromeLayer, type ShellChromeState, type ShellChromeWindow } from "./chrome-layer";
+import { ShellModalLayer } from "./modal-layer";
 import { SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
 
 /**
@@ -221,6 +223,32 @@ class Shell {
     if (nowMs - this.lastInputAtMs < timeoutMs) return false;
     this.sleep();
     return true;
+  }
+
+  /**
+   * Show a new notification in a shell modal over the app viewport. If the
+   * notification woke the screen, closing the modal goes back to sleep
+   * (matching the old sleep-popup behavior).
+   */
+  openNotificationModal(notificationKey: string, wokeScreen: boolean): void {
+    if (!this.screenOn) return;
+    const modal: ShellModalLayer = new ShellModalLayer(
+      new SingleNotificationLayer(notificationKey, {
+        origin: "new-notification-modal",
+        closeModal: () => this.closeNotificationModal(modal, wokeScreen),
+      }),
+      this.config.actions,
+    );
+    this.stack.push(modal);
+    this.config.requestShellRender();
+  }
+
+  private closeNotificationModal(modal: ShellModalLayer, wokeScreen: boolean): void {
+    this.stack.popIfTop((layer) => layer === modal);
+    if (wokeScreen) {
+      this.sleep();
+    }
+    this.config.requestShellRender();
   }
 
   /** Called by a window when the user backs out of its root (double-tap). */

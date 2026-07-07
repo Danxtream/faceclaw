@@ -85,10 +85,13 @@ public class BmpUtil {
     }
 
     private static int grayToNibble(int value) {
+        // Truncate rather than round up: the shell's color-key convention
+        // paints intentional black as 1 (0 being transparent), which must
+        // land on nibble 0, not a faintly-visible level 1.
         if (value <= 0) {
             return 0;
         }
-        return Math.min(15, (value + 15) >> 4);
+        return Math.min(15, value >> 4);
     }
 
     private static void putUint16Le(byte[] buf, int offset, int value) {

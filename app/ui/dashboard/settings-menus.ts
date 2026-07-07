@@ -1,7 +1,13 @@
-import { TOP_LEFT_MENU_LAYOUT } from "../dashboard";
+import { APP_VIEWPORT } from "../shell/geometry";
+import { type MenuLayout } from "../menu";
+
+// Settings menus render in both the dashboard window (full lens) and the
+// Settings app window (viewport-sized); cap heights to the smaller of the two.
+const SETTINGS_MENU_LAYOUT: MenuLayout = { x: 8, y: 8, width: 272, maxHeight: APP_VIEWPORT.height - 16 };
 import { shell } from "../shell/shell";
-import { batteryDisplayModeSetting, dashboardSlotIds, elevenLabsApiKeySetting, enumSettingMenuItem, firmwareDebugFlagsSetting, rawScreenshotsEnabledSetting, saveVoiceRecordingsSetting, showSignalStrengthSetting, showAndroidNotificationsSetting, showBatteryIndicatorsSetting, showFaceclawLogoSetting, systemCardNameSetting, textSettingMenuItem, toggleSettingMenuItem, voiceProviderSetting, dashboardSlotSettings, nightscoutSiteUrlSetting, nightscoutApiTokenSetting, screenTimeoutSetting } from "../dashboard-settings";
+import { batteryDisplayModeSetting, dashboardSlotIds, elevenLabsApiKeySetting, enumSettingMenuItem, firmwareDebugFlagsSetting, rawScreenshotsEnabledSetting, saveVoiceRecordingsSetting, showSignalStrengthSetting, showAndroidNotificationsSetting, showBatteryIndicatorsSetting, showFaceclawLogoSetting, systemCardNameSetting, terminalAuthTokenSetting, terminalHostSetting, terminalPortSetting, textSettingMenuItem, toggleSettingMenuItem, voiceProviderSetting, dashboardSlotSettings, nightscoutSiteUrlSetting, nightscoutApiTokenSetting, screenTimeoutSetting } from "../dashboard-settings";
 import { MenuLayer } from "../menu";
+import { AboutPage } from "./about-page";
 
 export function createSettingsMenuLayer(): MenuLayer {
   return new MenuLayer(
@@ -32,13 +38,44 @@ export function createSettingsMenuLayer(): MenuLayer {
         },
       },
       {
+        label: "Terminal",
+        onSelect: (ctx) => {
+          ctx.stack.push(createTerminalSettingsMenuLayer());
+        },
+      },
+      {
         label: "Developer",
         onSelect: (ctx) => {
           ctx.stack.push(createDeveloperSettingsMenuLayer());
         },
       },
+      {
+        label: "About",
+        onSelect: (ctx) => {
+          ctx.stack.push(new AboutPage());
+        },
+      },
+      {
+        label: "Quit / Disconnect",
+        onSelect: async (ctx) => {
+          ctx.stack.clearToBase();
+          await ctx.actions.disconnect();
+        },
+      },
     ],
-    TOP_LEFT_MENU_LAYOUT,
+    SETTINGS_MENU_LAYOUT,
+  );
+}
+
+function createTerminalSettingsMenuLayer(): MenuLayer {
+  return new MenuLayer(
+    "Settings > Terminal",
+    [
+      textSettingMenuItem(terminalHostSetting),
+      textSettingMenuItem(terminalPortSetting),
+      textSettingMenuItem(terminalAuthTokenSetting),
+    ],
+    SETTINGS_MENU_LAYOUT,
   );
 }
 
@@ -50,7 +87,7 @@ function createDeveloperSettingsMenuLayer(): MenuLayer {
       toggleSettingMenuItem(saveVoiceRecordingsSetting),
       toggleSettingMenuItem(firmwareDebugFlagsSetting),
     ],
-    TOP_LEFT_MENU_LAYOUT,
+    SETTINGS_MENU_LAYOUT,
   );
 }
 
@@ -64,7 +101,7 @@ function createDisplaySettingsMenuLayer(): MenuLayer {
         },
       }),
     ],
-    TOP_LEFT_MENU_LAYOUT,
+    SETTINGS_MENU_LAYOUT,
   );
 }
 
@@ -75,7 +112,7 @@ function createVoiceSettingsMenuLayer(): MenuLayer {
       enumSettingMenuItem(voiceProviderSetting),
       textSettingMenuItem(elevenLabsApiKeySetting),
     ],
-    TOP_LEFT_MENU_LAYOUT,
+    SETTINGS_MENU_LAYOUT,
   );
 }
 
@@ -93,7 +130,7 @@ function createDashboardSettingsMenuLayer(): MenuLayer {
         style: "submenu",
       })),
     ],
-    TOP_LEFT_MENU_LAYOUT,
+    SETTINGS_MENU_LAYOUT,
   );
 }
 
@@ -108,7 +145,7 @@ function createSystemCardSettingsMenuLayer(): MenuLayer {
       toggleSettingMenuItem(showAndroidNotificationsSetting),
       toggleSettingMenuItem(showSignalStrengthSetting),
     ],
-    TOP_LEFT_MENU_LAYOUT,
+    SETTINGS_MENU_LAYOUT,
   );
 }
 
@@ -123,7 +160,7 @@ function createIntegrationsMenuLayer(): MenuLayer {
         },
       },
     ],
-    TOP_LEFT_MENU_LAYOUT,
+    SETTINGS_MENU_LAYOUT,
   );
 }
 
@@ -134,6 +171,6 @@ export function createNightscoutSettingsMenuLayer(): MenuLayer {
       textSettingMenuItem(nightscoutSiteUrlSetting),
       textSettingMenuItem(nightscoutApiTokenSetting),
     ],
-    TOP_LEFT_MENU_LAYOUT,
+    SETTINGS_MENU_LAYOUT,
   );
 }

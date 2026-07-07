@@ -9,7 +9,6 @@ import { getDefaultSmallFont } from "~/graphics/bdffont";
 import { wrapText } from "~/graphics/textwrap";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, MenuLayer } from "./menu";
 import { DashboardInputEvent, Layer, type LayerContext } from "./layers";
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "~/graphics/image";
 import { GrayImage } from "~/graphics/image";
 
 export type DashboardSlotId = "bottom-left" | "bottom-right";
@@ -504,17 +503,20 @@ function truncateSetting(value: string, maxLength = 22): string {
 export class EditTextSettingLayer implements Layer {
   constructor(private readonly setting: ConfigSettingString) {}
 
-  paint(): GrayImage {
+  paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
-    image.drawRect(12, 12, G2_LENS_WIDTH - 24, G2_LENS_HEIGHT - 24, 52);
+    // Sized to the hosting stack (full lens in the dashboard window, app
+    // viewport in the settings app).
+    const { width, height } = ctx.stack.getBaseSize();
+    const image = new GrayImage(width, height, 0);
+    image.drawRect(12, 12, width - 24, height - 24, 52);
     image.drawText(font, 22, 16, this.setting.glassesEditTitle, 220);
-    const message = wrapText(font, "Look at the phone app to type a value.", G2_LENS_WIDTH - 48);
+    const message = wrapText(font, "Look at the phone app to type a value.", width - 48);
     for (let index = 0; index < message.length; index++) {
       image.drawText(font, 22, 52 + index * 14, message[index]!, 200);
     }
     image.drawText(font, 22, 110, truncateSetting(this.setting.get(), 52), 220);
-    image.drawText(font, 22, 252, "Double-click to go back", 110);
+    image.drawText(font, 22, height - 36, "Double-click to go back", 110);
     return image;
   }
 

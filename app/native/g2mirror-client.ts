@@ -17,6 +17,10 @@ export type G2MirrorSession = {
   socket: string;
   pid: number;
   cwdHint: string;
+  /** Unix epoch ms of the terminal's last bell, or null if none observed. */
+  lastBellAt: number | null;
+  /** Window title the app last set (xterm OSC 0/2), or null if none observed. */
+  title: string | null;
 };
 
 export type G2MirrorPhase =
@@ -57,6 +61,8 @@ export class G2MirrorClient {
   private readonly terminalDataListeners = new Set<(data: Uint8Array, kind: TerminalDataKind) => void>();
   private readonly sessionAttachedListeners = new Set<(command: string) => void>();
   private readonly sessionDetachedListeners = new Set<(reason: string) => void>();
+  private readonly bellListeners = new Set<(socket: string, lastBellAtMs: number) => void>();
+  private readonly titleListeners = new Set<(socket: string, title: string) => void>();
 
   constructor(private readonly options: G2MirrorClientOptions) {}
 
@@ -88,6 +94,18 @@ export class G2MirrorClient {
   onSessionDetached(listener: (reason: string) => void): () => void {
     this.sessionDetachedListeners.add(listener);
     return () => this.sessionDetachedListeners.delete(listener);
+  }
+
+  /** Unsolicited bell notification for any monitored terminal (rate-limited server-side). */
+  onBell(listener: (socket: string, lastBellAtMs: number) => void): () => void {
+    this.bellListeners.add(listener);
+    return () => this.bellListeners.delete(listener);
+  }
+
+  /** Unsolicited title change for any monitored terminal. */
+  onTitle(listener: (socket: string, title: string) => void): () => void {
+    this.titleListeners.add(listener);
+    return () => this.titleListeners.delete(listener);
   }
 
   start(): void {
@@ -209,8 +227,33 @@ export class G2MirrorClient {
             socket: String(item?.socket ?? ""),
             pid: Number(item?.pid) || 0,
             cwdHint: String(item?.cwd_hint ?? ""),
+            lastBellAt: typeof item?.last_bell_at === "number" ? item.last_bell_at : null,
+            title: typeof item?.title === "string" ? item.title : null,
           }))
           .filter((session: G2MirrorSession) => session.socket.length > 0);
+        this.emitState();
+        return;
+      }
+      case "bell": {
+        const socket = String(message.socket ?? "");
+        const lastBellAt = Number(message.last_bell_at) || Date.now();
+        if (!socket) return;
+        const session = this.sessions.find((s) => s.socket === socket);
+        if (session) session.lastBellAt = lastBellAt;
+        for (const listener of Array.from(this.bellListeners)) {
+          listener(socket, lastBellAt);
+        }
+        return;
+      }
+      case "title": {
+        const socket = String(message.socket ?? "");
+        const title = String(message.title ?? "");
+        if (!socket) return;
+        const session = this.sessions.find((s) => s.socket === socket);
+        if (session) session.title = title;
+        for (const listener of Array.from(this.titleListeners)) {
+          listener(socket, title);
+        }
         this.emitState();
         return;
       }
