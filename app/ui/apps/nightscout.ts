@@ -72,9 +72,6 @@ export class NightscoutDashboardPlugin extends DashboardPlugin {
     );
   }
 
-  override createFullscreenLayer(getState: () => DashboardPluginState): Layer {
-    return new NightscoutLayer(getState);
-  }
 }
 
 function drawNightscoutDelta(
@@ -366,28 +363,30 @@ function drawNightscoutReferenceLine(
 }
 
 
-class NightscoutLayer implements Layer {
+export class NightscoutLayer implements Layer {
   constructor(private readonly getState: () => DashboardPluginState) {}
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const image = new GrayImage(576, 288, 0);
+    // Sized to the hosting stack (the Nightscout app viewport).
+    const { width, height } = ctx.stack.getBaseSize();
+    const image = new GrayImage(width, height, 0);
     const nightscout = this.getState().nightscout;
     const nowMs = Date.now();
-    image.drawRect(12, 12, 552, 264, 52);
+    const footerY = height - 26;
+    image.drawRect(12, 12, width - 24, height - 24, 52);
     image.drawText(font, 22, 16, "Nightscout", 220);
 
     if (!this.getState().nightscoutConfigured || nightscout.configurationMissing) {
       image.drawText(font, 22, 44, "Nightscout needs configuration.", 180);
-      image.drawText(font, 22, 62, "Double-click and use Settings", 140);
-      image.drawText(font, 22, 78, "Integrations > Nightscout.", 140);
+      image.drawText(font, 22, 62, "Use Settings > Integrations > Nightscout.", 140);
       return image;
     }
 
     if (!nightscout.available || !nightscout.latest) {
       image.drawText(font, 22, 44, "No Nightscout data available.", 180);
       image.drawText(font, 22, 58, truncateLine(nightscout.status, 60), 140);
-      image.drawText(font, 22, 252, "Click: refresh  Double-click: back", 110);
+      image.drawText(font, 22, footerY, "Click: refresh  Double-click: back", 110);
       return image;
     }
 
@@ -418,9 +417,10 @@ class NightscoutLayer implements Layer {
       160,
     );
     image.drawText(font, 22, 110, `Pump ${truncateLine(nightscout.pumpStatus || "--", 56)}`, 150);
-    drawNightscoutGraph(image, { x: 22, y: 128, width: 532, height: 96 }, nightscout, nowMs, font);
-    image.drawText(font, 22, 234, "2-hour glucose history with basal / carbs / boluses", 130);
-    image.drawText(font, 22, 252, "Click: refresh  Double-click: back", 110);
+    const graphHeight = Math.max(40, height - 128 - 48);
+    drawNightscoutGraph(image, { x: 22, y: 128, width: width - 44, height: graphHeight }, nightscout, nowMs, font);
+    image.drawText(font, 22, height - 42, "2-hour glucose history with basal / carbs / boluses", 130);
+    image.drawText(font, 22, footerY, "Click: refresh  Double-click: back", 110);
     return image;
   }
 

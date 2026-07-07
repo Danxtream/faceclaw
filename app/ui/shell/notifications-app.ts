@@ -1,25 +1,20 @@
-import { GrayImage } from "../../graphics/image";
-import { LayerActions } from "../layers";
 import { NotificationsListLayer } from "../notifications";
-import { createInProcessWindow, YieldAtRootLayer, type InProcessWindow } from "./in-process-window";
+import {
+  createInProcessWindow,
+  YieldAtRootLayer,
+  type InProcessAppOptions,
+  type InProcessWindow,
+} from "./in-process-window";
 
 export const NOTIFICATIONS_WINDOW_ID = "notifications";
 export const NOTIFICATIONS_SURFACE_ID = "window:notifications";
-
-export type NotificationsAppOptions = {
-  actions: LayerActions;
-  submitFrame: (image: GrayImage, paintMs: number, frameId: number) => Promise<void>;
-  setSurfaceVisible: (visible: boolean) => void;
-  removeSurface: () => void;
-  onClosed: () => void;
-};
 
 /**
  * The Notifications app: the Android-notification list (previously a
  * dashboard page) in its own in-process window; selecting a notification
  * opens the detail view with its quick actions.
  */
-export function createNotificationsAppWindow(options: NotificationsAppOptions): InProcessWindow {
+export function createNotificationsAppWindow(options: InProcessAppOptions): InProcessWindow {
   return createInProcessWindow({
     appId: "notifications",
     windowId: NOTIFICATIONS_WINDOW_ID,

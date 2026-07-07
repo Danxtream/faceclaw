@@ -1,5 +1,5 @@
 import { getDefaultSmallFont } from "../../graphics/bdffont";
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
+import { GrayImage } from "../../graphics/image";
 import { Layer, type DashboardInputEvent, type LayerContext } from "../layers";
 
 const NOTE_NAMES = ["C", "D", "E", "F", "G", "A", "B"] as const;
@@ -9,19 +9,21 @@ export class BuzzerDemoLayer implements Layer {
   private note = 1;
   private oct = 2;
 
-  paint(_ctx: LayerContext, _paintBelow: () => GrayImage): GrayImage {
-    const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+  paint(ctx: LayerContext, _paintBelow: () => GrayImage): GrayImage {
+    // Sized to the hosting stack (the Debug tests app viewport).
+    const { width, height } = ctx.stack.getBaseSize();
+    const image = new GrayImage(width, height, 0);
     const font = getDefaultSmallFont();
 
     image.drawText(font, 24, 20, "Buzzer demo", 200);
     image.drawText(font, 24, 44, `Note: ${NOTE_NAMES[this.note - 1]}   Octave: ${this.oct}`, 180);
     image.drawText(font, 24, 68, "Scroll: change note", 150);
     image.drawText(font, 24, 84, "Click: play note", 150);
-    image.drawText(font, 24, 252, "Double-click: back", 130);
+    image.drawText(font, 24, height - 24, "Double-click: back", 130);
 
     const keyWidth = 64;
     const keyY = 130;
-    const keyX = Math.floor((G2_LENS_WIDTH - keyWidth * NOTE_NAMES.length) / 2);
+    const keyX = Math.floor((width - keyWidth * NOTE_NAMES.length) / 2);
     for (let i = 0; i < NOTE_NAMES.length; i++) {
       const selected = i + 1 === this.note;
       const x = keyX + i * keyWidth;

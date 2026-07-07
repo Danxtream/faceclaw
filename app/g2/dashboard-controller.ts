@@ -18,7 +18,6 @@ import {
   closeDashboardTextSettingEditor,
   drawDashboard,
   logToDashboard,
-  openTelepromptDocument,
   receiveDashboardWindowInput,
   resetDashboardSleepTimerAndWake,
   setDashboardBatteryLevels,
@@ -39,7 +38,23 @@ import {
   NOTIFICATIONS_SURFACE_ID,
   NOTIFICATIONS_WINDOW_ID,
 } from "../ui/shell/notifications-app";
-import { type InProcessWindow } from "../ui/shell/in-process-window";
+import {
+  createDebugTestsAppWindow,
+  DEBUG_TESTS_SURFACE_ID,
+  DEBUG_TESTS_WINDOW_ID,
+} from "../ui/shell/debug-tests-app";
+import {
+  createTelepromptBrowserWindow,
+  createTelepromptDocumentWindow,
+  TELEPROMPT_SURFACE_ID,
+  TELEPROMPT_WINDOW_ID,
+} from "../ui/shell/teleprompt-app";
+import {
+  createNightscoutAppWindow,
+  NIGHTSCOUT_SURFACE_ID,
+  NIGHTSCOUT_WINDOW_ID,
+} from "../ui/shell/nightscout-app";
+import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { APP_VIEWPORT } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
 import {
@@ -202,7 +217,8 @@ class DashboardController {
   // The Settings app is in-process (its text editor syncs with the phone UI
   // through this controller); tracked so edit flows reach its window.
   private settingsApp: SettingsAppWindow | null = null;
-  private notificationsApp: InProcessWindow | null = null;
+  // Other in-process singleton apps, keyed by windowId.
+  private readonly inProcessApps = new Map<string, InProcessWindow>();
   private sharedActions!: Omit<LayerActions, "requestRender">;
   private lastForegroundNotificationUpdateAtMs = 0;
   private lastConnectedPreviewUpdateAtMs = 0;
@@ -262,7 +278,10 @@ class DashboardController {
         apps: [
           { appId: "stopwatch", label: "Stopwatch" },
           { appId: "terminal", label: "Terminal" },
+          { appId: "teleprompt", label: "Teleprompt" },
+          { appId: "nightscout", label: "Nightscout" },
           { appId: "notifications", label: "Notifications" },
+          { appId: "debug-tests", label: "Debug tests" },
           { appId: "settings", label: "Settings" },
         ],
         launchApp: (appId) => this.launchApp(appId),
@@ -703,16 +722,23 @@ class DashboardController {
     await this.handleInputEvent(event);
   }
 
+  /** A document arrived via Android's Share intent: open it as a new window. */
   async openTelepromptDocument(text: string): Promise<void> {
-    openTelepromptDocument(text);
     this.appendLog(`teleprompt document received (${text.length} chars)`);
-    if (this.phase === "connected" && this.communicator) {
-      this.requestShellRender();
-      await this.requestRender("interval");
-      return;
+    if (!shell.isScreenOn()) {
+      shell.wake("sidebar");
     }
-    const image = drawDashboard();
-    this.updateDisplayPreviewFromImage(image);
+    this.openTelepromptDocumentWindow("Shared text", text);
+  }
+
+  /** Open a teleprompt document as its own (closeable, non-singleton) window. */
+  private openTelepromptDocumentWindow(title: string, text: string): void {
+    const windowId = `teleprompt:doc:${this.nextWindowSerial++}`;
+    void this.launchInProcessApp(windowId, `window:${windowId}`, (options) =>
+      createTelepromptDocumentWindow(windowId, title, text, options),
+    ).catch((error) => {
+      this.appendLog(`teleprompt window failed: ${this.formatError(error)}`);
+    });
   }
 
   private startTextSettingEdit(setting: ConfigSettingString): void {
@@ -1032,32 +1058,36 @@ class DashboardController {
     this.appendLog("launched settings");
   }
 
-  /** Launch or focus the (in-process, singleton) Notifications app. */
-  private async launchNotificationsApp(): Promise<void> {
-    if (this.notificationsApp) {
-      shell.focusWindow(NOTIFICATIONS_WINDOW_ID);
+  /** Launch or focus an in-process singleton app (notifications, debug tests). */
+  private async launchInProcessApp(
+    windowId: string,
+    surfaceId: string,
+    create: (options: InProcessAppOptions) => InProcessWindow,
+  ): Promise<void> {
+    const existing = this.inProcessApps.get(windowId);
+    if (existing) {
+      shell.focusWindow(windowId);
       this.requestShellRender();
       return;
     }
-    const notificationsApp = createNotificationsAppWindow({
+    const app = create({
       actions: {
         ...this.sharedActions,
         requestRender: () => {}, // rebound by createInProcessWindow
       },
-      submitFrame: (image, paintMs, frameId) =>
-        this.submitWindowFrame(NOTIFICATIONS_SURFACE_ID, image, paintMs, frameId),
-      setSurfaceVisible: (visible) => this.setWindowSurfaceVisible(NOTIFICATIONS_SURFACE_ID, visible),
-      removeSurface: () => this.removeWindowSurface(NOTIFICATIONS_SURFACE_ID),
+      submitFrame: (image, paintMs, frameId) => this.submitWindowFrame(surfaceId, image, paintMs, frameId),
+      setSurfaceVisible: (visible) => this.setWindowSurfaceVisible(surfaceId, visible),
+      removeSurface: () => this.removeWindowSurface(surfaceId),
       onClosed: () => {
-        this.notificationsApp = null;
+        this.inProcessApps.delete(windowId);
       },
     });
-    this.notificationsApp = notificationsApp;
-    shell.registerWindow(notificationsApp.window);
-    await this.configureWindowSurface(NOTIFICATIONS_SURFACE_ID, false);
-    shell.focusWindow(NOTIFICATIONS_WINDOW_ID);
+    this.inProcessApps.set(windowId, app);
+    shell.registerWindow(app.window);
+    await this.configureWindowSurface(surfaceId, false);
+    shell.focusWindow(windowId);
     this.requestShellRender();
-    this.appendLog("launched notifications");
+    this.appendLog(`launched ${windowId}`);
   }
 
   /** Get or spawn the worker host for an app. */
@@ -1097,7 +1127,24 @@ class DashboardController {
       return;
     }
     if (appId === "notifications") {
-      await this.launchNotificationsApp();
+      await this.launchInProcessApp(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID, createNotificationsAppWindow);
+      return;
+    }
+    if (appId === "debug-tests") {
+      await this.launchInProcessApp(DEBUG_TESTS_WINDOW_ID, DEBUG_TESTS_SURFACE_ID, createDebugTestsAppWindow);
+      return;
+    }
+    if (appId === "nightscout") {
+      await this.launchInProcessApp(NIGHTSCOUT_WINDOW_ID, NIGHTSCOUT_SURFACE_ID, createNightscoutAppWindow);
+      return;
+    }
+    if (appId === "teleprompt") {
+      await this.launchInProcessApp(TELEPROMPT_WINDOW_ID, TELEPROMPT_SURFACE_ID, (options) =>
+        createTelepromptBrowserWindow({
+          ...options,
+          openDocumentWindow: (title, text) => this.openTelepromptDocumentWindow(title, text),
+        }),
+      );
       return;
     }
     const host = this.ensureAppHost(appId);
@@ -1254,7 +1301,7 @@ class DashboardController {
 
   private async handleAndroidNotificationPosted(notificationKey: string): Promise<void> {
     // Keep the Notifications app's list fresh if it is open.
-    this.notificationsApp?.requestRender();
+    this.inProcessApps.get(NOTIFICATIONS_WINDOW_ID)?.requestRender();
     if (!notificationKey) {
       this.requestShellRender();
       return;

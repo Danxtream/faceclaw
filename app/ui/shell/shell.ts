@@ -96,6 +96,9 @@ class Shell {
   private lastInputAtMs = Date.now();
   private battery: ShellChromeState["battery"] = { headset: null, headsetCharging: null };
   private attention = new Map<string, boolean>();
+  // App-provided top-bar tray icons, keyed by owner id; drawn between the
+  // notification icons and the battery indicators.
+  private readonly trayIcons = new Map<string, GrayImage>();
   private activeVoiceLayer: VoiceInputLayer | null = null;
   private readonly actions: LayerActions = { ...noopActions };
   private config: ShellConfig = {
@@ -171,6 +174,20 @@ class Shell {
 
   setBatteryLevels(levels: Partial<ShellChromeState["battery"]>): void {
     this.battery = { ...this.battery, ...levels };
+  }
+
+  /**
+   * Set or clear an app's top-bar tray icon (a small grayscale image, drawn
+   * between the notification icons and the battery indicators). Small and
+   * infrequently updated by design; not a framebuffer.
+   */
+  setTrayIcon(ownerId: string, icon: GrayImage | null): void {
+    if (icon) {
+      this.trayIcons.set(ownerId, icon);
+    } else if (!this.trayIcons.delete(ownerId)) {
+      return;
+    }
+    this.config.requestShellRender();
   }
 
   isScreenOn(): boolean {
@@ -400,6 +417,9 @@ class Shell {
       selectedIndex: this.selectedIndex,
       focus: this.focus,
       battery: this.battery,
+      trayIcons: Array.from(this.trayIcons.keys())
+        .sort()
+        .map((key) => this.trayIcons.get(key)!),
     };
   }
 }

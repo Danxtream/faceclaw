@@ -1,59 +1,57 @@
 import { wrapText } from "../../graphics/textwrap";
 import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
+import { GrayImage } from "../../graphics/image";
 import { Layer, type DashboardInputEvent, type LayerContext } from "../layers";
 
 const MARGIN_X = 18;
 const TITLE_Y = 16;
 const BODY_X = 18;
 const BODY_Y = 44;
-const BODY_WIDTH = G2_LENS_WIDTH - BODY_X - 12;
 const LINE_STEP = 14;
-const FOOTER_Y = 252;
-const BODY_LINE_COUNT = Math.floor((FOOTER_Y - BODY_Y) / LINE_STEP);
-const PAGE_STEP = Math.max(1, BODY_LINE_COUNT - 1);
+const FOOTER_MARGIN = 36;
 
+/**
+ * Paged text viewer for a document. Sized to its hosting stack (a teleprompt
+ * document window, or pushed over the file browser for view-in-place).
+ */
 export class TelepromptLayer implements Layer {
   private lines: string[] | null = null;
+  private wrappedForWidth = 0;
   private firstLine = 0;
+  private bodyLineCount = 14;
 
-  constructor(private readonly documentText: string | null) {}
+  constructor(
+    private readonly documentText: string,
+    private readonly title = "Teleprompt",
+  ) {}
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
-    image.drawRect(12, 12, G2_LENS_WIDTH - 24, G2_LENS_HEIGHT - 24, 52);
-    image.drawText(font, MARGIN_X + 4, TITLE_Y, "Teleprompt", 220);
+    const { width, height } = ctx.stack.getBaseSize();
+    const image = new GrayImage(width, height, 0);
+    const footerY = height - FOOTER_MARGIN;
+    this.bodyLineCount = Math.max(1, Math.floor((footerY - BODY_Y) / LINE_STEP));
+    image.drawRect(12, 12, width - 24, height - 24, 52);
+    image.drawText(font, MARGIN_X + 4, TITLE_Y, truncateToWidth(font, this.title, width - 2 * MARGIN_X - 8), 220);
 
-    if (this.documentText === null) {
-      const message = [
-        "Open a plain text document on your phone and Share it to Faceclaw.",
-      ];
-      for (let index = 0; index < message.length; index++) {
-        image.drawText(font, BODY_X, BODY_Y + index * LINE_STEP, message[index]!, 200);
-      }
-      return image;
-    }
-
-    const lines = this.getLines(font);
-    const visibleLines = lines.slice(this.firstLine, this.firstLine + BODY_LINE_COUNT);
+    const lines = this.getLines(font, width);
+    const visibleLines = lines.slice(this.firstLine, this.firstLine + this.bodyLineCount);
     for (let index = 0; index < visibleLines.length; index++) {
       image.drawText(font, BODY_X, BODY_Y + index * LINE_STEP, visibleLines[index]!, 230);
     }
 
-    const currentPage = Math.floor(this.firstLine / PAGE_STEP) + 1;
-    const totalPages = totalPageCount(lines.length);
-    image.drawText(font, BODY_X, FOOTER_Y, `Page ${currentPage}/${totalPages}`, 110);
+    const currentPage = Math.floor(this.firstLine / this.pageStep()) + 1;
+    image.drawText(font, BODY_X, footerY, `Page ${currentPage}/${this.totalPageCount(lines.length)}`, 110);
     return image;
   }
 
   handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
     switch (event.type) {
       case "scroll-down":
-        this.scrollBy(PAGE_STEP);
+        this.scrollBy(this.pageStep());
         return;
       case "scroll-up":
-        this.scrollBy(-PAGE_STEP);
+        this.scrollBy(-this.pageStep());
         return;
       case "double-click":
         ctx.stack.pop();
@@ -63,9 +61,13 @@ export class TelepromptLayer implements Layer {
     }
   }
 
+  private pageStep(): number {
+    return Math.max(1, this.bodyLineCount - 1);
+  }
+
   private scrollBy(delta: number): void {
     const lines = this.lines ?? [];
-    if (lines.length <= BODY_LINE_COUNT) {
+    if (lines.length <= this.bodyLineCount) {
       this.firstLine = 0;
       return;
     }
@@ -73,25 +75,31 @@ export class TelepromptLayer implements Layer {
     this.firstLine = Math.max(0, Math.min(maxFirstLine, this.firstLine + delta));
   }
 
-  private getLines(font: BdfFont): string[] {
-    if (this.lines === null) {
-      this.lines = wrapTextForTeleprompt(font, this.documentText ?? "");
+  private getLines(font: BdfFont, width: number): string[] {
+    if (this.lines === null || this.wrappedForWidth !== width) {
+      const normalized = this.documentText.replace(/\t/g, "    ").replace(/\r/g, "");
+      this.lines = wrapText(font, normalized, width - BODY_X - 12, {
+        preserveLeadingWhitespace: true,
+        breakLongWords: true,
+      });
+      this.wrappedForWidth = width;
     }
     return this.lines;
   }
-}
 
-function wrapTextForTeleprompt(font: BdfFont, text: string): string[] {
-  const normalized = text.replace(/\t/g, "    ").replace(/\r/g, "");
-  return wrapText(font, normalized, BODY_WIDTH, {
-    preserveLeadingWhitespace: true,
-    breakLongWords: true,
-  });
-}
-
-function totalPageCount(lineCount: number): number {
-  if (lineCount <= BODY_LINE_COUNT) {
-    return 1;
+  private totalPageCount(lineCount: number): number {
+    if (lineCount <= this.bodyLineCount) {
+      return 1;
+    }
+    return Math.ceil((lineCount - this.bodyLineCount) / this.pageStep()) + 1;
   }
-  return Math.ceil((lineCount - BODY_LINE_COUNT) / PAGE_STEP) + 1;
+}
+
+function truncateToWidth(font: BdfFont, text: string, maxWidth: number): string {
+  if (font.measureText(text) <= maxWidth) return text;
+  let out = text;
+  while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) {
+    out = out.slice(0, -1);
+  }
+  return `${out}...`;
 }

@@ -4,7 +4,6 @@ import { nightscoutBridge } from "../native/nightscout-bridge";
 import { getDashboardPlugin, type DashboardPluginCardBounds, type DashboardPluginState } from "./dashboard-plugins";
 import { EditTextSettingLayer, isNightscoutSettingsConfigured, type DashboardSlotId, DashboardPluginId, bottomRightSlotSetting, bottomLeftSlotSetting, dashboardSlotIds } from "./dashboard-settings";
 import { Layer, LayerActions, LayerStack, type DashboardInputEvent } from "./layers";
-import { TelepromptLayer } from "./apps/teleprompt";
 import { drawSystemCard } from "./dashboard/system-card";
 import { createRootMenuLayer } from "./dashboard/root-menu";
 import { inputEventToString, shell } from "./shell/shell";
@@ -18,13 +17,11 @@ export type DashboardBatteryLevels = {
 
 type DashboardState = {
   logLines: string[];
-  telepromptDocumentText: string | null;
   battery: DashboardBatteryLevels;
 };
 
 export let dashboardState: DashboardState = {
   logLines: [] as string[],
-  telepromptDocumentText: null as string | null,
   battery: {
     headset: null,
     headsetCharging: null,
@@ -74,16 +71,6 @@ export function drawDashboard(): GrayImage {
     return new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
   }
   return dashboardLayers.paint();
-}
-
-export function openTelepromptDocument(text?: string): void {
-  if (text !== undefined) {
-    dashboardState.telepromptDocumentText = text;
-  }
-  shell.wake("window");
-  dashboardLayers.clearToBase();
-  dashboardLayers.push(createRootMenuLayer());
-  dashboardLayers.push(new TelepromptLayer(dashboardState.telepromptDocumentText));
 }
 
 export function resetDashboardSleepTimerAndWake(nowMs = Date.now()): boolean {

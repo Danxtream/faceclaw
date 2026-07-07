@@ -121,7 +121,9 @@ const DEFAULT_NIGHTSCOUT_STATE: NightscoutState = {
   boluses: [],
   basal: [],
   lastUpdatedMs: null,
-  configurationMissing: true,
+  // Never assume unconfigured before a refresh has actually checked; UI that
+  // needs a live answer uses isNightscoutSettingsConfigured().
+  configurationMissing: false,
 };
 
 export class NightscoutBridge {
@@ -261,10 +263,15 @@ export class NightscoutBridge {
       this.emit();
     } catch (error) {
       const message = (error as Error)?.message ?? String(error);
+      console.warn(`nightscout refresh failed: ${message}`);
       this.state = {
         ...this.state,
         available: this.state.latest !== null,
         status: `Nightscout refresh failed: ${message}`,
+        // A fetch failure is not a configuration problem: the settings guard
+        // above already handled missing config, so a latched stale value here
+        // must not keep the UI on "Needs setup" (which hides the real error).
+        configurationMissing: false,
       };
       this.emit();
     }

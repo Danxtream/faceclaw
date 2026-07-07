@@ -91,7 +91,7 @@ public class BmpUtil {
         if (value <= 0) {
             return 0;
         }
-        return Math.min(15, value >> 4);
+        return Math.min(15, (value+8) >> 4);
     }
 
     private static void putUint16Le(byte[] buf, int offset, int value) {

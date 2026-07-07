@@ -1,3 +1,4 @@
+import { GrayImage } from "../../graphics/image";
 import { makeLetterWindowIcon } from "./chrome-layer";
 import { shell, type ShellWindow } from "./shell";
 
@@ -26,7 +27,16 @@ export type WorkerAppReply =
       focus?: boolean;
     }
   | { type: "set-title"; windowId: string; title: string }
-  | { type: "set-attention"; windowId: string; attention: boolean };
+  | { type: "set-attention"; windowId: string; attention: boolean }
+  | {
+      /**
+       * Set or clear the app's top-bar tray icon. Pixels ride the JSON
+       * postMessage roundtrip — acceptable because tray icons are small and
+       * infrequently updated.
+       */
+      type: "set-tray-icon";
+      icon: { width: number; height: number; pixels: number[] } | null;
+    };
 
 export type WorkerWindowSpec = {
   /** Unique across the shell; namespace with the appId (e.g. "terminal:view:3"). */
@@ -80,6 +90,15 @@ export class WorkerAppHost {
         case "set-attention":
           shell.setWindowAttention(message.windowId, message.attention);
           break;
+        case "set-tray-icon": {
+          let icon: GrayImage | null = null;
+          if (message.icon) {
+            icon = new GrayImage(message.icon.width, message.icon.height, 0);
+            icon.pixels.set(message.icon.pixels.slice(0, icon.pixels.length));
+          }
+          shell.setTrayIcon(this.options.appId, icon);
+          break;
+        }
         case "set-title":
           // Titles are informational for now (sidebar shows icons only).
           break;

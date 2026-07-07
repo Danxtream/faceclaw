@@ -33,6 +33,15 @@ export type InProcessWindow = {
   requestRender: () => void;
 };
 
+/** The controller-provided plumbing common to every in-process app window. */
+export type InProcessAppOptions = {
+  actions: LayerActions;
+  submitFrame: (image: GrayImage, paintMs: number, frameId: number) => Promise<void>;
+  setSurfaceVisible: (visible: boolean) => void;
+  removeSurface: () => void;
+  onClosed: () => void;
+};
+
 export function createInProcessWindow(options: InProcessWindowOptions): InProcessWindow {
   const requestRender = () => {
     void render(0).catch((error) => {

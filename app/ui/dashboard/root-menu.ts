@@ -1,14 +1,11 @@
 import { getDefaultSmallFont } from "~/graphics/bdffont";
-import { dashboardState, getPluginIdForSlot, getPluginState, TOP_LEFT_MENU_LAYOUT } from "../dashboard";
+import { getPluginIdForSlot, getPluginState, TOP_LEFT_MENU_LAYOUT } from "../dashboard";
 import { getDashboardPlugin, isBlankDashboardPlugin } from "../dashboard-plugins";
 import { DashboardSlotId, dashboardSlotIds, isNightscoutSettingsConfigured } from "../dashboard-settings";
 import { DashboardInputEvent, LayerContext } from "../layers";
 import { MenuLayer } from "../menu";
 import { createNightscoutSettingsMenuLayer } from "./settings-menus";
-import { TelepromptLayer } from "../apps/teleprompt";
 import { TranscribeLayer } from "../apps/transcribe";
-import { ScreenTestLayer } from "../apps/screen-test";
-import { BuzzerDemoLayer } from "../apps/buzzer-demo";
 import { GrayImage } from "~/graphics/image";
 import { shell } from "../shell/shell";
 
@@ -56,29 +53,11 @@ function createAppsMenuLayer(): MenuLayer {
     "Apps",
     [
       {
-        label: "Teleprompt",
-        onSelect: (ctx) => {
-          ctx.stack.push(new TelepromptLayer(dashboardState.telepromptDocumentText));
-        },
-      },
-      {
         label: "Transcribe",
         onSelect: (ctx) => {
           const layer = new TranscribeLayer();
           ctx.stack.push(layer);
           layer.start(ctx);
-        },
-      },
-      {
-        label: "Screen test",
-        onSelect: (ctx) => {
-          ctx.stack.push(new ScreenTestLayer());
-        },
-      },
-      {
-        label: "Buzzer demo",
-        onSelect: (ctx) => {
-          ctx.stack.push(new BuzzerDemoLayer());
         },
       },
     ],

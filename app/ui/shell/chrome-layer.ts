@@ -1,8 +1,11 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
-import { getDefaultMediumFont } from "../../graphics/bdffont";
-import { drawBattery } from "../../graphics/battery";
+import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/bdffont";
+import { BATTERY_ICON_WIDTH, drawBattery } from "../../graphics/battery";
 import { readActiveNotificationIcons } from "../../native/notification-icons";
+import { readPhoneBatteryState } from "../../native/phone-battery";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../../util/render-freshness";
+import { clamp } from "../../util/numeric-util";
+import { batteryDisplayModeSetting } from "../dashboard-settings";
 import { Layer } from "../layers";
 import { SHELL_OPAQUE_BLACK, SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
 
@@ -26,6 +29,8 @@ export type ShellChromeState = {
   selectedIndex: number;
   focus: "sidebar" | "window";
   battery: { headset: number | null; headsetCharging: boolean | null };
+  /** App-provided tray images, drawn between notification icons and batteries. */
+  trayIcons: GrayImage[];
 };
 
 /** Reusable placeholder window icon: rounded outline with a single letter. */
@@ -45,6 +50,9 @@ export function makeLetterWindowIcon(letter: string): ShellChromeWindow["drawIco
  * the color-key shell surface), so the app viewport shows through.
  */
 export class ShellChromeLayer implements Layer {
+  // First sidebar row shown; adjusted each paint to keep the selection visible.
+  private scrollRow = 0;
+
   constructor(private readonly getState: () => ShellChromeState) {}
 
   paint(): GrayImage {
@@ -63,10 +71,25 @@ export class ShellChromeLayer implements Layer {
   private drawSidebar(image: GrayImage, state: ShellChromeState): void {
     image.fillRect(0, 0, SIDEBAR_WIDTH, G2_LENS_HEIGHT, SHELL_OPAQUE_BLACK);
     image.drawLine(SIDEBAR_WIDTH - 1, 0, SIDEBAR_WIDTH - 1, G2_LENS_HEIGHT - 1, BORDER_VALUE);
-    for (let index = 0; index < state.windows.length; index++) {
+
+    // Scroll the icon list to keep the selection visible; chevrons mark
+    // windows off-screen above/below.
+    const listTop = TOP_BAR_HEIGHT + 10;
+    const itemStride = ICON_SIZE + ICON_SPACING;
+    const listHeight = G2_LENS_HEIGHT - listTop - 10;
+    const visibleCount = Math.max(1, ((listHeight + ICON_SPACING) / itemStride) | 0);
+    const count = state.windows.length;
+    if (state.selectedIndex < this.scrollRow) {
+      this.scrollRow = state.selectedIndex;
+    } else if (state.selectedIndex >= this.scrollRow + visibleCount) {
+      this.scrollRow = state.selectedIndex - visibleCount + 1;
+    }
+    this.scrollRow = clamp(this.scrollRow, 0, Math.max(0, count - visibleCount));
+    const lastVisible = Math.min(count, this.scrollRow + visibleCount);
+
+    for (let index = this.scrollRow; index < lastVisible; index++) {
       const window = state.windows[index]!;
-      const y = TOP_BAR_HEIGHT + 6 + index * (ICON_SIZE + ICON_SPACING);
-      if (y + ICON_SIZE > G2_LENS_HEIGHT) break;
+      const y = listTop + (index - this.scrollRow) * itemStride;
       if (index === state.selectedIndex) {
         const highlight = state.focus === "sidebar" ? 200 : 70;
         image.drawRoundedRect(0, y - 2, SIDEBAR_WIDTH - 3, ICON_SIZE + 4, highlight, 6);
@@ -75,6 +98,13 @@ export class ShellChromeLayer implements Layer {
       if (window.attention) {
         image.fillRoundedRect(ICON_MARGIN_X + ICON_SIZE - 7, y - 1, 8, 8, 255, 4);
       }
+    }
+
+    if (this.scrollRow > 0) {
+      drawChevron(image, SIDEBAR_WIDTH / 2, TOP_BAR_HEIGHT + 6, -1);
+    }
+    if (lastVisible < count) {
+      drawChevron(image, SIDEBAR_WIDTH / 2, G2_LENS_HEIGHT - 6, 1);
     }
   }
 
@@ -90,17 +120,11 @@ export class ShellChromeLayer implements Layer {
     const textY = Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
     image.drawText(font, clockX, textY, clock, 210);
 
-    let batteryLeft = G2_LENS_WIDTH;
-    if (state.battery.headset !== null) {
-      const battery = drawBattery(state.battery.headset, Boolean(state.battery.headsetCharging));
-      batteryLeft = G2_LENS_WIDTH - battery.width - 8;
-      image.bitBlt(battery, batteryLeft, Math.max(0, ((TOP_BAR_HEIGHT - battery.height) / 2) | 0), {
-        transparentZero: true,
-      });
-    }
+    const batteryLeft = this.drawTopBarBatteries(image, state);
+    const trayLeft = drawTrayIcons(image, state.trayIcons, batteryLeft);
 
     const iconsX = clockX + font.measureText(clock) + 16;
-    const maxIcons = Math.max(0, ((batteryLeft - 8 - iconsX) / (NOTIFICATION_ICON_SIZE + 4)) | 0);
+    const maxIcons = Math.max(0, ((trayLeft - 8 - iconsX) / (NOTIFICATION_ICON_SIZE + 4)) | 0);
     if (maxIcons > 0) {
       const { icons, stale } = readActiveNotificationIcons(maxIcons, renderPassAllowsStaleData());
       if (stale) {
@@ -114,4 +138,78 @@ export class ShellChromeLayer implements Layer {
       }
     }
   }
+
+  /**
+   * Labelled battery indicators for the phone and the G2, right-aligned in
+   * the top bar, following the dashboard card's icon/percentage setting.
+   * Returns the left edge of the battery block.
+   */
+  private drawTopBarBatteries(image: GrayImage, state: ShellChromeState): number {
+    const font = getDefaultSmallFont();
+    const percentageMode = batteryDisplayModeSetting.get() === "percentage";
+    type BatteryItem = { label: string; percent: number; charging: boolean };
+    const items: BatteryItem[] = [];
+    const phone = readPhoneBatteryState();
+    if (phone.battery !== null && Number.isFinite(phone.battery)) {
+      items.push({ label: "Phone", percent: phone.battery, charging: Boolean(phone.charging) });
+    }
+    if (state.battery.headset !== null && Number.isFinite(state.battery.headset)) {
+      items.push({ label: "G2", percent: state.battery.headset, charging: Boolean(state.battery.headsetCharging) });
+    }
+    if (!items.length) return G2_LENS_WIDTH;
+
+    const labelGap = 5;
+    const itemGap = 12;
+    const textY = Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
+    let x = G2_LENS_WIDTH - 8;
+    for (let index = items.length - 1; index >= 0; index--) {
+      const item = items[index]!;
+      const percentText = `${Math.max(0, Math.min(100, Math.round(item.percent)))}%`;
+      const valueWidth = percentageMode ? font.measureText(percentText) : BATTERY_ICON_WIDTH;
+      const labelWidth = font.measureText(item.label);
+      x -= labelWidth + labelGap + valueWidth;
+      image.drawText(font, x, textY, item.label, 150);
+      const valueX = x + labelWidth + labelGap;
+      if (percentageMode) {
+        if (item.charging) {
+          // Inverted text marks charging, matching the dashboard card.
+          image.fillRect(valueX - 2, textY - 1, valueWidth + 4, font.lineHeight + 2, 255);
+          image.drawText(font, valueX, textY, percentText, 1);
+        } else {
+          image.drawText(font, valueX, textY, percentText, 200);
+        }
+      } else {
+        const icon = drawBattery(item.percent, item.charging);
+        image.bitBlt(icon, valueX, Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0), {
+          transparentZero: true,
+        });
+      }
+      x -= itemGap;
+    }
+    return x + itemGap;
+  }
+}
+
+/**
+ * Draw app tray icons right-to-left, ending just left of the battery block;
+ * returns the left edge of the tray region.
+ */
+function drawTrayIcons(image: GrayImage, trayIcons: GrayImage[], rightEdge: number): number {
+  let x = rightEdge;
+  for (let index = trayIcons.length - 1; index >= 0; index--) {
+    const icon = trayIcons[index]!;
+    x -= icon.width + 10;
+    image.bitBlt(icon, x, Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0), {
+      transparentZero: true,
+    });
+  }
+  return x;
+}
+
+/** Small triangle marker for sidebar overflow; direction -1 = up, 1 = down. */
+function drawChevron(image: GrayImage, centerX: number, y: number, direction: -1 | 1): void {
+  const half = 5;
+  const tipY = direction < 0 ? y - 3 : y + 3;
+  image.drawLine(centerX - half, y, centerX, tipY, 140);
+  image.drawLine(centerX, tipY, centerX + half, y, 140);
 }

@@ -1,16 +1,11 @@
 import { getDefaultSmallFont } from "../../graphics/bdffont";
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
+import { GrayImage } from "../../graphics/image";
 import { Layer, type DashboardInputEvent, type LayerContext } from "../layers";
 
 const COLOR_VALUE_COUNT = 256;
 const COLOR_VALUE_STEP = 1;
-const SWATCH_COUNT = COLOR_VALUE_COUNT / COLOR_VALUE_STEP;
 const GRID_COLUMNS = 16;
-const GRID_ROWS = Math.ceil(SWATCH_COUNT / GRID_COLUMNS);
-const CELL_WIDTH = Math.floor(G2_LENS_WIDTH / GRID_COLUMNS);
-//const CELL_HEIGHT = Math.floor(G2_LENS_HEIGHT / GRID_ROWS);
 const CELL_HEIGHT = 30;
-const GRID_X = Math.floor((G2_LENS_WIDTH - CELL_WIDTH * GRID_COLUMNS) / 2);
 const LABEL_Y_OFFSET = 0;
 const SWATCH_Y_OFFSET = 12;
 const SWATCH_WIDTH = 24;
@@ -18,18 +13,22 @@ const SWATCH_HEIGHT = 16;
 
 export class ScreenTestLayer implements Layer {
   paint(ctx: LayerContext): GrayImage {
-    const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+    // Sized to the hosting stack (the Debug tests app viewport).
+    const { width, height } = ctx.stack.getBaseSize();
+    const image = new GrayImage(width, height, 0);
     const font = getDefaultSmallFont();
+    const cellWidth = Math.floor(width / GRID_COLUMNS);
+    const gridX = Math.floor((width - cellWidth * GRID_COLUMNS) / 2);
 
     for (let value = 0; value < COLOR_VALUE_COUNT; value += COLOR_VALUE_STEP) {
       const slot = value / COLOR_VALUE_STEP;
       const col = slot % GRID_COLUMNS;
       const row = Math.floor(slot / GRID_COLUMNS);
-      const cellX = GRID_X + col * CELL_WIDTH;
+      const cellX = gridX + col * cellWidth;
       const cellY = row * CELL_HEIGHT;
       const label = String(value);
-      const labelX = cellX + Math.max(0, Math.floor((CELL_WIDTH - font.measureText(label)) / 2));
-      const swatchX = cellX + Math.floor((CELL_WIDTH - SWATCH_WIDTH) / 2);
+      const labelX = cellX + Math.max(0, Math.floor((cellWidth - font.measureText(label)) / 2));
+      const swatchX = cellX + Math.floor((cellWidth - SWATCH_WIDTH) / 2);
 
       image.drawText(font, labelX, cellY + LABEL_Y_OFFSET, label, 185);
       fillSwatch(image, swatchX, cellY + SWATCH_Y_OFFSET, SWATCH_WIDTH, SWATCH_HEIGHT, value);
