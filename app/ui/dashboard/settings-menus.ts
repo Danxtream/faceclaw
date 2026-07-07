@@ -1,4 +1,5 @@
-import { dashboardState, TOP_LEFT_MENU_LAYOUT } from "../dashboard";
+import { TOP_LEFT_MENU_LAYOUT } from "../dashboard";
+import { shell } from "../shell/shell";
 import { batteryDisplayModeSetting, dashboardSlotIds, elevenLabsApiKeySetting, enumSettingMenuItem, firmwareDebugFlagsSetting, rawScreenshotsEnabledSetting, saveVoiceRecordingsSetting, showSignalStrengthSetting, showAndroidNotificationsSetting, showBatteryIndicatorsSetting, showFaceclawLogoSetting, systemCardNameSetting, textSettingMenuItem, toggleSettingMenuItem, voiceProviderSetting, dashboardSlotSettings, nightscoutSiteUrlSetting, nightscoutApiTokenSetting, screenTimeoutSetting } from "../dashboard-settings";
 import { MenuLayer } from "../menu";
 
@@ -59,7 +60,7 @@ function createDisplaySettingsMenuLayer(): MenuLayer {
     [
       enumSettingMenuItem(screenTimeoutSetting, {
         onChange: (ctx, newValue, oldValue) => {
-          dashboardState.lastInputAtMs = Date.now();
+          shell.noteUserActivity();
         },
       }),
     ],

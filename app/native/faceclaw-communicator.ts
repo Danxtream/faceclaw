@@ -33,6 +33,22 @@ export type FirmwareInfo = {
   capabilities: string;
 };
 
+/**
+ * Compositor surface configuration. Position/size are in screen pixels;
+ * surfaces composite in ascending zOrder onto a black background. A
+ * "color-key" surface treats pixel value 0 as transparent and 1 as black
+ * (painters must clamp intentional black to 1); "opaque" surfaces cover
+ * their whole rect.
+ */
+export type SurfaceOptions = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  zOrder: number;
+  transparency: "opaque" | "color-key";
+};
+
 export type RawInputEvent =
   | {
       kind: "list-click";
@@ -315,16 +331,81 @@ export class FaceclawCommunicatorBridge {
     await this.enqueueJavaCall(() => this.communicator.setFirmwareDebugFlags(Boolean(enabled)));
   }
 
-  async submitDashboardImage(image8bpp: Uint8Array, width: number, height: number, fingerprint: string, paintMs = -1, frameId = 0): Promise<void> {
+  /** Set the compositor's output frame size. Call before configuring surfaces. */
+  async configureCompositorScreen(width: number, height: number): Promise<void> {
+    await this.enqueueJavaCall(() => {
+      this.communicator.configureCompositorScreen(Math.round(width), Math.round(height));
+    });
+  }
+
+  /**
+   * Create or reconfigure a compositor surface. Geometry changes take effect
+   * when the next frame is submitted.
+   */
+  async configureSurface(id: string, options: SurfaceOptions): Promise<void> {
+    const transparency = options.transparency === "color-key" ? 1 : 0;
+    await this.enqueueJavaCall(() => {
+      this.communicator.configureSurface(
+        id,
+        Math.round(options.x),
+        Math.round(options.y),
+        Math.round(options.width),
+        Math.round(options.height),
+        Math.round(options.zOrder),
+        transparency,
+      );
+    });
+  }
+
+  async removeSurface(id: string): Promise<void> {
+    await this.enqueueJavaCall(() => {
+      this.communicator.removeSurface(id);
+    });
+  }
+
+  /** Show or hide a compositor surface; takes effect at the next composite. */
+  async setSurfaceVisible(id: string, visible: boolean): Promise<void> {
+    await this.enqueueJavaCall(() => {
+      this.communicator.setSurfaceVisible(id, Boolean(visible));
+    });
+  }
+
+  /**
+   * Blank (screen off) or unblank the composited output; retained surface
+   * state survives, so unblanking restores the screen without repaints.
+   */
+  async setScreenBlanked(blanked: boolean): Promise<void> {
+    await this.enqueueJavaCall(() => {
+      this.communicator.setScreenBlanked(Boolean(blanked));
+    });
+  }
+
+  /**
+   * Apply an update covering rect (in surface-local coordinates) to a surface
+   * and submit the recomposited screen to the glasses. pixels8bpp holds
+   * rect.width*rect.height bytes, row-major; fingerprint identifies the
+   * surface's full content after the update.
+   */
+  async submitSurfaceFrame(
+    surfaceId: string,
+    pixels8bpp: Uint8Array,
+    rect: { x: number; y: number; width: number; height: number },
+    fingerprint: string,
+    paintMs = -1,
+    frameId = 0,
+  ): Promise<void> {
     // Snapshot because the Java call is deferred; the buffer is passed as an
     // ArrayBuffer, which NativeScript marshals to a ByteBuffer without the
     // ~150ms per-element copy a byte[] parameter would need.
-    const snapshot = new Uint8Array(image8bpp);
+    const snapshot = new Uint8Array(pixels8bpp);
     await this.enqueueJavaCall(() => {
-      this.communicator.submitDashboardImage(
+      this.communicator.submitSurfaceFrame(
         snapshot.buffer,
-        Math.round(width),
-        Math.round(height),
+        surfaceId,
+        Math.round(rect.x),
+        Math.round(rect.y),
+        Math.round(rect.width),
+        Math.round(rect.height),
         fingerprint,
         Math.round(nonNegativeNumber(paintMs)),
         Math.round(nonNegativeNumber(frameId)),

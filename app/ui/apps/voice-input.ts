@@ -54,8 +54,9 @@ export class VoiceInputLayer implements Layer {
     const font = getDefaultSmallFont();
     const image = paintBelow();
 
-    // Solid dialog box over the underlying UI.
-    image.fillRoundedRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, 0, 10);
+    // Solid dialog box over the underlying UI. Fill 1, not 0: identical after
+    // 4bpp quantization, but 0 is transparent on the color-key shell surface.
+    image.fillRoundedRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, 1, 10);
     image.drawRoundedRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, 90, 10);
 
     const left = DIALOG_X + 16;

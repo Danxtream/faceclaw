@@ -61,7 +61,7 @@ export function drawToggleMenuItem(
   const switchX = x + width - switchWidth - 2;
   const switchY = y + MENU_TOGGLE_SWITCH_Y_OFFSET;
   image.drawText(font, x, y + 3, label, 200);
-  const offFill = selected ? 0 : 18;
+  const offFill = selected ? 1 : 18;
   image.fillRoundedRect(switchX, switchY, switchWidth, switchHeight, enabled ? 70 : offFill, 8);
   image.drawRoundedRect(switchX, switchY, switchWidth, switchHeight, enabled ? 130 : 55, 8);
   const knobSize = 12;
@@ -113,7 +113,9 @@ export class MenuLayer implements Layer {
     this.clampScrollToSelection(visibleRowCount);
 
     const image = paintBelow();
-    image.fillRoundedRect(x, y, width, height, 0);
+    // Fill 1, not 0: identical after 4bpp quantization, but 0 is the
+    // transparent color key when a menu paints on the shell surface.
+    image.fillRoundedRect(x, y, width, height, 1);
     image.drawRoundedRect(x, y, width, height, 72);
     if (this.title) {
       image.drawText(font, x + 12, y + 8, this.title, 220);

@@ -1,4 +1,10 @@
-import { ApplicationSettings } from "@nativescript/core";
+import {
+  getBooleanSetting,
+  getStringSetting,
+  onSettingsStoreChanged,
+  setBooleanSetting,
+  setStringSetting,
+} from "~/native/settings-store";
 import { getDefaultSmallFont } from "~/graphics/bdffont";
 import { wrapText } from "~/graphics/textwrap";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, MenuLayer } from "./menu";
@@ -34,9 +40,11 @@ type ConfigSettingOptions<TValue, TId extends string> = {
   formatValue?: (value: TValue) => string;
 };
 
-// Fired after any setting's set(); lets phone-side UI that depends on
-// settings toggled from the glasses (e.g. the raw-screenshot button) update
-// without waiting for an unrelated snapshot emit.
+// Fired after any setting changes, in any isolate (storage lives in the Java
+// FaceclawSettings store and broadcasts to every isolate). Lets phone-side UI
+// that depends on settings toggled from the glasses (e.g. the raw-screenshot
+// button) update without waiting for an unrelated snapshot emit. Delivery is
+// asynchronous: one message-loop tick after the set().
 const settingChangeListeners = new Set<() => void>();
 
 export function onAnySettingChanged(listener: () => void): () => void {
@@ -46,11 +54,11 @@ export function onAnySettingChanged(listener: () => void): () => void {
   };
 }
 
-function notifySettingChanged(): void {
+onSettingsStoreChanged(() => {
   for (const listener of Array.from(settingChangeListeners)) {
     listener();
   }
-}
+});
 
 export abstract class ConfigSetting<TValue, TId extends string = string> {
   readonly id: TId;
@@ -82,12 +90,11 @@ export class ConfigSettingBoolean<TId extends string = string> extends ConfigSet
   }
 
   get(): boolean {
-    return ApplicationSettings.getBoolean(this.storageKey, this.defaultValue);
+    return getBooleanSetting(this.storageKey, this.defaultValue);
   }
 
   set(value: boolean): boolean {
-    ApplicationSettings.setBoolean(this.storageKey, value);
-    notifySettingChanged();
+    setBooleanSetting(this.storageKey, value);
     return value;
   }
 
@@ -120,13 +127,12 @@ export class ConfigSettingEnum<TValue extends string, TId extends string = strin
   }
 
   get(): TValue {
-    return this.normalizer(ApplicationSettings.getString(this.storageKey, this.defaultValue));
+    return this.normalizer(getStringSetting(this.storageKey, this.defaultValue));
   }
 
   set(value: TValue): TValue {
     const normalized = this.normalizer(value);
-    ApplicationSettings.setString(this.storageKey, normalized);
-    notifySettingChanged();
+    setStringSetting(this.storageKey, normalized);
     return normalized;
   }
 
@@ -155,13 +161,12 @@ export class ConfigSettingString<TId extends string = string> extends ConfigSett
   }
 
   get(): string {
-    return this.normalizer(ApplicationSettings.getString(this.storageKey, this.defaultValue));
+    return this.normalizer(getStringSetting(this.storageKey, this.defaultValue));
   }
 
   set(value: string): string {
     const normalized = this.normalizer(value);
-    ApplicationSettings.setString(this.storageKey, normalized);
-    notifySettingChanged();
+    setStringSetting(this.storageKey, normalized);
     return normalized;
   }
 }

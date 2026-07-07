@@ -8,21 +8,20 @@ import { NotificationsListLayer } from "../notifications";
 import { createNightscoutSettingsMenuLayer, createSettingsMenuLayer } from "./settings-menus";
 import { TelepromptLayer } from "../apps/teleprompt";
 import { TerminalAppLayer } from "../apps/terminal";
-import { StopwatchLayer } from "../apps/stopwatch";
 import { TranscribeLayer } from "../apps/transcribe";
 import { ScreenTestLayer } from "../apps/screen-test";
 import { BuzzerDemoLayer } from "../apps/buzzer-demo";
 import { AboutPage } from "./about-page";
 import { GrayImage } from "~/graphics/image";
+import { shell } from "../shell/shell";
 
 const rootMenuFont = getDefaultSmallFont();
 
 class RootMenuLayer extends MenuLayer {
   async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
     if (event.type === "double-click") {
-      dashboardState.screenOn = false;
-      ctx.stack.clearToBase();
-      void ctx.actions.endTextSettingEdit();
+      // Backing out of the window's root returns focus to the shell sidebar.
+      shell.yieldFocusToSidebar();
       return;
     }
     await super.handleInput(event, ctx);
@@ -84,13 +83,6 @@ function createAppsMenuLayer(): MenuLayer {
         label: "Teleprompt",
         onSelect: (ctx) => {
           ctx.stack.push(new TelepromptLayer(dashboardState.telepromptDocumentText));
-        },
-      },
-      {
-        label: "Stopwatch",
-        onSelect: (ctx) => {
-          ctx.stack.push(new StopwatchLayer());
-          void ctx.actions.setStopwatchRenderActive(true);
         },
       },
       {

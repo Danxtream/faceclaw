@@ -114,6 +114,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private byte[] desiredBmp = new byte[0];
     private int desiredPaintMs;
     private int desiredFrameId;
+    // Highest compositor sequence stored as the desired frame; composites that
+    // lost a store race to a newer one are discarded (their content is already
+    // included in the newer composite).
+    private long lastStoredCompositeSeq;
+
+    private final SurfaceCompositor compositor = new SurfaceCompositor();
 
     private final ArrayDeque<OutboundMessage> pendingMessages = new ArrayDeque<>();
     private final ArrayDeque<OutboundMessage> inFlightMessages = new ArrayDeque<>();
@@ -145,6 +151,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             running = true;
             userDisconnectRequested = false;
             shutdownRequested = false;
+            activeInstance = this;
             workerThread = new Thread(this, "FaceclawBleCommunicator");
             workerThread.start();
         }
@@ -185,6 +192,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     public void close() {
+        if (activeInstance == this) {
+            activeInstance = null;
+        }
         disconnect();
     }
 
@@ -244,39 +254,105 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
 
+    // The most recently started communicator; lets app worker threads submit
+    // surface frames without holding a cross-isolate reference to the bridge
+    // object (JS wrappers do not cross isolates, but the Java instance does).
+    private static volatile FaceclawBleCommunicator activeInstance;
+
+    public static FaceclawBleCommunicator getActive() {
+        return activeInstance;
+    }
+
+    /** Set the compositor's output frame size. Call before configuring surfaces. */
+    public void configureCompositorScreen(int width, int height) {
+        compositor.configureScreen(width, height);
+    }
+
+    /** Show or hide a compositor surface; takes effect at the next composite. */
+    public void setSurfaceVisible(String id, boolean visible) {
+        compositor.setSurfaceVisible(id, visible);
+    }
+
     /**
-     * image8bpp arrives as a ByteBuffer because NativeScript marshals a JS
+     * Blank (screen off) or unblank the composited output, immediately
+     * submitting the resulting frame. Retained surface state is untouched, so
+     * unblanking restores the previous screen content without repaints.
+     */
+    public void setScreenBlanked(boolean blanked) {
+        compositor.setBlanked(blanked);
+        SurfaceCompositor.Composite composite = compositor.composite();
+        byte[] bmp = BmpUtil.build4bppBmp(composite.gray, composite.width, composite.height);
+        storeDesiredComposite(composite, bmp, 0, 0);
+    }
+
+    /**
+     * Create or reconfigure a compositor surface. transparency is one of the
+     * SurfaceCompositor.TRANSPARENCY_* constants. Geometry changes take effect
+     * when the next frame is submitted.
+     */
+    public void configureSurface(String id, int x, int y, int width, int height, int zOrder, int transparency) {
+        compositor.configureSurface(id, x, y, width, height, zOrder, transparency);
+    }
+
+    public void removeSurface(String id) {
+        compositor.removeSurface(id);
+    }
+
+    /**
+     * Apply an update to one compositor surface and submit the recomposited
+     * screen as the desired frame. The update covers the rect (rectX, rectY,
+     * rectWidth, rectHeight) in surface-local coordinates; contentFingerprint
+     * identifies the surface's full content after the update.
+     *
+     * pixels8bpp arrives as a ByteBuffer because NativeScript marshals a JS
      * ArrayBuffer to one without the per-element bridge copy that a byte[]
      * parameter would need (~150ms for a full frame).
      */
-    public void submitDashboardImage(
-            java.nio.ByteBuffer image8bpp,
-            int width,
-            int height,
-            String fingerprint,
+    public void submitSurfaceFrame(
+            java.nio.ByteBuffer pixels8bpp,
+            String surfaceId,
+            int rectX,
+            int rectY,
+            int rectWidth,
+            int rectHeight,
+            String contentFingerprint,
             int paintMs,
             int frameId
     ) {
-        Log.i(TAG, "Received an updated frame ");
-        // Convert the full-screen 8bpp grayscale buffer into the BMP wire format here so
+        Log.i(TAG, "Received an updated frame for surface " + surfaceId);
+        FrameTimings.getInstance().spanStart(frameId, "composite");
+        SurfaceCompositor.Composite composite = compositor.applyAndComposite(
+                surfaceId, pixels8bpp, rectX, rectY, rectWidth, rectHeight, contentFingerprint);
+        FrameTimings.getInstance().spanEnd(frameId, "composite");
+        // Convert the composited 8bpp buffer into the BMP wire format here so
         // that all framing concerns live on the Java side.
         FrameTimings.getInstance().spanStart(frameId, "bmp-convert");
-        byte[] gray;
-        if (image8bpp == null) {
-            gray = new byte[0];
-        } else {
-            gray = new byte[image8bpp.remaining()];
-            image8bpp.get(gray);
-        }
-        byte[] bmp = gray.length == 0 ? new byte[0] : BmpUtil.build4bppBmp(gray, width, height);
+        byte[] bmp = BmpUtil.build4bppBmp(composite.gray, composite.width, composite.height);
         FrameTimings.getInstance().spanEnd(frameId, "bmp-convert");
-        int supersededFrameId;
+        storeDesiredComposite(composite, bmp, paintMs, frameId);
+    }
+
+    /** Store a composite as the desired frame unless a newer one won the race. */
+    private void storeDesiredComposite(SurfaceCompositor.Composite composite, byte[] bmp, int paintMs, int frameId) {
+        int supersededFrameId = 0;
+        boolean stale = false;
         synchronized (desiredTilesLock) {
-            supersededFrameId = desiredFrameId;
-            desiredBmp = bmp;
-            desiredFingerprint = fingerprint == null ? "" : fingerprint;
-            desiredPaintMs = paintMs;
-            desiredFrameId = frameId;
+            if (composite.seq <= lastStoredCompositeSeq) {
+                // A concurrent submission composited after us and stored first;
+                // its composite already includes this surface update.
+                stale = true;
+            } else {
+                lastStoredCompositeSeq = composite.seq;
+                supersededFrameId = desiredFrameId;
+                desiredBmp = bmp;
+                desiredFingerprint = composite.fingerprint;
+                desiredPaintMs = paintMs;
+                desiredFrameId = frameId;
+            }
+        }
+        if (stale) {
+            finishFrame(frameId, "discarded: composite superseded before store");
+            return;
         }
         if (supersededFrameId != 0 && supersededFrameId != frameId) {
             finishFrame(supersededFrameId, "discarded: superseded by frame#" + frameId + " before send");

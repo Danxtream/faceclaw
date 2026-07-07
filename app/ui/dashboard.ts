@@ -1,16 +1,14 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
-import { type RawInputEvent } from "../native/faceclaw-communicator";
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
-import { EventSourceType, OsEventTypeList } from "../g2/events";
 import { getDashboardPlugin, type DashboardPluginCardBounds, type DashboardPluginState } from "./dashboard-plugins";
-import { EditTextSettingLayer, isNightscoutSettingsConfigured, screenTimeoutSettingToMs, screenTimeoutSetting, type DashboardSlotId, DashboardPluginId, bottomRightSlotSetting, bottomLeftSlotSetting, dashboardSlotIds } from "./dashboard-settings";
+import { EditTextSettingLayer, isNightscoutSettingsConfigured, type DashboardSlotId, DashboardPluginId, bottomRightSlotSetting, bottomLeftSlotSetting, dashboardSlotIds } from "./dashboard-settings";
 import { Layer, LayerActions, LayerStack, type DashboardInputEvent, type LayerContext } from "./layers";
 import { SingleNotificationLayer } from "./notifications";
 import { TelepromptLayer } from "./apps/teleprompt";
-import { VoiceInputLayer } from "./apps/voice-input";
 import { drawSystemCard } from "./dashboard/system-card";
 import { createRootMenuLayer } from "./dashboard/root-menu";
+import { inputEventToString, shell } from "./shell/shell";
 
 type DashboardCardId = "system" | DashboardSlotId;
 export type DashboardBatteryLevels = {
@@ -21,16 +19,12 @@ export type DashboardBatteryLevels = {
 
 type DashboardState = {
   logLines: string[];
-  screenOn: boolean;
-  lastInputAtMs: number;
   telepromptDocumentText: string | null;
   battery: DashboardBatteryLevels;
 };
 
 export let dashboardState: DashboardState = {
   logLines: [] as string[],
-  screenOn: true,
-  lastInputAtMs: Date.now(),
   telepromptDocumentText: null as string | null,
   battery: {
     headset: null,
@@ -44,7 +38,6 @@ const dashboardActions: LayerActions = {
   disconnect: () => {},
   startTextSettingEdit: () => {},
   endTextSettingEdit: () => {},
-  setStopwatchRenderActive: () => {},
   setTranscribeRenderActive: () => {},
   startVoiceCapture: () => {},
   stopVoiceCapture: () => {},
@@ -52,112 +45,13 @@ const dashboardActions: LayerActions = {
 };
 export const TOP_LEFT_MENU_LAYOUT = { x: 8, y: 8, width: 272 };
 
-// The push-to-talk dialog is a singleton on the layer stack; tracked here so
-// long-press-release (a global event) can reach it and so a second long-press
-// doesn't stack duplicates.
-let activeVoiceInputLayer: VoiceInputLayer | null = null;
-
-function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputEvent {
-  if (event.kind === "sys-event") {
-    if (event.eventType === OsEventTypeList.CLICK_EVENT) {
-      return {
-        type: "click",
-        source: eventSourceToString(event.eventSource),
-      };
-    } else if (event.eventType === OsEventTypeList.DOUBLE_CLICK_EVENT) {
-      return {
-        type: "double-click",
-        source: eventSourceToString(event.eventSource),
-      };
-    } else if (event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
-      return { type: "scroll-down" };
-    } else if (event.eventType === OsEventTypeList.SCROLL_TOP_EVENT) {
-      return { type: "scroll-up" };
-    } else if (event.eventType === OsEventTypeList.RING_LONG_PRESS_EVENT) {
-      // CFW-forwarded long-press (replaces the firmware's force-quit dialog).
-      // The CFW gates this to the ring, so eventSource may be 0 (unknown);
-      // eventSourceToString falls back to "ring".
-      return { type: "long-press", source: eventSourceToString(event.eventSource) };
-    } else if (event.eventType === OsEventTypeList.RING_LONG_PRESS_RELEASE_EVENT) {
-      return { type: "long-press-release", source: eventSourceToString(event.eventSource) };
-    }
-  } else if (event.kind === "text-click") {
-    if (event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
-      return { type: "scroll-down" };
-    } else if (event.eventType === OsEventTypeList.SCROLL_TOP_EVENT) {
-      return { type: "scroll-up" };
-    }
-  }
-  return {
-    type: "unknown",
-    kind: event.kind,
-    eventSource: event.eventSource,
-    eventType: event.eventType,
-  };
-}
-
-function eventSourceToString(eventSource: number): "ring" | "left-arm" | "right-arm" {
-  if (eventSource === EventSourceType.TOUCH_EVENT_FROM_RING) {
-    return "ring";
-  } else if (eventSource === EventSourceType.TOUCH_EVENT_FROM_GLASSES_L) {
-    return "left-arm";
-  } else if (eventSource === EventSourceType.TOUCH_EVENT_FROM_GLASSES_R) {
-    return "right-arm";
-  }
-  return "ring";
-}
-
-export async function receiveInput(event: RawInputEvent): Promise<void> {
-  const inputEvent = rawInputEventToInputEvent(event);
-  dashboardState.lastInputAtMs = Date.now();
-  dashboardState.logLines.push(eventToString(inputEvent));
-  if (!dashboardState.screenOn) {
-    if (inputEvent.type === "double-click") {
-      dashboardState.screenOn = true;
-      if (dashboardLayers.isAtBase()) {
-        dashboardLayers.push(createRootMenuLayer());
-      }
-    }
-    return;
-  }
-  // Push-to-talk is intercepted globally so it works over any UI: long-press
-  // opens the voice dialog and starts the mic; releasing it stops the mic.
-  if (inputEvent.type === "long-press") {
-    if (!activeVoiceInputLayer) {
-      const layer = new VoiceInputLayer(dashboardActions, () => {
-        if (activeVoiceInputLayer === layer) activeVoiceInputLayer = null;
-      });
-      activeVoiceInputLayer = layer;
-      dashboardLayers.push(layer);
-      layer.startCapture();
-    }
-    return;
-  }
-  if (inputEvent.type === "long-press-release") {
-    activeVoiceInputLayer?.endCapture();
-    return;
-  }
+/**
+ * Input handler for the dashboard window. Global gestures (wake, sleep,
+ * long-press/push-to-talk) are consumed by the shell before this is called.
+ */
+export async function receiveDashboardWindowInput(inputEvent: DashboardInputEvent): Promise<void> {
+  dashboardState.logLines.push(inputEventToString(inputEvent));
   await dashboardLayers.handleInput(inputEvent);
-}
-
-function eventToString(event: DashboardInputEvent): string {
-  switch (event.type) {
-    case "click":
-      return `Click from ${event.source}`;
-    case "double-click":
-      return `Double click from ${event.source}`;
-    case "scroll-up":
-      return `Scroll up`;
-    case "scroll-down":
-      return `Scroll down`;
-    case "long-press":
-      return `Long press from ${event.source}`;
-    case "long-press-release":
-      return `Long press release from ${event.source}`;
-    default:
-    case "unknown":
-      return `Unknown event: ${event.kind} ${event.eventSource} ${event.eventType}`;
-  }
 }
 
 export function logToDashboard(message: string): void {
@@ -177,40 +71,26 @@ export function closeDashboardTextSettingEditor(): boolean {
 }
 
 export function drawDashboard(): GrayImage {
-  if (!dashboardState.screenOn) {
+  if (!shell.isScreenOn()) {
     return new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
   }
   return dashboardLayers.paint();
-}
-
-export function applyDashboardScreenTimeout(nowMs = Date.now()): boolean {
-  const timeoutMs = screenTimeoutSettingToMs(screenTimeoutSetting.get());
-  if (timeoutMs === null || !dashboardState.screenOn) return false;
-  if (nowMs - dashboardState.lastInputAtMs < timeoutMs) return false;
-  dashboardState.screenOn = false;
-  return true;
-}
-
-export function noteDashboardPhoneTextInput(nowMs = Date.now()): void {
-  dashboardState.lastInputAtMs = nowMs;
 }
 
 export function openTelepromptDocument(text?: string): void {
   if (text !== undefined) {
     dashboardState.telepromptDocumentText = text;
   }
-  dashboardState.lastInputAtMs = Date.now();
-  dashboardState.screenOn = true;
+  shell.wake("window");
   dashboardLayers.clearToBase();
   dashboardLayers.push(createRootMenuLayer());
   dashboardLayers.push(new TelepromptLayer(dashboardState.telepromptDocumentText));
 }
 
 export function openAndroidNotificationFromSleep(notificationKey: string, nowMs = Date.now()): boolean {
-  if (!notificationKey || dashboardState.screenOn) return false;
+  if (!notificationKey || shell.isScreenOn()) return false;
 
-  dashboardState.lastInputAtMs = nowMs;
-  dashboardState.screenOn = true;
+  shell.wake("window", nowMs);
   dashboardLayers.clearToBase();
   dashboardLayers.push(createRootMenuLayer());
   dashboardLayers.push(new SingleNotificationLayer(notificationKey, {
@@ -221,15 +101,12 @@ export function openAndroidNotificationFromSleep(notificationKey: string, nowMs 
 }
 
 function closeNewNotificationTrigger(ctx: LayerContext): void {
-  dashboardState.screenOn = false;
+  shell.sleep();
   ctx.stack.clearToBase();
 }
 
 export function resetDashboardSleepTimerAndWake(nowMs = Date.now()): boolean {
-  dashboardState.lastInputAtMs = nowMs;
-  if (dashboardState.screenOn) return false;
-
-  dashboardState.screenOn = true;
+  if (!shell.wake("sidebar", nowMs)) return false;
   dashboardLayers.clearToBase();
   dashboardLayers.push(createRootMenuLayer());
   return true;
@@ -254,10 +131,6 @@ export function getPluginIdForSlot(slot: DashboardSlotId): DashboardPluginId {
 
 class DashboardLayer implements Layer {
   paint(): GrayImage {
-    if (!dashboardState.screenOn) {
-      return new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
-    }
-
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     const pluginState = getPluginState();
     drawSystemCard(image, getCardBounds("system"));
@@ -283,9 +156,8 @@ class DashboardLayer implements Layer {
     }
 
     if (event.type === "double-click") {
-      dashboardState.screenOn = false;
-      ctx.stack.clearToBase();
-      void dashboardActions.endTextSettingEdit();
+      // Backing out of the window's root returns focus to the shell sidebar.
+      shell.yieldFocusToSidebar();
     }
   }
 }

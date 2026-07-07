@@ -18,7 +18,6 @@ export type LayerActions = {
   disconnect: () => Promise<void> | void;
   startTextSettingEdit: (setting: ConfigSettingString) => Promise<void> | void;
   endTextSettingEdit: () => Promise<void> | void;
-  setStopwatchRenderActive: (active: boolean) => Promise<void> | void;
   setTranscribeRenderActive: (active: boolean) => Promise<void> | void;
   /** Start voice capture with the provider chosen in settings. */
   startVoiceCapture: () => Promise<void> | void;
@@ -53,13 +52,17 @@ export interface Layer {
 export class LayerStack {
   private readonly layers: Layer[];
   private readonly ctx: LayerContext;
+  private readonly baseWidth: number;
+  private readonly baseHeight: number;
 
-  constructor(baseLayer: Layer, actions: LayerActions) {
+  constructor(baseLayer: Layer, actions: LayerActions, baseSize?: { width: number; height: number }) {
     this.layers = [baseLayer];
     this.ctx = {
       stack: this,
       actions,
     };
+    this.baseWidth = baseSize?.width ?? G2_LENS_WIDTH;
+    this.baseHeight = baseSize?.height ?? G2_LENS_HEIGHT;
   }
 
   push(layer: Layer): void {
@@ -112,7 +115,7 @@ export class LayerStack {
           return cachedBelow;
         }
         if (index <= 0) {
-          cachedBelow = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+          cachedBelow = new GrayImage(this.baseWidth, this.baseHeight, 0);
         } else if (layer.paintOverBase) {
           cachedBelow = this.paintLayer(0);
         } else {

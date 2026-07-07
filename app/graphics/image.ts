@@ -139,7 +139,14 @@ export class GrayImage {
     source: GrayImage,
     dx: number,
     dy: number,
-    opts: { sx?: number; sy?: number; width?: number; height?: number } = {},
+    opts: {
+      sx?: number;
+      sy?: number;
+      width?: number;
+      height?: number;
+      /** Skip source pixels with value 0 (color-key transparency). */
+      transparentZero?: boolean;
+    } = {},
   ): void {
     const srcX = Math.max(0, (opts.sx ?? 0) | 0);
     const srcY = Math.max(0, (opts.sy ?? 0) | 0);
@@ -156,7 +163,9 @@ export class GrayImage {
         const sx = srcX + col;
         const tx = destX + col;
         if (sx < 0 || sx >= source.width || tx < 0 || tx >= this.width) continue;
-        this.pixels[ty * this.width + tx] = source.pixels[sy * source.width + sx] ?? 0;
+        const value = source.pixels[sy * source.width + sx] ?? 0;
+        if (opts.transparentZero && value === 0) continue;
+        this.pixels[ty * this.width + tx] = value;
       }
     }
   }

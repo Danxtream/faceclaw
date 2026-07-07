@@ -15,18 +15,21 @@ import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import {
-  applyDashboardScreenTimeout,
   closeDashboardTextSettingEditor,
-  dashboardState,
   drawDashboard,
-  noteDashboardPhoneTextInput,
+  logToDashboard,
   openAndroidNotificationFromSleep,
   openTelepromptDocument,
-  receiveInput,
+  receiveDashboardWindowInput,
   resetDashboardSleepTimerAndWake,
   setDashboardBatteryLevels,
   setDashboardActions,
 } from "../ui/dashboard";
+import { inputEventToString, rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
+import { makeLetterWindowIcon } from "../ui/shell/chrome-layer";
+import { WorkerAppHost } from "../ui/shell/worker-window";
+import { createLauncherWindow, LAUNCHER_SURFACE_ID } from "../ui/shell/launcher-app";
+import { APP_VIEWPORT } from "../ui/shell/geometry";
 import {
   elevenLabsApiKeySetting,
   nightscoutApiTokenSetting,
@@ -35,6 +38,8 @@ import {
   onAnySettingChanged,
   rawScreenshotsEnabledSetting,
   saveVoiceRecordingsSetting,
+  screenTimeoutSetting,
+  screenTimeoutSettingToMs,
   systemCardNameSetting,
   voiceProviderSetting,
   type ConfigSettingString,
@@ -64,9 +69,13 @@ type DashboardListener = (snapshot: DashboardSnapshot) => void;
 type LogLevel = "debug"|"info"|"warn"|"error";
 
 const CONTAINER_NAME = "dashboard";
+// Compositor surfaces: the dashboard window in the app viewport, and the
+// shell chrome (sidebar + top bar + overlays) above it with color-key
+// transparency.
+const DASHBOARD_WINDOW_SURFACE_ID = "window:dashboard";
+const SHELL_SURFACE_ID = "shell";
 const DASHBOARD_INTERVAL_MS = 60_000;
 const SCREEN_TIMEOUT_CHECK_MS = 1_000;
-const STOPWATCH_RENDER_INTERVAL_MS = 100;
 const TRANSCRIBE_RENDER_INTERVAL_MS = 250;
 const FOREGROUND_NOTIFICATION_MIN_UPDATE_MS = 30_000;
 const FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS = 6_000;
@@ -125,6 +134,16 @@ function isDashboardContainerName(name: string): boolean {
   return normalized === CONTAINER_NAME || normalized.includes(CONTAINER_NAME);
 }
 
+/** Top-left viewport-sized crop of a full-lens dashboard paint. */
+function cropToViewport(image: GrayImage): GrayImage {
+  if (image.width === APP_VIEWPORT.width && image.height === APP_VIEWPORT.height) {
+    return image;
+  }
+  const cropped = new GrayImage(APP_VIEWPORT.width, APP_VIEWPORT.height, 0);
+  cropped.bitBlt(image, 0, 0, { width: APP_VIEWPORT.width, height: APP_VIEWPORT.height });
+  return cropped;
+}
+
 class DashboardController {
   private phase: ConnectionPhase = "disconnected";
   private status = "Disconnected.";
@@ -140,7 +159,6 @@ class DashboardController {
   private communicator: FaceclawCommunicatorBridge | null = null;
   private dashboardTimer: ReturnType<typeof setInterval> | null = null;
   private screenTimeoutTimer: ReturnType<typeof setInterval> | null = null;
-  private stopwatchRenderTimer: ReturnType<typeof setInterval> | null = null;
   private transcribeRenderTimer: ReturnType<typeof setInterval> | null = null;
   private offState: (() => void) | null = null;
   private offLog: (() => void) | null = null;
@@ -160,6 +178,14 @@ class DashboardController {
   private renderQueued = false;
   private queuedRenderReason: "initial" | "interval" = "interval";
   private queuedFrameId = 0;
+  private shellRenderInProgress = false;
+  private shellRenderQueued = false;
+  // Last painted surface images, for compositing the phone-side preview.
+  private lastShellImage: GrayImage | null = null;
+  private lastWindowImage: GrayImage | null = null;
+  // One shared worker hosts every stopwatch window; spawned on first launch.
+  private stopwatchHost: WorkerAppHost | null = null;
+  private nextWindowSerial = 1;
   private lastForegroundNotificationUpdateAtMs = 0;
   private lastConnectedPreviewUpdateAtMs = 0;
   // Consumed by the next renderDashboard: repaint with data sources not
@@ -167,20 +193,81 @@ class DashboardController {
   private nextRenderWantsFreshData = false;
 
   constructor() {
+    const sharedActions = {
+      disconnect: () => this.disconnect(),
+      startTextSettingEdit: (setting: ConfigSettingString) => this.startTextSettingEdit(setting),
+      endTextSettingEdit: () => this.endTextSettingEdit(),
+      setTranscribeRenderActive: (active: boolean) => this.setTranscribeRenderActive(active),
+      startVoiceCapture: () => this.startVoiceCapture(),
+      stopVoiceCapture: () => this.stopVoiceCapture(),
+      playBuzzerNote: (note: number, oct: number, beat: number) => this.playBuzzerNote(note, oct, beat),
+    };
     setDashboardActions({
+      ...sharedActions,
       requestRender: () => {
         void this.requestRender("interval").catch((error) => {
           this.appendLog(`requested render failed: ${this.formatError(error)}`);
         });
       },
-      disconnect: () => this.disconnect(),
-      startTextSettingEdit: (setting) => this.startTextSettingEdit(setting),
-      endTextSettingEdit: () => this.endTextSettingEdit(),
-      setStopwatchRenderActive: (active) => this.setStopwatchRenderActive(active),
-      setTranscribeRenderActive: (active) => this.setTranscribeRenderActive(active),
-      startVoiceCapture: () => this.startVoiceCapture(),
-      stopVoiceCapture: () => this.stopVoiceCapture(),
-      playBuzzerNote: (note, oct, beat) => this.playBuzzerNote(note, oct, beat),
+    });
+    shell.configure({
+      actions: {
+        ...sharedActions,
+        // Shell overlays (voice dialog, long-press menu) live on the shell
+        // surface, so their repaints go through the shell render path.
+        requestRender: () => this.requestShellRender(),
+      },
+      getScreenTimeoutMs: () => screenTimeoutSettingToMs(screenTimeoutSetting.get()),
+      requestShellRender: () => this.requestShellRender(),
+      onScreenStateChanged: (on) => {
+        const communicator = this.communicator;
+        if (!communicator) return;
+        void (async () => {
+          // Blanking is a compositor-level flag so worker-window surfaces go
+          // dark too; retained state survives for instant wake.
+          await communicator.setScreenBlanked(!on);
+          await communicator.setG2ScreenOn(on);
+        })().catch((error) => {
+          this.appendLog(`screen state change failed: ${this.formatError(error)}`);
+        });
+        if (on) this.requestShellRender();
+      },
+    });
+    // The launcher is pinned first in the sidebar and is the boot foreground.
+    shell.registerWindow(
+      createLauncherWindow({
+        actions: {
+          ...sharedActions,
+          requestRender: () => shell.foregroundWindow()?.requestRender(),
+        },
+        apps: [{ appId: "stopwatch", label: "Stopwatch" }],
+        launchApp: (appId) => this.launchApp(appId),
+        submitFrame: (image, paintMs, frameId) =>
+          this.submitWindowFrame(LAUNCHER_SURFACE_ID, image, paintMs, frameId),
+        setSurfaceVisible: (visible) => {
+          this.setWindowSurfaceVisible(LAUNCHER_SURFACE_ID, visible);
+        },
+      }),
+    );
+    shell.registerWindow({
+      appId: "dashboard",
+      windowId: "dashboard",
+      title: "Dashboard",
+      surfaceId: DASHBOARD_WINDOW_SURFACE_ID,
+      closeable: false,
+      drawIcon: makeLetterWindowIcon("D"),
+      handleInput: async (event, frameId) => {
+        await receiveDashboardWindowInput(event);
+        await this.requestRender("interval", frameId);
+      },
+      requestRender: () => {
+        void this.requestRender("interval").catch((error) => {
+          this.appendLog(`window render failed: ${this.formatError(error)}`);
+        });
+      },
+      setForeground: (foreground) => {
+        this.setWindowSurfaceVisible(DASHBOARD_WINDOW_SURFACE_ID, foreground);
+      },
     });
     this.offAndroidNotification = onAndroidNotificationPosted((notificationKey) => {
       void this.handleAndroidNotificationPosted(notificationKey).catch((error) => {
@@ -292,7 +379,7 @@ class DashboardController {
   }
 
   setActiveTextSettingValue(value: string): void {
-    noteDashboardPhoneTextInput();
+    shell.noteUserActivity();
     const setting = this.activeTextSetting;
     if (!setting) return;
     if (setting.get() === value) return;
@@ -377,7 +464,12 @@ class DashboardController {
           headset: state.battery,
           headsetCharging: state.chargingStatus > 0,
         });
+        shell.setBatteryLevels({
+          headset: state.battery,
+          headsetCharging: state.chargingStatus > 0,
+        });
         if ((this.phase === "connected" || this.phase === "charging") && this.communicator) {
+          this.requestShellRender();
           void this.requestRender("interval").catch((error) => {
             const message = this.formatError(error);
             this.appendLog(`battery update failed: ${message}`);
@@ -440,9 +532,30 @@ class DashboardController {
 
       await mediaControllerBridge.start();
       await nightscoutBridge.start();
+      // Register the compositor surfaces: the dashboard window in the app
+      // viewport, and the shell chrome above it.
+      await communicator.configureCompositorScreen(G2_LENS_WIDTH, G2_LENS_HEIGHT);
+      await communicator.configureSurface(SHELL_SURFACE_ID, {
+        x: 0,
+        y: 0,
+        width: G2_LENS_WIDTH,
+        height: G2_LENS_HEIGHT,
+        zOrder: 1,
+        transparency: "color-key",
+      });
+      // Window surfaces for every live window (including any launched while
+      // disconnected); only the foreground window's surface is composited.
+      const foregroundWindowId = shell.foregroundWindow()?.windowId;
+      for (const window of shell.getWindows()) {
+        await this.configureWindowSurface(window.surfaceId, window.windowId === foregroundWindowId);
+      }
       await communicator.start();
+      shell.foregroundWindow()?.requestRender();
+      this.requestShellRender();
       await this.requestRender("initial");
       this.dashboardTimer = setInterval(() => {
+        // Also refreshes the top-bar clock on the shell surface.
+        this.requestShellRender();
         void this.requestRender("interval").catch((error) => {
           const message = this.formatError(error);
           this.setStatus(`Dashboard update failed: ${message}`);
@@ -451,9 +564,9 @@ class DashboardController {
       }, DASHBOARD_INTERVAL_MS);
       this.screenTimeoutTimer = setInterval(() => {
         if (this.phase !== "connected" || !this.communicator) return;
-        if (!applyDashboardScreenTimeout()) return;
-        this.setStopwatchRenderActive(false);
+        if (!shell.applyScreenTimeout()) return;
         this.endTextSettingEdit();
+        this.requestShellRender();
         void this.requestRender("interval").catch((error) => {
           const message = this.formatError(error);
           this.appendLog(`screen timeout render failed: ${message}`);
@@ -570,6 +683,7 @@ class DashboardController {
     openTelepromptDocument(text);
     this.appendLog(`teleprompt document received (${text.length} chars)`);
     if (this.phase === "connected" && this.communicator) {
+      this.requestShellRender();
       await this.requestRender("interval");
       return;
     }
@@ -729,7 +843,12 @@ class DashboardController {
     if (paintUsedStaleData) {
       frameTimings.logFrame(frameId, "painted with stale data; will schedule a fresh-data repaint");
     }
-    const fingerprint = frameTimings.span(frameId, "fingerprint", () => image.fingerprint());
+    // The dashboard still paints the full lens; its window surface only shows
+    // the viewport-sized top-left crop (content near the right/bottom edges
+    // clips until the legacy layouts are resized).
+    const cropped = frameTimings.span(frameId, "crop", () => cropToViewport(image));
+    const fingerprint = frameTimings.span(frameId, "fingerprint", () => cropped.fingerprint());
+    this.lastWindowImage = cropped;
     const updatePreviewAfterTransmit = this.phase === "connected";
     if (!updatePreviewAfterTransmit) {
       this.updateDisplayPreviewFromImage(image);
@@ -743,23 +862,30 @@ class DashboardController {
       return;
     }
     if (this.communicator) {
-      if (dashboardState.screenOn) {
+      if (shell.isScreenOn()) {
         await this.communicator.setG2ScreenOn(true);
       }
-      console.log("submitDashboardImage");
-      const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
+      console.log("submitSurfaceFrame");
+      const buffer = frameTimings.span(frameId, "to8bpp", () => cropped.to8bppBuffer());
       // The Java side owns the frame from here: it finishes it on last-packet
       // ack, dedup, supersede, or timeout.
-      await this.communicator.submitDashboardImage(buffer, image.width, image.height, fingerprint, paintMs, frameId);
+      await this.communicator.submitSurfaceFrame(
+        DASHBOARD_WINDOW_SURFACE_ID,
+        buffer,
+        { x: 0, y: 0, width: cropped.width, height: cropped.height },
+        fingerprint,
+        paintMs,
+        frameId,
+      );
       const outcome = await this.communicator.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
       if (outcome === null) {
         frameTimings.logFrame(frameId, "transmit backpressure wait timed out; render loop continuing");
       }
-      if (!dashboardState.screenOn) {
+      if (!shell.isScreenOn()) {
         await this.communicator.setG2ScreenOn(false);
       }
       if (updatePreviewAfterTransmit) {
-        this.updateConnectedDisplayPreviewFromImage(image);
+        this.updateConnectedCompositePreview();
       }
     } else {
       frameTimings.finishFrame(frameId, "discarded: no communicator, preview only");
@@ -783,11 +909,16 @@ class DashboardController {
     const frameId =
       event.frameId > 0 ? event.frameId : frameTimings.startFrame(`input:${event.kind} (untracked source)`);
     frameTimings.logFrame(frameId, `TS input handler start: ${event.kind} ${eventName(event.eventType)}`);
-    let renderRequested = false;
+    let frameOwned = false;
     try {
+      const inputEvent = rawInputEventToInputEvent(event);
+      logToDashboard(inputEventToString(inputEvent));
       frameTimings.spanStart(frameId, "handle-input");
+      let outcome: ShellInputOutcome;
       try {
-        await receiveInput(event);
+        // The shell consumes its reserved gestures and forwards the rest to
+        // the focused window; the outcome says which surfaces changed.
+        outcome = await shell.receiveInput(inputEvent, frameId);
       } finally {
         frameTimings.spanEnd(frameId, "handle-input");
       }
@@ -807,12 +938,7 @@ class DashboardController {
         if (event.eventSource === EventSourceType.TOUCH_EVENT_FROM_RING) {
           this.lastInput = eventName(event.eventType);
         }
-        renderRequested = true;
-        await this.requestRender("interval", frameId);
-        return;
-      }
-
-      if (event.kind === "text-click" && isDashboardContainerName(event.containerName)) {
+      } else if (event.kind === "text-click" && isDashboardContainerName(event.containerName)) {
         if (
           event.eventType === OsEventTypeList.SCROLL_TOP_EVENT ||
           event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT
@@ -820,15 +946,162 @@ class DashboardController {
           this.lastSys = `TEXT/${eventName(event.eventType)}`;
           this.lastInput = `TEXT_${eventName(event.eventType)}`;
           this.appendLog(`text-event ${this.lastSys}`);
-          renderRequested = true;
-          await this.requestRender("interval", frameId);
         }
       }
+
+      if (outcome.shell) {
+        this.requestShellRender();
+      }
+      if (outcome.window) {
+        // The window adapter owned frameId (render or explicit finish).
+        frameOwned = true;
+      } else if (outcome.shell) {
+        frameOwned = true;
+        frameTimings.finishFrame(frameId, "input consumed by shell; chrome render scheduled");
+      }
     } finally {
-      if (!renderRequested) {
+      if (!frameOwned) {
         frameTimings.finishFrame(frameId, "discarded: input did not trigger a render");
       }
     }
+  }
+
+  /**
+   * Launch an app from the launcher: allocate a window (in the app's shared
+   * worker, spawned on first launch), configure its surface, and foreground
+   * it. Launching an already-running app opens another window of it.
+   */
+  private async launchApp(appId: string): Promise<void> {
+    if (appId !== "stopwatch") {
+      this.appendLog(`unknown app: ${appId}`);
+      return;
+    }
+    if (!this.stopwatchHost) {
+      this.stopwatchHost = new WorkerAppHost("stopwatch", new Worker("../workers/stopwatch-app.worker"));
+    }
+    const serial = this.nextWindowSerial++;
+    const windowId = `stopwatch:${serial}`;
+    const surfaceId = `window:${windowId}`;
+    const window = this.stopwatchHost.openWindow({
+      windowId,
+      surfaceId,
+      title: `Stopwatch ${serial}`,
+      iconLetter: "S",
+      viewport: { width: APP_VIEWPORT.width, height: APP_VIEWPORT.height },
+      setSurfaceVisible: (visible) => this.setWindowSurfaceVisible(surfaceId, visible),
+      removeSurface: () => this.removeWindowSurface(surfaceId),
+    });
+    shell.registerWindow(window);
+    // Configure the surface before foregrounding so the worker's first frame
+    // has somewhere to land.
+    await this.configureWindowSurface(surfaceId, false);
+    shell.focusWindow(windowId);
+    this.requestShellRender();
+    this.appendLog(`launched ${windowId}`);
+  }
+
+  /** Create/refresh a window surface on the compositor, if connected. */
+  private async configureWindowSurface(surfaceId: string, visible: boolean): Promise<void> {
+    const communicator = this.communicator;
+    if (!communicator) return;
+    await communicator.configureSurface(surfaceId, {
+      x: APP_VIEWPORT.x,
+      y: APP_VIEWPORT.y,
+      width: APP_VIEWPORT.width,
+      height: APP_VIEWPORT.height,
+      zOrder: 0,
+      transparency: "opaque",
+    });
+    await communicator.setSurfaceVisible(surfaceId, visible);
+  }
+
+  private removeWindowSurface(surfaceId: string): void {
+    const communicator = this.communicator;
+    if (!communicator) return;
+    void communicator.removeSurface(surfaceId).catch((error) => {
+      this.appendLog(`surface removal failed: ${this.formatError(error)}`);
+    });
+  }
+
+  /** Submit a painted frame for an in-process window (e.g. the launcher). */
+  private async submitWindowFrame(surfaceId: string, image: GrayImage, paintMs: number, frameId: number): Promise<void> {
+    const communicator = this.communicator;
+    if (!communicator || this.phase === "charging") {
+      frameTimings.finishFrame(frameId, "discarded: window frame with no active connection");
+      return;
+    }
+    const fingerprint = image.fingerprint();
+    const buffer = image.to8bppBuffer();
+    await communicator.submitSurfaceFrame(
+      surfaceId,
+      buffer,
+      { x: 0, y: 0, width: image.width, height: image.height },
+      fingerprint,
+      paintMs,
+      frameId,
+    );
+  }
+
+  /** Flip a window surface's compositor visibility; fire-and-forget. */
+  private setWindowSurfaceVisible(surfaceId: string, visible: boolean): void {
+    const communicator = this.communicator;
+    if (!communicator) return;
+    void communicator.setSurfaceVisible(surfaceId, visible).catch((error) => {
+      this.appendLog(`surface visibility change failed: ${this.formatError(error)}`);
+    });
+  }
+
+  /**
+   * Re-render and resubmit the shell surface (sidebar, top bar, shell
+   * overlays). Coalesces like requestRender: one render in flight, at most
+   * one queued.
+   */
+  requestShellRender(): void {
+    if (this.shellRenderInProgress) {
+      this.shellRenderQueued = true;
+      return;
+    }
+    this.shellRenderInProgress = true;
+    void (async () => {
+      try {
+        do {
+          this.shellRenderQueued = false;
+          await this.renderShell();
+        } while (this.shellRenderQueued);
+      } catch (error) {
+        this.appendLog(`shell render failed: ${this.formatError(error)}`);
+      } finally {
+        this.shellRenderInProgress = false;
+      }
+    })();
+  }
+
+  private async renderShell(): Promise<void> {
+    const frameId = frameTimings.startFrame("render:shell");
+    beginRenderPass(true);
+    const paintStartedAtMs = Date.now();
+    const image = frameTimings.span(frameId, "paint", () =>
+      frameTimings.runWithFrame(frameId, () => shell.paintSurface()),
+    );
+    const paintMs = Date.now() - paintStartedAtMs;
+    endRenderPass();
+    this.lastShellImage = image;
+    if (!this.communicator || this.phase === "charging") {
+      frameTimings.finishFrame(frameId, "discarded: shell render with no active connection");
+      return;
+    }
+    const fingerprint = frameTimings.span(frameId, "fingerprint", () => image.fingerprint());
+    const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
+    await this.communicator.submitSurfaceFrame(
+      SHELL_SURFACE_ID,
+      buffer,
+      { x: 0, y: 0, width: image.width, height: image.height },
+      fingerprint,
+      paintMs,
+      frameId,
+    );
+    await this.communicator.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
+    this.updateConnectedCompositePreview();
   }
 
   private async handleWakeWord(keyword: string): Promise<void> {
@@ -838,6 +1111,7 @@ class DashboardController {
     const changed = resetDashboardSleepTimerAndWake();
     if (this.phase === "connected" && this.communicator) {
       if (changed) {
+        this.requestShellRender();
         await this.requestRender("initial");
       }
       return;
@@ -859,6 +1133,7 @@ class DashboardController {
 
     this.appendLog("android notification woke dashboard");
     if (this.phase === "connected" && this.communicator) {
+      this.requestShellRender();
       await this.requestRender("initial");
       return;
     }
@@ -871,22 +1146,6 @@ class DashboardController {
       return;
     }
     await this.communicator.playBuzzerNote(note, oct, beat);
-  }
-
-  private setStopwatchRenderActive(active: boolean): void {
-    if (!active || this.phase !== "connected" || !this.communicator) {
-      if (this.stopwatchRenderTimer) {
-        clearInterval(this.stopwatchRenderTimer);
-        this.stopwatchRenderTimer = null;
-      }
-      return;
-    }
-    if (this.stopwatchRenderTimer) return;
-    this.stopwatchRenderTimer = setInterval(() => {
-      void this.requestRender("interval").catch((error) => {
-        this.appendLog(`stopwatch render failed: ${this.formatError(error)}`);
-      });
-    }, STOPWATCH_RENDER_INTERVAL_MS);
   }
 
   private setTranscribeRenderActive(active: boolean): void {
@@ -913,10 +1172,6 @@ class DashboardController {
     if (this.screenTimeoutTimer) {
       clearInterval(this.screenTimeoutTimer);
       this.screenTimeoutTimer = null;
-    }
-    if (this.stopwatchRenderTimer) {
-      clearInterval(this.stopwatchRenderTimer);
-      this.stopwatchRenderTimer = null;
     }
     if (this.transcribeRenderTimer) {
       clearInterval(this.transcribeRenderTimer);
@@ -966,7 +1221,23 @@ class DashboardController {
     this.setDisplayPreview(grayImageToPreviewSource(image));
   }
 
-  private updateConnectedDisplayPreviewFromImage(image: GrayImage): void {
+  /**
+   * Phone-side preview of what is actually on the glasses: the window surface
+   * in its viewport with the shell chrome composited over it, mirroring the
+   * Java compositor.
+   */
+  private buildCompositePreviewImage(): GrayImage {
+    const preview = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+    if (this.lastWindowImage) {
+      preview.bitBlt(this.lastWindowImage, APP_VIEWPORT.x, APP_VIEWPORT.y);
+    }
+    if (this.lastShellImage) {
+      preview.bitBlt(this.lastShellImage, 0, 0, { transparentZero: true });
+    }
+    return preview;
+  }
+
+  private updateConnectedCompositePreview(): void {
     if (!this.communicator) return;
     const now = Date.now();
     if (
@@ -976,7 +1247,7 @@ class DashboardController {
       return;
     }
     this.lastConnectedPreviewUpdateAtMs = now;
-    this.updateDisplayPreviewFromImage(image);
+    this.updateDisplayPreviewFromImage(this.buildCompositePreviewImage());
   }
 
   private formatError(error: unknown): string {
