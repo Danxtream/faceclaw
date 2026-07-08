@@ -1,50 +1,65 @@
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
+import { GrayImage } from "../../graphics/image";
 import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
+import { writeTextToDownloads } from "../../native/file-access";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
-import { Layer, type DashboardInputEvent, type LayerActions, type LayerContext } from "../layers";
+import { Layer, type DashboardInputEvent, type LayerContext } from "../layers";
 
+/**
+ * Live transcription view. Continuous mic capture is owned by the app wrapper
+ * (createTranscribeAppWindow); this layer accumulates the transcript, shows
+ * it, and saves it to Downloads on click.
+ */
 export class TranscribeLayer implements Layer {
-  private status = "Starting transcription...";
+  private status = "Listening...";
   // Finalized utterances, plus the live (replace-semantics) partial appended
   // when painting.
   private finalizedText = "";
   private liveText = "";
+  private saveNotice = "";
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeStatus: (() => void) | null = null;
-  private actions: LayerActions | null = null;
 
   start(ctx: LayerContext): void {
-    this.actions = ctx.actions;
-    this.unsubscribeTranscript = voiceControlBridge.onTranscript((event) => this.onTranscript(event));
+    this.unsubscribeTranscript = voiceControlBridge.onTranscript((event) => {
+      this.onTranscript(event);
+      ctx.actions.requestRender();
+    });
     this.unsubscribeStatus = voiceControlBridge.onStatus((state) => {
       this.status = state.status;
       ctx.actions.requestRender();
     });
-    void ctx.actions.setTranscribeRenderActive(true);
-    void Promise.resolve(ctx.actions.startVoiceCapture());
   }
 
-  paint(): GrayImage {
+  paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+    const { width, height } = ctx.stack.getBaseSize();
+    const image = new GrayImage(width, height, 0);
     const text = this.displayText() || "Listening...";
-    const wrapped = wrapTranscribeText(font, text, G2_LENS_WIDTH - 64);
+    const wrapped = wrapTranscribeText(font, text, width - 64);
 
-    image.drawRect(12, 12, G2_LENS_WIDTH - 24, G2_LENS_HEIGHT - 24, 52);
-    image.drawText(font, 24, 24, "Transcribe", 200);
-    image.drawText(font, 24, 46, this.status, 110);
+    image.drawRect(12, 12, width - 24, height - 24, 52);
+    image.drawText(font, 24, 20, "Transcribe", 200);
+    image.drawText(font, 24, 40, this.saveNotice || this.status, 110);
 
-    const firstLine = Math.max(0, wrapped.length - 10);
+    const bodyTop = 62;
+    const footerY = height - 18;
+    const bodyLines = Math.max(1, Math.floor((footerY - bodyTop) / 16));
+    const firstLine = Math.max(0, wrapped.length - bodyLines);
     for (let index = firstLine; index < wrapped.length; index++) {
-      const y = 72 + (index - firstLine) * 16;
+      const y = bodyTop + (index - firstLine) * 16;
       image.drawText(font, 32, y, wrapped[index]!, 230);
     }
 
-    image.drawText(font, 24, 252, "Double-click: back", 110);
+    image.drawText(font, 24, footerY, "Click: save   Double-click: back", 110);
     return image;
   }
 
   handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+    if (event.type === "click") {
+      this.saveTranscript();
+      ctx.actions.requestRender();
+      return;
+    }
     if (event.type === "double-click") {
       ctx.stack.pop();
     }
@@ -55,9 +70,17 @@ export class TranscribeLayer implements Layer {
     this.unsubscribeTranscript = null;
     this.unsubscribeStatus?.();
     this.unsubscribeStatus = null;
-    void this.actions?.setTranscribeRenderActive(false);
-    void this.actions?.stopVoiceCapture();
-    this.actions = null;
+  }
+
+  private saveTranscript(): void {
+    const text = this.displayText().trim();
+    if (!text) {
+      this.saveNotice = "Nothing to save yet.";
+      return;
+    }
+    const filename = `transcript-${transcriptTimestamp()}.txt`;
+    const path = writeTextToDownloads(filename, `${text}\n`);
+    this.saveNotice = path ? `Saved ${filename}` : "Save failed (check file access).";
   }
 
   private displayText(): string {
@@ -80,6 +103,15 @@ export class TranscribeLayer implements Layer {
   }
 }
 
+function transcriptTimestamp(): string {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return (
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+    `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  );
+}
+
 function wrapTranscribeText(font: BdfFont, text: string, maxWidth: number): string[] {
   const words = text.split(/\s+/).filter(Boolean);
   const lines: string[] = [];
@@ -98,4 +130,3 @@ function wrapTranscribeText(font: BdfFont, text: string, maxWidth: number): stri
   }
   return lines.length ? lines : [""];
 }
-

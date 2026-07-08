@@ -11,24 +11,11 @@ import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, MenuLayer } from 
 import { DashboardInputEvent, Layer, type LayerContext } from "./layers";
 import { GrayImage } from "~/graphics/image";
 
-export type DashboardSlotId = "bottom-left" | "bottom-right";
-export const dashboardSlotIds: DashboardSlotId[] = ["bottom-left", "bottom-right"];
-export type DashboardPluginId = "blank" | "input-debug-log" | "music-controller" | "nightscout";
-
-export type DashboardSlotConfig = Record<DashboardSlotId, DashboardPluginId>;
 export type NightscoutSettings = {
   siteUrl: string;
   apiToken: string;
 };
 export type BatteryDisplayMode = "icon" | "percentage";
-export type SystemCardSettings = {
-  showFaceclawLogo: boolean;
-  showBatteryIndicators: boolean;
-  batteryDisplayMode: BatteryDisplayMode;
-  showAndroidNotifications: boolean;
-  showSignalStrength: boolean;
-};
-export type SystemCardSettingKey = keyof SystemCardSettings;
 export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "never";
 
 type ConfigSettingOptions<TValue, TId extends string> = {
@@ -171,35 +158,6 @@ export class ConfigSettingString<TId extends string = string> extends ConfigSett
 }
 
 
-const KNOWN_PLUGIN_IDS = new Set<DashboardPluginId>([
-  "blank",
-  "input-debug-log",
-  "music-controller",
-  "nightscout",
-]);
-
-
-export const bottomLeftSlotSetting = new ConfigSettingEnum<DashboardPluginId>({
-  id: "bottom-left-slot",
-  label: "Bottom left slot",
-  storageKey: "dashboard.slot.bottomLeft",
-  defaultValue: "blank",
-  values: Array.from(KNOWN_PLUGIN_IDS),
-});
-
-export const bottomRightSlotSetting = new ConfigSettingEnum<DashboardPluginId>({
-  id: "bottom-right-slot",
-  label: "Bottom right slot",
-  storageKey: "dashboard.slot.bottomRight",
-  defaultValue: "blank",
-  values: Array.from(KNOWN_PLUGIN_IDS),
-});
-
-export const dashboardSlotSettings: Record<DashboardSlotId, ConfigSettingEnum<DashboardPluginId>> = {
-  "bottom-left": bottomLeftSlotSetting,
-  "bottom-right": bottomRightSlotSetting,
-};
-
 export const systemCardNameSetting = new ConfigSettingString({
   id: "dashboard-name",
   label: "Dashboard name",
@@ -211,20 +169,6 @@ export const systemCardNameSetting = new ConfigSettingString({
   formatValue: (value) => value || "Faceclaw",
 });
 
-export const showFaceclawLogoSetting = new ConfigSettingBoolean({
-  id: "showFaceclawLogo",
-  label: "Show Faceclaw Logo",
-  storageKey: "dashboard.systemCard.showFaceclawLogo",
-  defaultValue: true,
-});
-
-export const showBatteryIndicatorsSetting = new ConfigSettingBoolean({
-  id: "showBatteryIndicators",
-  label: "Show Battery Indicators",
-  storageKey: "dashboard.systemCard.showBatteryIndicators",
-  defaultValue: true,
-});
-
 export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMode>({
   id: "batteryDisplayMode",
   label: "Battery display",
@@ -232,20 +176,6 @@ export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMod
   defaultValue: "icon",
   values: ["icon", "percentage"],
   formatValue: batteryDisplayModeLabel,
-});
-
-export const showAndroidNotificationsSetting = new ConfigSettingBoolean({
-  id: "showAndroidNotifications",
-  label: "Show Android Notifications",
-  storageKey: "dashboard.systemCard.showAndroidNotifications",
-  defaultValue: true,
-});
-
-export const showSignalStrengthSetting = new ConfigSettingBoolean({
-  id: "showSignalStrength",
-  label: "Show Signal Strength",
-  storageKey: "dashboard.systemCard.showSignalStrength",
-  defaultValue: true,
 });
 
 export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>({
@@ -388,15 +318,6 @@ export function isNightscoutSettingsConfigured(): boolean {
   return nightscoutSiteUrlSetting.get().length > 0 && nightscoutApiTokenSetting.get().length > 0;
 }
 
-export function normalizePluginId(
-  value: string | null | undefined,
-  fallback: DashboardPluginId = "blank",
-): DashboardPluginId {
-  if (value && KNOWN_PLUGIN_IDS.has(value as DashboardPluginId)) {
-    return value as DashboardPluginId;
-  }
-  return fallback;
-}
 
 function normalizeSystemCardName(name: string | null | undefined): string {
   const normalized = (name ?? "").replace(/[\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim();

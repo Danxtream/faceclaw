@@ -73,6 +73,30 @@ export function listDirectory(path: string): DirectoryEntry[] | null {
   }
 }
 
+/** Write UTF-8 text to a file in the public Downloads directory; returns its path or null. */
+export function writeTextToDownloads(filename: string, text: string): string | null {
+  try {
+    const downloads = android.os.Environment.getExternalStoragePublicDirectory(
+      android.os.Environment.DIRECTORY_DOWNLOADS,
+    );
+    downloads.mkdirs();
+    const file = new java.io.File(downloads, filename);
+    const bytes = new java.lang.String(text).getBytes("UTF-8");
+    // FileOutputStream rather than Files.write to avoid NativeScript varargs /
+    // overload resolution pitfalls.
+    const stream = new java.io.FileOutputStream(file);
+    try {
+      stream.write(bytes);
+    } finally {
+      stream.close();
+    }
+    return String(file.getAbsolutePath());
+  } catch (error) {
+    console.warn(`writeTextToDownloads failed for ${filename}: ${error}`);
+    return null;
+  }
+}
+
 /** Read a UTF-8 text file (size-capped); null when unreadable or too large. */
 export function readTextFile(path: string): string | null {
   try {

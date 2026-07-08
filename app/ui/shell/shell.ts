@@ -66,9 +66,10 @@ const noopActions: LayerActions = {
   disconnect: () => {},
   startTextSettingEdit: () => {},
   endTextSettingEdit: () => {},
-  setTranscribeRenderActive: () => {},
   startVoiceCapture: () => {},
   stopVoiceCapture: () => {},
+  startContinuousVoiceCapture: () => {},
+  stopContinuousVoiceCapture: () => {},
   playBuzzerSequence: () => {},
 };
 

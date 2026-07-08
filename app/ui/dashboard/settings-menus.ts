@@ -1,13 +1,11 @@
 import { APP_VIEWPORT } from "../shell/geometry";
-import { type MenuLayout } from "../menu";
-
-// Settings menus render in both the dashboard window (full lens) and the
-// Settings app window (viewport-sized); cap heights to the smaller of the two.
-const SETTINGS_MENU_LAYOUT: MenuLayout = { x: 8, y: 8, width: 272, maxHeight: APP_VIEWPORT.height - 16 };
+import { MenuLayer, type MenuLayout } from "../menu";
 import { shell } from "../shell/shell";
-import { batteryDisplayModeSetting, dashboardSlotIds, elevenLabsApiKeySetting, enumSettingMenuItem, firmwareDebugFlagsSetting, rawScreenshotsEnabledSetting, saveVoiceRecordingsSetting, showSignalStrengthSetting, showAndroidNotificationsSetting, showBatteryIndicatorsSetting, showFaceclawLogoSetting, systemCardNameSetting, terminalAuthTokenSetting, terminalHostSetting, terminalPortSetting, textSettingMenuItem, toggleSettingMenuItem, voiceProviderSetting, dashboardSlotSettings, nightscoutSiteUrlSetting, nightscoutApiTokenSetting, screenTimeoutSetting } from "../dashboard-settings";
-import { MenuLayer } from "../menu";
+import { batteryDisplayModeSetting, elevenLabsApiKeySetting, enumSettingMenuItem, firmwareDebugFlagsSetting, rawScreenshotsEnabledSetting, saveVoiceRecordingsSetting, terminalAuthTokenSetting, terminalHostSetting, terminalPortSetting, textSettingMenuItem, toggleSettingMenuItem, voiceProviderSetting, nightscoutSiteUrlSetting, nightscoutApiTokenSetting, screenTimeoutSetting } from "../dashboard-settings";
 import { AboutPage } from "./about-page";
+
+// Rendered in the Settings app window (viewport-sized); cap height to it.
+const SETTINGS_MENU_LAYOUT: MenuLayout = { x: 8, y: 8, width: 272, maxHeight: APP_VIEWPORT.height - 16 };
 
 export function createSettingsMenuLayer(): MenuLayer {
   return new MenuLayer(
@@ -17,12 +15,6 @@ export function createSettingsMenuLayer(): MenuLayer {
         label: "Display",
         onSelect: (ctx) => {
           ctx.stack.push(createDisplaySettingsMenuLayer());
-        },
-      },
-      {
-        label: "Dashboard",
-        onSelect: (ctx) => {
-          ctx.stack.push(createDashboardSettingsMenuLayer());
         },
       },
       {
@@ -96,10 +88,12 @@ function createDisplaySettingsMenuLayer(): MenuLayer {
     "Settings > Display",
     [
       enumSettingMenuItem(screenTimeoutSetting, {
-        onChange: (ctx, newValue, oldValue) => {
+        onChange: () => {
           shell.noteUserActivity();
         },
       }),
+      // Controls the top-bar battery indicators (icon vs percentage).
+      enumSettingMenuItem(batteryDisplayModeSetting),
     ],
     SETTINGS_MENU_LAYOUT,
   );
@@ -111,39 +105,6 @@ function createVoiceSettingsMenuLayer(): MenuLayer {
     [
       enumSettingMenuItem(voiceProviderSetting),
       textSettingMenuItem(elevenLabsApiKeySetting),
-    ],
-    SETTINGS_MENU_LAYOUT,
-  );
-}
-
-function createDashboardSettingsMenuLayer(): MenuLayer {
-  return new MenuLayer(
-    "Settings > Dashboard",
-    [
-      {
-        label: "System Card",
-        onSelect: (ctx) => {
-          ctx.stack.push(createSystemCardSettingsMenuLayer());
-        },
-      },
-      ...dashboardSlotIds.map((slot) => enumSettingMenuItem(dashboardSlotSettings[slot], {
-        style: "submenu",
-      })),
-    ],
-    SETTINGS_MENU_LAYOUT,
-  );
-}
-
-function createSystemCardSettingsMenuLayer(): MenuLayer {
-  return new MenuLayer(
-    "Settings > Dashboard > System Card",
-    [
-      textSettingMenuItem(systemCardNameSetting),
-      toggleSettingMenuItem(showFaceclawLogoSetting),
-      toggleSettingMenuItem(showBatteryIndicatorsSetting),
-      enumSettingMenuItem(batteryDisplayModeSetting),
-      toggleSettingMenuItem(showAndroidNotificationsSetting),
-      toggleSettingMenuItem(showSignalStrengthSetting),
     ],
     SETTINGS_MENU_LAYOUT,
   );

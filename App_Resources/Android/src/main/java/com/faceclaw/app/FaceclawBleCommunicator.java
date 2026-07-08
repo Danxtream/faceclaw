@@ -268,6 +268,31 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         compositor.configureScreen(width, height);
     }
 
+    /**
+     * The current composited screen as a phone-UI preview bitmap, or null
+     * before any surface has been configured. Built from the compositor so
+     * the preview reflects every surface (chrome + whichever app is
+     * foreground), including worker-app frames the TS side never sees.
+     */
+    public android.graphics.Bitmap getCompositePreviewBitmap(double brightenGamma) {
+        SurfaceCompositor.Composite composite = compositor.previewComposite();
+        if (composite == null) {
+            return null;
+        }
+        return PreviewBitmapUtil.fromGray(
+                java.nio.ByteBuffer.wrap(composite.gray), composite.width, composite.height, brightenGamma);
+    }
+
+    /** Save the current composite as a raw 4bpp screenshot; returns the path or "". */
+    public String saveRawCompositeScreenshot() throws java.io.IOException {
+        SurfaceCompositor.Composite composite = compositor.previewComposite();
+        if (composite == null) {
+            return "";
+        }
+        return ScreenshotUtil.saveRawScreenshot(
+                appContext, java.nio.ByteBuffer.wrap(composite.gray), composite.width, composite.height);
+    }
+
     /** Show or hide a compositor surface; takes effect at the next composite. */
     public void setSurfaceVisible(String id, boolean visible) {
         compositor.setSurfaceVisible(id, visible);

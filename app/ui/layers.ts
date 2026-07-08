@@ -18,11 +18,13 @@ export type LayerActions = {
   disconnect: () => Promise<void> | void;
   startTextSettingEdit: (setting: ConfigSettingString) => Promise<void> | void;
   endTextSettingEdit: () => Promise<void> | void;
-  setTranscribeRenderActive: (active: boolean) => Promise<void> | void;
-  /** Start voice capture with the provider chosen in settings. */
+  /** Start push-to-talk voice capture with the provider chosen in settings. */
   startVoiceCapture: () => Promise<void> | void;
-  /** Stop voice capture; for a cloud provider this also commits for a final result. */
+  /** Stop push-to-talk; for a cloud provider this also commits for a final result. */
   stopVoiceCapture: () => Promise<void> | void;
+  /** Start continuous capture (Transcribe); shares the mic with push-to-talk. */
+  startContinuousVoiceCapture: () => Promise<void> | void;
+  stopContinuousVoiceCapture: () => Promise<void> | void;
   /** Play a CFW tone-sequencer payload (see sound-effects.ts). */
   playBuzzerSequence: (payload: Uint8Array) => Promise<void> | void;
 };

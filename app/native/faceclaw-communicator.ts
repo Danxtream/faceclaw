@@ -1,7 +1,9 @@
-import { Utils } from "@nativescript/core";
+import { ImageSource, Utils } from "@nativescript/core";
 import * as frameTimings from "./frame-timings";
 
 declare const com: any;
+
+const PREVIEW_BRIGHTEN_GAMMA = 0.7;
 
 export type CommunicatorPhase =
   | "disconnected"
@@ -336,6 +338,19 @@ export class FaceclawCommunicatorBridge {
     await this.enqueueJavaCall(() => {
       this.communicator.configureCompositorScreen(Math.round(width), Math.round(height));
     });
+  }
+
+  /** Phone-UI preview of the current composited screen, or null if none yet. */
+  getCompositePreview(): ImageSource | null {
+    if (!global.isAndroid) return null;
+    const bitmap = this.communicator.getCompositePreviewBitmap(PREVIEW_BRIGHTEN_GAMMA);
+    return bitmap ? new ImageSource(bitmap) : null;
+  }
+
+  /** Save the current composite as a raw 4bpp screenshot; returns the path (empty if none). */
+  saveRawCompositeScreenshot(): string {
+    if (!global.isAndroid) return "";
+    return String(this.communicator.saveRawCompositeScreenshot());
   }
 
   /**

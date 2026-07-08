@@ -1,92 +1,14 @@
 import { BdfFont, getDefaultLargeFont, getDefaultSmallFont } from "../../graphics/bdffont";
 import { GrayImage, imageFromAsciiArt } from "../../graphics/image";
-import { DashboardPlugin, type DashboardPluginCardRenderArgs, type DashboardPluginState } from "../dashboard-plugin";
 import { DashboardInputEvent, Layer, LayerContext } from "../layers";
 import { nightscoutBridge, type NightscoutState } from "../../native/nightscout-bridge";
+import { isNightscoutSettingsConfigured } from "../dashboard-settings";
 import { formatAgeShortFromTimestamp, formatTimestamp } from "~/util/date-util";
 
 const nightscoutLargeFont = getDefaultLargeFont();
 const NIGHTSCOUT_STALE_MS = 15 * 60 * 1000;
 const NIGHTSCOUT_GRAPH_WINDOW_MS = 2 * 60 * 60 * 1000;
 const NIGHTSCOUT_GRAPH_TIME_QUANTUM_MS = 60 * 1000;
-
-
-export class NightscoutDashboardPlugin extends DashboardPlugin {
-  constructor() {
-    super({
-      id: "nightscout",
-      label: "Nightscout",
-    });
-  }
-
-  override renderCard({ image, bounds, state }: DashboardPluginCardRenderArgs): void {
-    const font = getDefaultSmallFont();
-    const nightscout = state.nightscout;
-    const nowMs = Date.now();
-    image.drawText(font, bounds.x + 10, bounds.y + 10, "Nightscout", 180);
-    if (!state.nightscoutConfigured || nightscout.configurationMissing) {
-      image.drawText(font, bounds.x + 10, bounds.y + 30, "Needs setup", 170);
-      image.drawText(font, bounds.x + 10, bounds.y + 44, "Click to configure", 140);
-      return;
-    }
-    if (!nightscout.available || !nightscout.latest) {
-      image.drawText(font, bounds.x + 10, bounds.y + 30, "No glucose data", 150);
-      image.drawText(font, bounds.x + 10, bounds.y + 44, truncateLine(nightscout.status, 26), 120);
-      return;
-    }
-
-    const latest = nightscout.latest;
-    const deltaLabel = formatDelta(nightscout.delta);
-    const glucoseText = `${latest.sgv}`;
-    const glucoseX = bounds.x + bounds.width - 92;
-    image.drawText(nightscoutLargeFont, glucoseX, bounds.y + 10, glucoseText, 230);
-    if (isNightscoutPointStale(latest, nowMs)) {
-      drawNightscoutValueStrikeThrough(image, glucoseX, bounds.y + 22, nightscoutLargeFont.measureText(glucoseText));
-    }
-    drawNightscoutDelta(image, font, bounds.x + bounds.width - 92, bounds.y + 30, deltaLabel, nightscout.direction, 160);
-    image.drawText(
-      font,
-      bounds.x + 10,
-      bounds.y + 30,
-      `IOB ${nightscout.iob === null ? "--" : nightscout.iob.toFixed(1)} COB ${nightscout.cob === null ? "--" : formatWholeNumber(nightscout.cob)}`,
-      160,
-    );
-    image.drawText(
-      font,
-      bounds.x + 10,
-      bounds.y + 44,
-      `Loop ${nightscout.openapsStatusShort} CAGE ${formatAgeShortFromTimestamp(nightscout.cageTimestampMs, nowMs)}`,
-      138,
-    );
-    drawNightscoutGraph(
-      image,
-      {
-        x: bounds.x + 10,
-        y: bounds.y + 60,
-        width: bounds.width - 20,
-        height: Math.max(16, bounds.height - 82),
-      },
-      nightscout,
-      nowMs,
-      font,
-    );
-  }
-
-}
-
-function drawNightscoutDelta(
-  image: GrayImage,
-  font: BdfFont,
-  x: number,
-  y: number,
-  deltaLabel: string,
-  direction: string,
-  shade: number,
-): void {
-  const text = direction ? `${deltaLabel} ` : deltaLabel;
-  image.drawText(font, x, y, text, shade);
-  drawDirectionIndicator(image, font, x + font.measureText(text), y, direction, shade);
-}
 
 function drawDirectionIndicator(
   image: GrayImage,
@@ -364,20 +286,18 @@ function drawNightscoutReferenceLine(
 
 
 export class NightscoutLayer implements Layer {
-  constructor(private readonly getState: () => DashboardPluginState) {}
-
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
     // Sized to the hosting stack (the Nightscout app viewport).
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    const nightscout = this.getState().nightscout;
+    const nightscout = nightscoutBridge.snapshot();
     const nowMs = Date.now();
     const footerY = height - 26;
     image.drawRect(12, 12, width - 24, height - 24, 52);
     image.drawText(font, 22, 16, "Nightscout", 220);
 
-    if (!this.getState().nightscoutConfigured || nightscout.configurationMissing) {
+    if (!isNightscoutSettingsConfigured() || nightscout.configurationMissing) {
       image.drawText(font, 22, 44, "Nightscout needs configuration.", 180);
       image.drawText(font, 22, 62, "Use Settings > Integrations > Nightscout.", 140);
       return image;

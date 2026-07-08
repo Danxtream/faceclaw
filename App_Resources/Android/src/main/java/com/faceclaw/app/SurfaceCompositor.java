@@ -217,6 +217,38 @@ public final class SurfaceCompositor {
         }
     }
 
+    /**
+     * Current composited pixels for the phone-side preview / screenshot, or
+     * null before the screen is configured. Does not consume a sequence
+     * number (it is never stored as the desired frame).
+     */
+    public Composite previewComposite() {
+        synchronized (lock) {
+            if (screenWidth <= 0 || screenHeight <= 0) {
+                return null;
+            }
+            byte[] gray = buildGrayLocked();
+            return new Composite(gray, screenWidth, screenHeight, "preview", 0);
+        }
+    }
+
+    private byte[] buildGrayLocked() {
+        byte[] gray = new byte[screenWidth * screenHeight];
+        if (blanked) {
+            return gray;
+        }
+        List<Surface> ordered = new ArrayList<>(surfaces.values());
+        ordered.sort(Comparator
+                .comparingInt((Surface s) -> s.zOrder)
+                .thenComparing(s -> s.id));
+        for (Surface surface : ordered) {
+            if (surface.visible) {
+                blendLocked(gray, surface);
+            }
+        }
+        return gray;
+    }
+
     private Composite compositeLocked() {
         byte[] gray = new byte[screenWidth * screenHeight];
         if (blanked) {

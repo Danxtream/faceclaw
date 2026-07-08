@@ -27,6 +27,9 @@ export type PushToTalkOptions = {
   saveRecording: boolean;
 };
 
+/** Who currently wants the mic running. */
+type CaptureHolder = "ptt" | "continuous";
+
 export class FaceclawVoiceControlBridge {
   private readonly statusListeners = new Set<(state: VoiceControlState) => void>();
   private readonly wakeWordListeners = new Set<(keyword: string) => void>();
@@ -35,6 +38,11 @@ export class FaceclawVoiceControlBridge {
   private listenerProxy: any | null = null;
   private status = "Voice control stopped.";
   private started = false;
+  // The mic is a single shared stream; these are the reasons it is running.
+  // The first holder starts capture (choosing the provider); the mic stops
+  // when the last one releases. Transcript events broadcast to every
+  // listener, so push-to-talk and the Transcribe window both receive text.
+  private readonly captureHolders = new Set<CaptureHolder>();
   // Non-null while a cloud provider owns the transcript; Java only decodes PCM.
   private cloudClient: ElevenLabsSttClient | null = null;
 
@@ -54,10 +62,34 @@ export class FaceclawVoiceControlBridge {
     return () => this.transcriptListeners.delete(listener);
   }
 
-  /** Begin push-to-talk capture with the selected provider. */
+  /** Begin push-to-talk capture (momentary; released with stopPushToTalk). */
   startPushToTalk(options: PushToTalkOptions): void {
+    this.acquireCapture("ptt", options);
+  }
+
+  /** End push-to-talk: for cloud, commit for a final result if it was the last holder. */
+  stopPushToTalk(): void {
+    this.releaseCapture("ptt", true);
+  }
+
+  /** Begin continuous capture (Transcribe): the mic stays on until released. */
+  startContinuousCapture(options: PushToTalkOptions): void {
+    this.acquireCapture("continuous", options);
+  }
+
+  stopContinuousCapture(): void {
+    this.releaseCapture("continuous", false);
+  }
+
+  private acquireCapture(holder: CaptureHolder, options: PushToTalkOptions): void {
     if (!global.isAndroid) return;
-    if (this.started) this.stop();
+    const wasIdle = this.captureHolders.size === 0;
+    this.captureHolders.add(holder);
+    if (!wasIdle) {
+      // Mic already running; the new holder just shares the existing stream
+      // (transcripts are already broadcast to its listeners).
+      return;
+    }
     this.ensureController();
     this.controller?.setCommunicator(options.communicator);
     this.controller?.setSaveRecordings(options.saveRecording);
@@ -83,21 +115,34 @@ export class FaceclawVoiceControlBridge {
     this.controller?.start("onboard");
   }
 
-  /** End push-to-talk: stop the mic and, for cloud, commit for a final result. */
-  stopPushToTalk(): void {
+  private releaseCapture(holder: CaptureHolder, commit: boolean): void {
+    if (!this.captureHolders.delete(holder)) {
+      // Never held; still finish a dangling cloud commit if one is pending.
+      if (commit) this.cloudClient?.finish();
+      return;
+    }
+    if (this.captureHolders.size > 0) {
+      // Another holder still wants the mic; keep it running.
+      return;
+    }
     if (!this.started) {
       this.cloudClient?.finish();
       return;
     }
     // Order matters for cloud: stopping the Java controller flushes any final
-    // decode/PCM; then commit so ElevenLabs finalizes the transcript. The
-    // socket is closed once the committed transcript arrives, or on stop().
+    // decode/PCM; then commit so ElevenLabs finalizes the transcript.
     this.controller?.stop();
     this.started = false;
-    this.cloudClient?.finish();
+    if (commit) {
+      this.cloudClient?.finish();
+    } else {
+      this.cloudClient?.stop();
+      this.cloudClient = null;
+    }
   }
 
   stop(): void {
+    this.captureHolders.clear();
     if (global.isAndroid) {
       this.controller?.stop();
     }

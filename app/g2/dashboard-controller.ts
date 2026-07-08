@@ -14,17 +14,7 @@ import { firmwareIncompatibilityMessage } from "./firmware-compat";
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
-import {
-  closeDashboardTextSettingEditor,
-  drawDashboard,
-  logToDashboard,
-  receiveDashboardWindowInput,
-  resetDashboardSleepTimerAndWake,
-  setDashboardBatteryLevels,
-  setDashboardActions,
-} from "../ui/dashboard";
-import { inputEventToString, rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
-import { makeLetterWindowIcon } from "../ui/shell/chrome-layer";
+import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
 import { WorkerAppHost } from "../ui/shell/worker-window";
 import { createLauncherWindow, LAUNCHER_SURFACE_ID } from "../ui/shell/launcher-app";
 import {
@@ -55,6 +45,11 @@ import {
   NIGHTSCOUT_WINDOW_ID,
 } from "../ui/shell/nightscout-app";
 import { createMusicAppWindow, MUSIC_SURFACE_ID, MUSIC_WINDOW_ID } from "../ui/shell/music-app";
+import {
+  createTranscribeAppWindow,
+  TRANSCRIBE_SURFACE_ID,
+  TRANSCRIBE_WINDOW_ID,
+} from "../ui/shell/transcribe-app";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { APP_VIEWPORT } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
@@ -72,7 +67,6 @@ import {
   voiceProviderSetting,
   type ConfigSettingString,
 } from "../ui/dashboard-settings";
-import { saveRawScreenshot } from "../native/raw-screenshot";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 
 type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" | "disconnecting";
@@ -94,17 +88,15 @@ export type DashboardSnapshot = {
 };
 
 type DashboardListener = (snapshot: DashboardSnapshot) => void;
-type LogLevel = "debug"|"info"|"warn"|"error";
 
-const CONTAINER_NAME = "dashboard";
-// Compositor surfaces: the dashboard window in the app viewport, and the
-// shell chrome (sidebar + top bar + overlays) above it with color-key
-// transparency.
-const DASHBOARD_WINDOW_SURFACE_ID = "window:dashboard";
+// The shell chrome (sidebar + top bar + overlays) composites above all app
+// window surfaces with color-key transparency.
 const SHELL_SURFACE_ID = "shell";
-const DASHBOARD_INTERVAL_MS = 60_000;
+// Top-bar clock refresh; the phone-side preview polls the Java composite so
+// it reflects every app (including worker apps the TS side never renders).
+const SHELL_REFRESH_INTERVAL_MS = 60_000;
+const PREVIEW_INTERVAL_MS = 1_000;
 const SCREEN_TIMEOUT_CHECK_MS = 1_000;
-const TRANSCRIBE_RENDER_INTERVAL_MS = 250;
 const FOREGROUND_NOTIFICATION_MIN_UPDATE_MS = 30_000;
 const FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS = 6_000;
 const CONNECTED_PREVIEW_MIN_UPDATE_MS = 1_000;
@@ -119,57 +111,12 @@ function formatTimestamp(date: Date): string {
   return date.toISOString().slice(11, 23);
 }
 
-function pad2(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
-function formatTime24h(date: Date, includeSeconds: boolean): string {
-  const hours = date.getHours();
-  const minutes = pad2(date.getMinutes());
-  const seconds = pad2(date.getSeconds());
-  return includeSeconds
-    ? `${hours}:${minutes}:${seconds}`
-    : `${hours}:${minutes}`;
-}
-
-function formatUtcOffset(date: Date): string {
-  const offsetMinutes = -date.getTimezoneOffset();
-  const sign = offsetMinutes >= 0 ? "+" : "-";
-  const absoluteMinutes = Math.abs(offsetMinutes);
-  const hours = Math.floor(absoluteMinutes / 60);
-  const minutes = absoluteMinutes % 60;
-  return `UTC${sign}${pad2(hours)}:${pad2(minutes)}`;
-}
-
-function formatForStatus(date: Date): string {
-  return formatTime24h(date, true);
-}
-
 function eventName(eventType: number): string {
   return OsEventTypeName[eventType] ?? `UNKNOWN_${eventType}`;
 }
 
 function sourceName(eventSource: number): string {
   return EventSourceTypeName[eventSource] ?? `SOURCE_${eventSource}`;
-}
-
-function normalizeContainerName(name: string): string {
-  return name.replace(/[^\x20-\x7e]+/g, "");
-}
-
-function isDashboardContainerName(name: string): boolean {
-  const normalized = normalizeContainerName(name);
-  return normalized === CONTAINER_NAME || normalized.includes(CONTAINER_NAME);
-}
-
-/** Top-left viewport-sized crop of a full-lens dashboard paint. */
-function cropToViewport(image: GrayImage): GrayImage {
-  if (image.width === APP_VIEWPORT.width && image.height === APP_VIEWPORT.height) {
-    return image;
-  }
-  const cropped = new GrayImage(APP_VIEWPORT.width, APP_VIEWPORT.height, 0);
-  cropped.bitBlt(image, 0, 0, { width: APP_VIEWPORT.width, height: APP_VIEWPORT.height });
-  return cropped;
 }
 
 class DashboardController {
@@ -185,9 +132,9 @@ class DashboardController {
   private readonly listeners = new Set<DashboardListener>();
 
   private communicator: FaceclawCommunicatorBridge | null = null;
-  private dashboardTimer: ReturnType<typeof setInterval> | null = null;
+  private shellRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  private previewTimer: ReturnType<typeof setInterval> | null = null;
   private screenTimeoutTimer: ReturnType<typeof setInterval> | null = null;
-  private transcribeRenderTimer: ReturnType<typeof setInterval> | null = null;
   private offState: (() => void) | null = null;
   private offLog: (() => void) | null = null;
   private offRing: (() => void) | null = null;
@@ -195,23 +142,14 @@ class DashboardController {
   private offEvenAppConflict: (() => void) | null = null;
   private offFrameMetrics: (() => void) | null = null;
   private offFirmwareInfo: (() => void) | null = null;
-  private offMedia: (() => void) | null = null;
-  private offNightscout: (() => void) | null = null;
   private offVoiceStatus: (() => void) | null = null;
   private offVoiceWakeWord: (() => void) | null = null;
   private offAndroidNotification: (() => void) | null = null;
   private lastInput = "waiting...";
   private lastSys = "none yet";
-  private renderInProgress = false;
-  private renderQueued = false;
-  private queuedRenderReason: "initial" | "interval" = "interval";
-  private queuedFrameId = 0;
   private shellRenderInProgress = false;
   private shellRenderQueued = false;
   private nextShellRenderWantsFreshData = false;
-  // Last painted surface images, for compositing the phone-side preview.
-  private lastShellImage: GrayImage | null = null;
-  private lastWindowImage: GrayImage | null = null;
   // One shared worker per app hosts all its windows; spawned on first launch.
   private readonly appHosts = new Map<string, WorkerAppHost>();
   private nextWindowSerial = 1;
@@ -223,29 +161,19 @@ class DashboardController {
   private sharedActions!: Omit<LayerActions, "requestRender">;
   private lastForegroundNotificationUpdateAtMs = 0;
   private lastConnectedPreviewUpdateAtMs = 0;
-  // Consumed by the next renderDashboard: repaint with data sources not
-  // allowed to serve stale caches (set after a frame painted with stale data).
-  private nextRenderWantsFreshData = false;
 
   constructor() {
     const sharedActions = {
       disconnect: () => this.disconnect(),
       startTextSettingEdit: (setting: ConfigSettingString) => this.startTextSettingEdit(setting),
       endTextSettingEdit: () => this.endTextSettingEdit(),
-      setTranscribeRenderActive: (active: boolean) => this.setTranscribeRenderActive(active),
       startVoiceCapture: () => this.startVoiceCapture(),
       stopVoiceCapture: () => this.stopVoiceCapture(),
+      startContinuousVoiceCapture: () => this.startContinuousVoiceCapture(),
+      stopContinuousVoiceCapture: () => this.stopContinuousVoiceCapture(),
       playBuzzerSequence: (payload: Uint8Array) => this.playBuzzerSequence(payload),
     };
     this.sharedActions = sharedActions;
-    setDashboardActions({
-      ...sharedActions,
-      requestRender: () => {
-        void this.requestRender("interval").catch((error) => {
-          this.appendLog(`requested render failed: ${this.formatError(error)}`);
-        });
-      },
-    });
     shell.configure({
       actions: {
         ...sharedActions,
@@ -282,6 +210,7 @@ class DashboardController {
           { appId: "teleprompt", label: "Teleprompt" },
           { appId: "music", label: "Music" },
           { appId: "nightscout", label: "Nightscout" },
+          { appId: "transcribe", label: "Transcribe" },
           { appId: "notifications", label: "Notifications" },
           { appId: "debug-tests", label: "Debug tests" },
           { appId: "settings", label: "Settings" },
@@ -294,26 +223,6 @@ class DashboardController {
         },
       }),
     );
-    shell.registerWindow({
-      appId: "dashboard",
-      windowId: "dashboard",
-      title: "Dashboard",
-      surfaceId: DASHBOARD_WINDOW_SURFACE_ID,
-      closeable: false,
-      drawIcon: makeLetterWindowIcon("D"),
-      handleInput: async (event, frameId) => {
-        await receiveDashboardWindowInput(event);
-        await this.requestRender("interval", frameId);
-      },
-      requestRender: () => {
-        void this.requestRender("interval").catch((error) => {
-          this.appendLog(`window render failed: ${this.formatError(error)}`);
-        });
-      },
-      setForeground: (foreground) => {
-        this.setWindowSurfaceVisible(DASHBOARD_WINDOW_SURFACE_ID, foreground);
-      },
-    });
     this.offAndroidNotification = onAndroidNotificationPosted((notificationKey) => {
       void this.handleAndroidNotificationPosted(notificationKey).catch((error) => {
         this.appendLog(`notification wake failed: ${this.formatError(error)}`);
@@ -336,12 +245,12 @@ class DashboardController {
   }
 
   /**
-   * Save the current dashboard as the raw headerless 4bpp frame buffer the
-   * wire compressor sees; test data for compression experiments.
+   * Save the current composited screen as the raw headerless 4bpp frame
+   * buffer the wire compressor sees; test data for compression experiments.
    */
   saveRawDashboardScreenshot(): string {
-    const path = saveRawScreenshot(drawDashboard());
-    this.appendLog(`raw screenshot saved: ${path}`);
+    const path = this.communicator?.saveRawCompositeScreenshot() ?? "";
+    this.appendLog(path ? `raw screenshot saved: ${path}` : "raw screenshot skipped: not connected");
     return path;
   }
 
@@ -433,7 +342,7 @@ class DashboardController {
     // truth while typing; echoing activeTextSettingValue back into its two-way
     // binding on every keystroke drops fast/pasted characters (observed: a
     // 51-char API key stored as its first 46 chars). Just refresh the preview.
-    this.previewOrRenderAfterTextSettingChange(setting.label);
+    this.previewOrRenderAfterTextSettingChange();
   }
 
   async connect(): Promise<void> {
@@ -452,7 +361,6 @@ class DashboardController {
     this.lastSys = "none yet";
     this.firmwareWarningMessage = "";
     this.refreshBatteryOptimizationStatus();
-    resetDashboardSleepTimerAndWake();
     this.refreshEvenAppStatus();
     this.setPhase("connecting");
     this.setStatus("Connecting to the glasses...");
@@ -505,20 +413,13 @@ class DashboardController {
         });
       });
       this.offBattery = communicator.onBatteryState((state) => {
-        setDashboardBatteryLevels({
-          headset: state.battery,
-          headsetCharging: state.chargingStatus > 0,
-        });
         shell.setBatteryLevels({
           headset: state.battery,
           headsetCharging: state.chargingStatus > 0,
         });
         if ((this.phase === "connected" || this.phase === "charging") && this.communicator) {
+          // Repaint the top bar (battery indicators live in the shell chrome).
           this.requestShellRender();
-          void this.requestRender("interval").catch((error) => {
-            const message = this.formatError(error);
-            this.appendLog(`battery update failed: ${message}`);
-          });
         }
       });
       this.offEvenAppConflict = communicator.onEvenAppConflict((message) => {
@@ -550,22 +451,8 @@ class DashboardController {
           this.emit();
         }
       });
-      this.offMedia = mediaControllerBridge.onStateChange(() => {
-        if (this.phase === "connected" && this.communicator) {
-          void this.requestRender("interval").catch((error) => {
-            const message = this.formatError(error);
-            this.appendLog(`media update failed: ${message}`);
-          });
-        }
-      });
-      this.offNightscout = nightscoutBridge.onStateChange(() => {
-        if (this.phase === "connected" && this.communicator) {
-          void this.requestRender("interval").catch((error) => {
-            const message = this.formatError(error);
-            this.appendLog(`nightscout update failed: ${message}`);
-          });
-        }
-      });
+      // The Music and Nightscout apps subscribe to their bridges directly and
+      // repaint their own windows, so bridge updates need no controller action.
       this.offVoiceStatus = voiceControlBridge.onStatus((state) => {
         this.appendLog(state.status);
       });
@@ -577,8 +464,8 @@ class DashboardController {
 
       await mediaControllerBridge.start();
       await nightscoutBridge.start();
-      // Register the compositor surfaces: the dashboard window in the app
-      // viewport, and the shell chrome above it.
+      // Register the compositor surfaces: the shell chrome above all windows,
+      // and a surface per live window (only the foreground one is composited).
       await communicator.configureCompositorScreen(G2_LENS_WIDTH, G2_LENS_HEIGHT);
       await communicator.configureSurface(SHELL_SURFACE_ID, {
         x: 0,
@@ -588,8 +475,6 @@ class DashboardController {
         zOrder: 1,
         transparency: "color-key",
       });
-      // Window surfaces for every live window (including any launched while
-      // disconnected); only the foreground window's surface is composited.
       const foregroundWindowId = shell.foregroundWindow()?.windowId;
       for (const window of shell.getWindows()) {
         await this.configureWindowSurface(window.surfaceId, window.windowId === foregroundWindowId);
@@ -597,25 +482,19 @@ class DashboardController {
       await communicator.start();
       shell.foregroundWindow()?.requestRender();
       this.requestShellRender();
-      await this.requestRender("initial");
-      this.dashboardTimer = setInterval(() => {
-        // Also refreshes the top-bar clock on the shell surface.
+      // Refresh the top-bar clock and the phone-side preview once a minute,
+      // and keep the Android persistent notification current.
+      this.shellRefreshTimer = setInterval(() => {
         this.requestShellRender();
-        void this.requestRender("interval").catch((error) => {
-          const message = this.formatError(error);
-          this.setStatus(`Dashboard update failed: ${message}`);
-          this.appendLog(`dashboard update failed: ${message}`);
-        });
-      }, DASHBOARD_INTERVAL_MS);
+        this.updateCompositePreview();
+        this.updateConnectedForegroundNotification();
+      }, SHELL_REFRESH_INTERVAL_MS);
+      this.previewTimer = setInterval(() => this.updateCompositePreview(), PREVIEW_INTERVAL_MS);
       this.screenTimeoutTimer = setInterval(() => {
         if (this.phase !== "connected" || !this.communicator) return;
         if (!shell.applyScreenTimeout()) return;
         this.endTextSettingEdit();
         this.requestShellRender();
-        void this.requestRender("interval").catch((error) => {
-          const message = this.formatError(error);
-          this.appendLog(`screen timeout render failed: ${message}`);
-        });
       }, SCREEN_TIMEOUT_CHECK_MS);
     } catch (error) {
       const message = this.formatError(error);
@@ -633,18 +512,10 @@ class DashboardController {
       this.offFrameMetrics = null;
       this.offFirmwareInfo?.();
       this.offFirmwareInfo = null;
-      this.offMedia?.();
-      this.offMedia = null;
-      this.offNightscout?.();
-      this.offNightscout = null;
       this.offVoiceStatus?.();
       this.offVoiceStatus = null;
       this.offVoiceWakeWord?.();
       this.offVoiceWakeWord = null;
-      if (this.transcribeRenderTimer) {
-        clearInterval(this.transcribeRenderTimer);
-        this.transcribeRenderTimer = null;
-      }
       await mediaControllerBridge.stop().catch(() => {});
       await nightscoutBridge.stop().catch(() => {});
       voiceControlBridge.stop();
@@ -681,10 +552,6 @@ class DashboardController {
     this.offFrameMetrics = null;
     this.offFirmwareInfo?.();
     this.offFirmwareInfo = null;
-    this.offMedia?.();
-    this.offMedia = null;
-    this.offNightscout?.();
-    this.offNightscout = null;
     this.offVoiceStatus?.();
     this.offVoiceStatus = null;
     this.offVoiceWakeWord?.();
@@ -706,10 +573,6 @@ class DashboardController {
       await mediaControllerBridge.stop().catch(() => {});
       await nightscoutBridge.stop().catch(() => {});
       voiceControlBridge.stop();
-      if (this.transcribeRenderTimer) {
-        clearInterval(this.transcribeRenderTimer);
-        this.transcribeRenderTimer = null;
-      }
       await communicator?.close().catch(() => {});
     } finally {
       stopForegroundNotification();
@@ -754,6 +617,22 @@ class DashboardController {
    * gate even though the audio source is the G2 mic over BLE.
    */
   private startVoiceCapture(): void {
+    this.beginVoiceCapture("ptt");
+  }
+
+  private stopVoiceCapture(): void {
+    voiceControlBridge.stopPushToTalk();
+  }
+
+  private startContinuousVoiceCapture(): void {
+    this.beginVoiceCapture("continuous");
+  }
+
+  private stopContinuousVoiceCapture(): void {
+    voiceControlBridge.stopContinuousCapture();
+  }
+
+  private beginVoiceCapture(kind: "ptt" | "continuous"): void {
     if (this.phase !== "connected" || !this.communicator) {
       return;
     }
@@ -761,20 +640,21 @@ class DashboardController {
     void ensureVoicePermissions()
       .then(() => {
         if (this.phase !== "connected" || this.communicator !== communicator) return;
-        voiceControlBridge.startPushToTalk({
+        const options = {
           communicator: communicator.getNativeCommunicator(),
           provider: voiceProviderSetting.get(),
           elevenLabsApiKey: elevenLabsApiKeySetting.get(),
           saveRecording: saveVoiceRecordingsSetting.get(),
-        });
+        };
+        if (kind === "ptt") {
+          voiceControlBridge.startPushToTalk(options);
+        } else {
+          voiceControlBridge.startContinuousCapture(options);
+        }
       })
       .catch((error) => {
         this.appendLog(`voice permission failed: ${this.formatError(error)}`);
       });
-  }
-
-  private stopVoiceCapture(): void {
-    voiceControlBridge.stopPushToTalk();
   }
 
   private endTextSettingEdit(): void {
@@ -788,23 +668,14 @@ class DashboardController {
 
   /**
    * Finish the active edit from the phone side (e.g. the IME's done key):
-   * ends the edit session and navigates the glasses out of the edit page,
-   * in whichever window hosts it (the Settings app or the dashboard).
+   * ends the edit session and navigates the Settings app's glasses editor
+   * out of the edit page.
    */
   finishActiveTextSettingEdit(): void {
     if (!this.activeTextSetting) return;
     this.endTextSettingEdit();
     if (this.settingsApp?.closeTextEditor()) {
       this.settingsApp.requestRender();
-      return;
-    }
-    if (!closeDashboardTextSettingEditor()) return;
-    if (this.phase === "connected" && this.communicator) {
-      void this.requestRender("interval").catch((error) => {
-        this.appendLog(`edit close render failed: ${this.formatError(error)}`);
-      });
-    } else {
-      this.updateDisplayPreviewFromImage(drawDashboard());
     }
   }
 
@@ -812,7 +683,7 @@ class DashboardController {
     if (setting.get() !== value) {
       setting.set(value);
       this.emit();
-      this.previewOrRenderAfterTextSettingChange(setting.label);
+      this.previewOrRenderAfterTextSettingChange();
     }
   }
 
@@ -820,151 +691,13 @@ class DashboardController {
     await nightscoutBridge.refreshNow().catch((error) => {
       this.appendLog(`nightscout settings refresh failed: ${this.formatError(error)}`);
     });
-    if (this.phase === "connected" && this.communicator) {
-      await this.requestRender("interval").catch((error) => {
-        this.appendLog(`nightscout settings render failed: ${this.formatError(error)}`);
-      });
-    } else {
-      const image = drawDashboard();
-      this.updateDisplayPreviewFromImage(image);
-    }
   }
 
-  private previewOrRenderAfterTextSettingChange(label: string): void {
-    // Echo phone-side keystrokes into the glasses editor, wherever it lives.
+  private previewOrRenderAfterTextSettingChange(): void {
+    // Echo phone-side keystrokes into the Settings app's glasses editor.
     if (this.settingsApp?.isTextEditorOnTop()) {
       this.settingsApp.requestRender();
-      return;
     }
-    if (this.phase === "connected" && this.communicator) {
-      void this.requestRender("interval").catch((error) => {
-        this.appendLog(`${label} update failed: ${this.formatError(error)}`);
-      });
-      return;
-    }
-    const image = drawDashboard();
-    this.updateDisplayPreviewFromImage(image);
-  }
-
-  /**
-   * Serialize renders; frameId identifies the input event or timer tick that
-   * asked for this render (one is started here for callers that don't have
-   * one). Ownership of the frame passes to renderDashboard and then to the
-   * Java side; requests that coalesce into an already-queued render finish
-   * immediately as discarded. When coalescing we keep the oldest waiting frame
-   * so measured latency reflects the worst-served request.
-   */
-  private async requestRender(reason: "initial" | "interval", frameId?: number): Promise<void> {
-    const newFrameId = frameId ?? frameTimings.startFrame(`render:${reason}`);
-    this.queuedRenderReason = this.queuedRenderReason === "initial" ? "initial" : reason;
-    if (this.renderInProgress) {
-      if (this.renderQueued && this.queuedFrameId > 0) {
-        frameTimings.finishFrame(newFrameId, `discarded: coalesced into frame#${this.queuedFrameId}`);
-      } else {
-        this.renderQueued = true;
-        this.queuedFrameId = newFrameId;
-        frameTimings.logFrame(newFrameId, "render queued behind in-progress render");
-      }
-      return;
-    }
-
-    this.renderInProgress = true;
-    let frameToRender = newFrameId;
-    try {
-      while (true) {
-        const nextReason = this.queuedRenderReason;
-        this.renderQueued = false;
-        this.queuedRenderReason = "interval";
-        try {
-          await this.renderDashboard(nextReason, frameToRender);
-        } catch (error) {
-          frameTimings.finishFrame(frameToRender, `discarded: render failed: ${this.formatError(error)}`);
-          throw error;
-        }
-        if (!this.renderQueued || this.queuedFrameId <= 0) break;
-        frameToRender = this.queuedFrameId;
-        this.queuedFrameId = 0;
-      }
-    } finally {
-      this.renderInProgress = false;
-    }
-  }
-
-  private async renderDashboard(reason: "initial" | "interval", frameId: number): Promise<void> {
-    console.log("renderDashboard", reason);
-    frameTimings.logFrame(frameId, `renderDashboard start (${reason})`);
-    const wantFreshData = this.nextRenderWantsFreshData;
-    this.nextRenderWantsFreshData = false;
-    beginRenderPass(!wantFreshData);
-    const paintStartedAtMs = Date.now();
-    const image = frameTimings.span(frameId, "paint", () =>
-      frameTimings.runWithFrame(frameId, () => drawDashboard()),
-    );
-    const paintMs = Date.now() - paintStartedAtMs;
-    const paintUsedStaleData = endRenderPass();
-    if (paintUsedStaleData) {
-      frameTimings.logFrame(frameId, "painted with stale data; will schedule a fresh-data repaint");
-    }
-    // The dashboard still paints the full lens; its window surface only shows
-    // the viewport-sized top-left crop (content near the right/bottom edges
-    // clips until the legacy layouts are resized).
-    const cropped = frameTimings.span(frameId, "crop", () => cropToViewport(image));
-    const fingerprint = frameTimings.span(frameId, "fingerprint", () => cropped.fingerprint());
-    this.lastWindowImage = cropped;
-    const updatePreviewAfterTransmit = this.phase === "connected";
-    if (!updatePreviewAfterTransmit) {
-      this.updateDisplayPreviewFromImage(image);
-    }
-    if (this.communicator && this.phase === "charging") {
-      // Glasses are in the charging case; keep the phone preview fresh but
-      // send nothing.
-      frameTimings.finishFrame(frameId, "discarded: glasses charging");
-      this.updateConnectedForegroundNotification();
-      console.log("renderDashbaord finished (charging)");
-      return;
-    }
-    if (this.communicator) {
-      if (shell.isScreenOn()) {
-        await this.communicator.setG2ScreenOn(true);
-      }
-      console.log("submitSurfaceFrame");
-      const buffer = frameTimings.span(frameId, "to8bpp", () => cropped.to8bppBuffer());
-      // The Java side owns the frame from here: it finishes it on last-packet
-      // ack, dedup, supersede, or timeout.
-      await this.communicator.submitSurfaceFrame(
-        DASHBOARD_WINDOW_SURFACE_ID,
-        buffer,
-        { x: 0, y: 0, width: cropped.width, height: cropped.height },
-        fingerprint,
-        paintMs,
-        frameId,
-      );
-      const outcome = await this.communicator.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
-      if (outcome === null) {
-        frameTimings.logFrame(frameId, "transmit backpressure wait timed out; render loop continuing");
-      }
-      if (!shell.isScreenOn()) {
-        await this.communicator.setG2ScreenOn(false);
-      }
-      if (updatePreviewAfterTransmit) {
-        this.updateConnectedCompositePreview();
-      }
-    } else {
-      frameTimings.finishFrame(frameId, "discarded: no communicator, preview only");
-    }
-
-    if (paintUsedStaleData) {
-      this.nextRenderWantsFreshData = true;
-      void this.requestRender("interval").catch((error) => {
-        this.appendLog(`fresh-data repaint failed: ${this.formatError(error)}`);
-      });
-    }
-
-    this.updateConnectedForegroundNotification();
-    if (reason === "initial") {
-      this.appendLog("initial dashboard image queued");
-    }
-    console.log("renderDashboard finished");
   }
 
   private async handleInputEvent(event: RawInputEvent): Promise<void> {
@@ -974,7 +707,6 @@ class DashboardController {
     let frameOwned = false;
     try {
       const inputEvent = rawInputEventToInputEvent(event);
-      logToDashboard(inputEventToString(inputEvent));
       frameTimings.spanStart(frameId, "handle-input");
       let outcome: ShellInputOutcome;
       try {
@@ -988,7 +720,6 @@ class DashboardController {
       if (event.kind === "sys-event") {
         this.lastSys = `${sourceName(event.eventSource)}/${eventName(event.eventType)}`;
         this.appendLog(`sys-event ${this.lastSys}`);
-
         if (
           event.eventType === OsEventTypeList.FOREGROUND_EXIT_EVENT ||
           event.eventType === OsEventTypeList.ABNORMAL_EXIT_EVENT ||
@@ -996,18 +727,8 @@ class DashboardController {
         ) {
           this.appendLog("display state invalidated by firmware exit event");
         }
-
         if (event.eventSource === EventSourceType.TOUCH_EVENT_FROM_RING) {
           this.lastInput = eventName(event.eventType);
-        }
-      } else if (event.kind === "text-click" && isDashboardContainerName(event.containerName)) {
-        if (
-          event.eventType === OsEventTypeList.SCROLL_TOP_EVENT ||
-          event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT
-        ) {
-          this.lastSys = `TEXT/${eventName(event.eventType)}`;
-          this.lastInput = `TEXT_${eventName(event.eventType)}`;
-          this.appendLog(`text-event ${this.lastSys}`);
         }
       }
 
@@ -1144,6 +865,16 @@ class DashboardController {
       await this.launchInProcessApp(MUSIC_WINDOW_ID, MUSIC_SURFACE_ID, createMusicAppWindow);
       return;
     }
+    if (appId === "transcribe") {
+      await this.launchInProcessApp(TRANSCRIBE_WINDOW_ID, TRANSCRIBE_SURFACE_ID, (options) =>
+        createTranscribeAppWindow({
+          ...options,
+          startContinuousVoiceCapture: () => this.startContinuousVoiceCapture(),
+          stopContinuousVoiceCapture: () => this.stopContinuousVoiceCapture(),
+        }),
+      );
+      return;
+    }
     if (appId === "teleprompt") {
       await this.launchInProcessApp(TELEPROMPT_WINDOW_ID, TELEPROMPT_SURFACE_ID, (options) =>
         createTelepromptBrowserWindow({
@@ -1268,7 +999,6 @@ class DashboardController {
       this.nextShellRenderWantsFreshData = true;
       this.requestShellRender();
     }
-    this.lastShellImage = image;
     if (!this.communicator || this.phase === "charging") {
       frameTimings.finishFrame(frameId, "discarded: shell render with no active connection");
       return;
@@ -1284,24 +1014,15 @@ class DashboardController {
       frameId,
     );
     await this.communicator.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
-    this.updateConnectedCompositePreview();
+    this.updateCompositePreview();
   }
 
   private async handleWakeWord(keyword: string): Promise<void> {
     const normalized = keyword.trim();
     if (normalized.length === 0) return;
     this.appendLog(`wake-word detected: ${normalized}`);
-    const changed = resetDashboardSleepTimerAndWake();
-    if (this.phase === "connected" && this.communicator) {
-      if (changed) {
-        this.requestShellRender();
-        await this.requestRender("initial");
-      }
-      return;
-    }
-    if (changed) {
-      const image = drawDashboard();
-      this.updateDisplayPreviewFromImage(image);
+    if (shell.wake("sidebar")) {
+      this.requestShellRender();
     }
   }
 
@@ -1321,9 +1042,6 @@ class DashboardController {
     }
     shell.openNotificationModal(notificationKey, wokeScreen);
     this.requestShellRender();
-    if (this.phase === "connected" && this.communicator) {
-      await this.requestRender("interval");
-    }
   }
 
   private async playBuzzerSequence(payload: Uint8Array): Promise<void> {
@@ -1333,34 +1051,18 @@ class DashboardController {
     await this.communicator.playBuzzerSequence(payload);
   }
 
-  private setTranscribeRenderActive(active: boolean): void {
-    if (!active || this.phase !== "connected" || !this.communicator) {
-      if (this.transcribeRenderTimer) {
-        clearInterval(this.transcribeRenderTimer);
-        this.transcribeRenderTimer = null;
-      }
-      return;
-    }
-    if (this.transcribeRenderTimer) return;
-    this.transcribeRenderTimer = setInterval(() => {
-      void this.requestRender("interval").catch((error) => {
-        this.appendLog(`transcribe render failed: ${this.formatError(error)}`);
-      });
-    }, TRANSCRIBE_RENDER_INTERVAL_MS);
-  }
-
   private clearDashboardTimer(): void {
-    if (this.dashboardTimer) {
-      clearInterval(this.dashboardTimer);
-      this.dashboardTimer = null;
+    if (this.shellRefreshTimer) {
+      clearInterval(this.shellRefreshTimer);
+      this.shellRefreshTimer = null;
+    }
+    if (this.previewTimer) {
+      clearInterval(this.previewTimer);
+      this.previewTimer = null;
     }
     if (this.screenTimeoutTimer) {
       clearInterval(this.screenTimeoutTimer);
       this.screenTimeoutTimer = null;
-    }
-    if (this.transcribeRenderTimer) {
-      clearInterval(this.transcribeRenderTimer);
-      this.transcribeRenderTimer = null;
     }
   }
 
@@ -1402,27 +1104,13 @@ class DashboardController {
     this.emit();
   }
 
-  private updateDisplayPreviewFromImage(image: GrayImage): void {
-    this.setDisplayPreview(grayImageToPreviewSource(image));
-  }
-
   /**
-   * Phone-side preview of what is actually on the glasses: the window surface
-   * in its viewport with the shell chrome composited over it, mirroring the
-   * Java compositor.
+   * Phone-side preview of what is on the glasses, fetched from the Java
+   * compositor so it reflects every surface (chrome + whichever app is
+   * foreground, including worker apps the TS side never renders). Throttled
+   * to avoid rebuilding the bitmap faster than the phone UI needs it.
    */
-  private buildCompositePreviewImage(): GrayImage {
-    const preview = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
-    if (this.lastWindowImage) {
-      preview.bitBlt(this.lastWindowImage, APP_VIEWPORT.x, APP_VIEWPORT.y);
-    }
-    if (this.lastShellImage) {
-      preview.bitBlt(this.lastShellImage, 0, 0, { transparentZero: true });
-    }
-    return preview;
-  }
-
-  private updateConnectedCompositePreview(): void {
+  private updateCompositePreview(): void {
     if (!this.communicator) return;
     const now = Date.now();
     if (
@@ -1432,7 +1120,10 @@ class DashboardController {
       return;
     }
     this.lastConnectedPreviewUpdateAtMs = now;
-    this.updateDisplayPreviewFromImage(this.buildCompositePreviewImage());
+    const preview = this.communicator.getCompositePreview();
+    if (preview) {
+      this.setDisplayPreview(preview);
+    }
   }
 
   private formatError(error: unknown): string {
@@ -1448,7 +1139,7 @@ class DashboardController {
       case "click":
         return {
           kind: "sys-event",
-          containerName: CONTAINER_NAME,
+          containerName: "",
           eventType: OsEventTypeList.CLICK_EVENT,
           eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
           systemExitReasonCode: 0,
@@ -1457,7 +1148,7 @@ class DashboardController {
       case "double-click":
         return {
           kind: "sys-event",
-          containerName: CONTAINER_NAME,
+          containerName: "",
           eventType: OsEventTypeList.DOUBLE_CLICK_EVENT,
           eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
           systemExitReasonCode: 0,
@@ -1466,7 +1157,7 @@ class DashboardController {
       case "scroll-up":
         return {
           kind: "text-click",
-          containerName: CONTAINER_NAME,
+          containerName: "",
           eventType: OsEventTypeList.SCROLL_TOP_EVENT,
           eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
           systemExitReasonCode: 0,
@@ -1476,7 +1167,7 @@ class DashboardController {
       default:
         return {
           kind: "text-click",
-          containerName: CONTAINER_NAME,
+          containerName: "",
           eventType: OsEventTypeList.SCROLL_BOTTOM_EVENT,
           eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
           systemExitReasonCode: 0,
