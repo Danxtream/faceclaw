@@ -22,7 +22,8 @@ export type ShellChromeWindow = {
   windowId: string;
   title: string;
   attention: boolean;
-  drawIcon: (image: GrayImage, x: number, y: number, size: number) => void;
+  /** Draw the window's indicator icon. inverted = black-on-white (focused tab). */
+  drawIcon: (image: GrayImage, x: number, y: number, size: number, inverted?: boolean) => void;
 };
 
 export type ShellChromeState = {
@@ -36,23 +37,39 @@ export type ShellChromeState = {
 
 /** Placeholder window icon: rounded outline with a single letter. */
 export function makeLetterWindowIcon(letter: string): ShellChromeWindow["drawIcon"] {
-  return (image, x, y, size) => {
+  return (image, x, y, size, inverted) => {
     const font = getDefaultMediumFont();
-    image.drawRoundedRect(x, y, size, size, 120, 6);
+    if (!inverted) {
+      image.drawRoundedRect(x, y, size, size, 120, 6);
+    }
     const textX = x + Math.max(0, ((size - font.measureText(letter)) / 2) | 0);
     const textY = y + Math.max(0, ((size - font.lineHeight) / 2) | 0);
-    image.drawText(font, textX, textY, letter, 210);
+    image.drawText(font, textX, textY, letter, inverted ? SHELL_OPAQUE_BLACK : 210);
   };
 }
 
 /** Window icon rendered from an SVG (Lucide), rendered once per size and cached. */
 export function makeSvgWindowIcon(name: IconName): ShellChromeWindow["drawIcon"] {
-  return (image, x, y, size) => {
+  return (image, x, y, size, inverted) => {
     const icon = renderIcon(name, size);
     if (!icon) return;
     const dx = x + Math.max(0, ((size - icon.width) / 2) | 0);
     const dy = y + Math.max(0, ((size - icon.height) / 2) | 0);
-    image.bitBlt(icon, dx, dy, { transparentZero: true });
+    if (!inverted) {
+      image.bitBlt(icon, dx, dy, { transparentZero: true });
+      return;
+    }
+    // Invert onto a white background: coverage becomes darkness. Full coverage
+    // maps to SHELL_OPAQUE_BLACK (1) rather than 0, since 0 is the surface's
+    // transparent color key.
+    for (let row = 0; row < icon.height; row++) {
+      for (let col = 0; col < icon.width; col++) {
+        const coverage = icon.pixels[row * icon.width + col] ?? 0;
+        if (coverage > 0) {
+          image.setPixel(dx + col, dy + row, Math.max(SHELL_OPAQUE_BLACK, 255 - coverage));
+        }
+      }
+    }
   };
 }
 
@@ -87,7 +104,6 @@ export class ShellChromeLayer implements Layer {
 
   private drawSidebar(image: GrayImage, state: ShellChromeState): void {
     image.fillRect(0, 0, SIDEBAR_WIDTH, G2_LENS_HEIGHT, SHELL_OPAQUE_BLACK);
-    image.drawLine(SIDEBAR_WIDTH - 1, 0, SIDEBAR_WIDTH - 1, G2_LENS_HEIGHT - 1, BORDER_VALUE);
 
     // Scroll the icon list to keep the selection visible; chevrons mark
     // windows off-screen above/below.
@@ -104,16 +120,34 @@ export class ShellChromeLayer implements Layer {
     this.scrollRow = clamp(this.scrollRow, 0, Math.max(0, count - visibleCount));
     const lastVisible = Math.min(count, this.scrollRow + visibleCount);
 
+    // The selection is a "diversion" of the sidebar/main separator line: the
+    // line bulges right around the selected icon (rounded on the left, open
+    // to the main area on the right), so the separator is drawn with a gap
+    // there. When the sidebar has focus, the diversion is filled white and
+    // the icon drawn inverted.
+    const sep = SIDEBAR_WIDTH - 1;
+    const selVisible = state.selectedIndex >= this.scrollRow && state.selectedIndex < lastVisible;
+    const selTabTop = selVisible ? listTop + (state.selectedIndex - this.scrollRow) * itemStride - 2 : 0;
+    const selTabBottom = selTabTop + ICON_SIZE + 4;
+    if (selVisible) {
+      image.drawLine(sep, 0, sep, selTabTop, BORDER_VALUE);
+      image.drawLine(sep, selTabBottom, sep, G2_LENS_HEIGHT - 1, BORDER_VALUE);
+    } else {
+      image.drawLine(sep, 0, sep, G2_LENS_HEIGHT - 1, BORDER_VALUE);
+    }
+
     for (let index = this.scrollRow; index < lastVisible; index++) {
       const window = state.windows[index]!;
       const y = listTop + (index - this.scrollRow) * itemStride;
-      if (index === state.selectedIndex) {
-        const highlight = state.focus === "sidebar" ? 200 : 70;
-        image.drawRoundedRect(0, y - 2, SIDEBAR_WIDTH - 3, ICON_SIZE + 4, highlight, 6);
+      const selected = index === state.selectedIndex;
+      const focused = selected && state.focus === "sidebar";
+      if (selected) {
+        drawSelectionTab(image, y - 2, y + ICON_SIZE + 2, focused);
       }
-      window.drawIcon(image, ICON_MARGIN_X, y, ICON_SIZE);
+      window.drawIcon(image, ICON_MARGIN_X, y, ICON_SIZE, focused);
       if (window.attention) {
-        image.fillRoundedRect(ICON_MARGIN_X + ICON_SIZE - 7, y - 1, 8, 8, 255, 4);
+        // Black dot on the white focused tab, white dot otherwise.
+        image.fillRoundedRect(ICON_MARGIN_X + ICON_SIZE - 7, y - 1, 8, 8, focused ? SHELL_OPAQUE_BLACK : 255, 4);
       }
     }
 
@@ -221,6 +255,48 @@ function drawTrayIcons(image: GrayImage, trayIcons: GrayImage[], rightEdge: numb
     });
   }
   return x;
+}
+
+const TAB_RADIUS = 6;
+// How far the diversion pokes past the separator into the main area.
+const TAB_EXTEND = 1;
+const TAB_STROKE = 150;
+
+/**
+ * Draw the selection "diversion" of the separator line around a sidebar icon:
+ * rounded on the left, square and open on the right, extending a few px past
+ * the separator into the main area. Focused = filled white; otherwise an
+ * outline.
+ */
+function drawSelectionTab(image: GrayImage, top: number, bottom: number, focused: boolean): void {
+  const right = SIDEBAR_WIDTH - 1 + TAB_EXTEND;
+  if (focused) {
+    for (let yy = top; yy < bottom; yy++) {
+      const inset = tabLeftInset(yy, top, bottom, TAB_RADIUS);
+      image.fillRect(inset, yy, right - inset + 1, 1, 255);
+    }
+    return;
+  }
+  // Outline: curved left edge (per-row) plus straight top and bottom edges.
+  for (let yy = top; yy < bottom; yy++) {
+    image.setPixel(tabLeftInset(yy, top, bottom, TAB_RADIUS), yy, TAB_STROKE);
+  }
+  image.drawLine(tabLeftInset(top, top, bottom-1, TAB_RADIUS), top, right, top, TAB_STROKE);
+  image.drawLine(tabLeftInset(bottom-1, top, bottom-1, TAB_RADIUS), bottom-1, right, bottom-1, TAB_STROKE);
+}
+
+/** Left boundary x of the tab at row yy: 0 in the middle, curving to the rounded left corners. */
+function tabLeftInset(yy: number, top: number, bottom: number, radius: number): number {
+  const cy = yy + 0.5;
+  let dy = 0;
+  if (cy < top + radius) {
+    dy = top + radius - cy;
+  } else if (cy > bottom - radius) {
+    dy = cy - (bottom - radius);
+  } else {
+    return 0;
+  }
+  return Math.max(0, Math.round(radius - Math.sqrt(Math.max(0, radius * radius - dy * dy))));
 }
 
 /** Small triangle marker for sidebar overflow; direction -1 = up, 1 = down. */

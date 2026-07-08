@@ -273,6 +273,9 @@ class Shell {
   yieldFocusToSidebar(): void {
     if (this.focus === "sidebar") return;
     this.focus = "sidebar";
+    // Repaint the window so its selection highlight dims to the unfocused
+    // style this frame.
+    this.foregroundWindow()?.requestRender();
     this.config.requestShellRender();
   }
 
@@ -353,6 +356,9 @@ class Shell {
       case "click":
         if (this.windows.length) {
           this.focus = "window";
+          // Repaint the window now so its selection highlight reflects focus
+          // this frame, not one frame late.
+          this.foregroundWindow()?.requestRender();
         }
         return { shell: true, window: false };
       default:

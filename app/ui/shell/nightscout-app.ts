@@ -32,7 +32,7 @@ export function createNightscoutAppWindow(options: InProcessAppOptions): InProce
     windowId: NIGHTSCOUT_WINDOW_ID,
     title: "Nightscout",
     iconLetter: "Ns",
-    icon: "activity",
+    icon: "nightscout",
     closeable: true,
     actions: options.actions,
     baseLayer: new YieldAtRootLayer(new NightscoutLayer()),

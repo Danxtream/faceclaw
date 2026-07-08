@@ -31,15 +31,20 @@ public final class IconRenderer {
             return new byte[0];
         }
         try {
-            float viewW = 24f, viewH = 24f;
+            float minX = 0f, minY = 0f, viewW = 24f, viewH = 24f;
             Matcher vb = VIEWBOX_RE.matcher(svg);
             if (vb.find()) {
                 String[] parts = vb.group(1).trim().split("[\\s,]+");
                 if (parts.length == 4) {
+                    minX = Float.parseFloat(parts[0]);
+                    minY = Float.parseFloat(parts[1]);
                     viewW = Float.parseFloat(parts[2]);
                     viewH = Float.parseFloat(parts[3]);
                 }
             }
+            // Lucide-style icons are stroked outlines (fill="none"); everything
+            // else (Noun Project glyphs, brand logos) is a filled shape.
+            boolean stroked = svg.contains("fill=\"none\"");
             Path path = new Path();
             Matcher m = TAG_RE.matcher(svg);
             while (m.find()) {
@@ -52,15 +57,20 @@ public final class IconRenderer {
             Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
             Canvas canvas = new Canvas(bitmap);
             float scale = Math.min(size / viewW, size / viewH);
-            // Center the (square) viewBox in the bitmap.
+            // Center the (square) viewBox in the bitmap, then map its origin.
             canvas.translate((size - viewW * scale) / 2f, (size - viewH * scale) / 2f);
             canvas.scale(scale, scale);
+            canvas.translate(-minX, -minY);
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(strokeWidth);
-            paint.setStrokeCap(Paint.Cap.ROUND);
-            paint.setStrokeJoin(Paint.Join.ROUND);
             paint.setColor(0xffffffff);
+            if (stroked) {
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(strokeWidth);
+                paint.setStrokeCap(Paint.Cap.ROUND);
+                paint.setStrokeJoin(Paint.Join.ROUND);
+            } else {
+                paint.setStyle(Paint.Style.FILL);
+            }
             canvas.drawPath(path, paint);
 
             int[] pixels = new int[size * size];
