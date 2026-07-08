@@ -31,7 +31,6 @@ export class TelepromptLayer implements Layer {
     const image = new GrayImage(width, height, 0);
     const footerY = height - FOOTER_MARGIN;
     this.bodyLineCount = Math.max(1, Math.floor((footerY - BODY_Y) / LINE_STEP));
-    image.drawRect(12, 12, width - 24, height - 24, 52);
     image.drawText(font, MARGIN_X + 4, TITLE_Y, truncateToWidth(font, this.title, width - 2 * MARGIN_X - 8), 220);
 
     const lines = this.getLines(font, width);

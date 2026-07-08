@@ -1,7 +1,8 @@
 import { GrayImage } from "../../graphics/image";
 import { beginRenderPass, endRenderPass } from "../../util/render-freshness";
 import { DashboardInputEvent, Layer, LayerActions, LayerContext, LayerStack, PaintBelow } from "../layers";
-import { makeLetterWindowIcon } from "./chrome-layer";
+import { windowIcon } from "./chrome-layer";
+import { type IconName } from "../../graphics/icons";
 import { APP_VIEWPORT } from "./geometry";
 import { shell, type ShellWindow } from "./shell";
 
@@ -17,6 +18,8 @@ export type InProcessWindowOptions = {
   windowId: string;
   title: string;
   iconLetter: string;
+  /** Lucide icon name for the sidebar indicator; falls back to iconLetter. */
+  icon?: IconName;
   closeable: boolean;
   /** Shared actions; requestRender is rebound to this window's render. */
   actions: LayerActions;
@@ -52,6 +55,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     options.baseLayer,
     { ...options.actions, requestRender },
     { width: APP_VIEWPORT.width, height: APP_VIEWPORT.height },
+    () => shell.isWindowFocused(options.windowId),
   );
 
   // Data sources with caches (e.g. notification icons) may serve stale data
@@ -83,7 +87,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       options.onClosed?.();
       options.removeSurface?.();
     },
-    drawIcon: makeLetterWindowIcon(options.iconLetter),
+    drawIcon: windowIcon(options.icon, options.iconLetter),
     handleInput: async (event, frameId) => {
       await stack.handleInput(event);
       await render(frameId);

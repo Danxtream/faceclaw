@@ -896,13 +896,13 @@ class DashboardController {
         this.requestShellRender();
         return;
       }
-      host.openWindow({ windowId: "terminal:hub", title: "Terminal", iconLetter: "T", focus: true });
+      host.openWindow({ windowId: "terminal:hub", title: "Terminal", iconLetter: "T", icon: "terminal", focus: true });
       this.appendLog("launched terminal:hub");
       return;
     }
     const serial = this.nextWindowSerial++;
     const windowId = `${appId}:${serial}`;
-    host.openWindow({ windowId, title: `Stopwatch ${serial}`, iconLetter: "S", focus: true });
+    host.openWindow({ windowId, title: `Stopwatch ${serial}`, iconLetter: "S", icon: "timer", focus: true });
     this.appendLog(`launched ${windowId}`);
   }
 

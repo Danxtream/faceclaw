@@ -57,8 +57,17 @@ export class LayerStack {
   private readonly ctx: LayerContext;
   private readonly baseWidth: number;
   private readonly baseHeight: number;
+  private readonly focusedFn: () => boolean;
 
-  constructor(baseLayer: Layer, actions: LayerActions, baseSize?: { width: number; height: number }) {
+  constructor(
+    baseLayer: Layer,
+    actions: LayerActions,
+    baseSize?: { width: number; height: number },
+    // Whether this stack is the current input target; drives the strength of
+    // selection highlights (a visible-but-unfocused window dims its selection).
+    // Defaults to always-focused for shell overlays and standalone stacks.
+    isFocused: () => boolean = () => true,
+  ) {
     this.layers = [baseLayer];
     this.ctx = {
       stack: this,
@@ -66,6 +75,11 @@ export class LayerStack {
     };
     this.baseWidth = baseSize?.width ?? G2_LENS_WIDTH;
     this.baseHeight = baseSize?.height ?? G2_LENS_HEIGHT;
+    this.focusedFn = isFocused;
+  }
+
+  isFocused(): boolean {
+    return this.focusedFn();
   }
 
   push(layer: Layer): void {

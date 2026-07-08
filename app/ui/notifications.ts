@@ -3,6 +3,7 @@ import { formatRelativeTime } from "~/util/date-util";
 import { BdfFont, getDefaultSmallFont } from "../graphics/bdffont";
 import { GrayImage } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
+import { GESTURE_DOUBLE_CLICK } from "./gestures";
 import {
   dismissNotification,
   invokeNotificationAction,
@@ -81,7 +82,7 @@ export class NotificationsListLayer implements Layer {
 
     if (!notifications.length) {
       image.drawText(font, 24, 72, "No current Android notifications.", 190);
-      image.drawText(font, 24, height - 36, "Double-click: back to sidebar", 110);
+      image.drawText(font, 24, height - 36, `${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
 

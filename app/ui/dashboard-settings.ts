@@ -1,3 +1,4 @@
+import { GESTURE_DOUBLE_CLICK } from "./gestures";
 import {
   getBooleanSetting,
   getStringSetting,
@@ -430,14 +431,13 @@ export class EditTextSettingLayer implements Layer {
     // viewport in the settings app).
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    image.drawRect(12, 12, width - 24, height - 24, 52);
     image.drawText(font, 22, 16, this.setting.glassesEditTitle, 220);
     const message = wrapText(font, "Look at the phone app to type a value.", width - 48);
     for (let index = 0; index < message.length; index++) {
       image.drawText(font, 22, 52 + index * 14, message[index]!, 200);
     }
     image.drawText(font, 22, 110, truncateSetting(this.setting.get(), 52), 220);
-    image.drawText(font, 22, height - 36, "Double-click to go back", 110);
+    image.drawText(font, 22, height - 36, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

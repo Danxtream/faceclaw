@@ -2,6 +2,8 @@ import { getDefaultSmallFont } from "../../graphics/bdffont";
 import { GrayImage } from "../../graphics/image";
 import { wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../gestures";
+import { drawSelectionHighlight } from "../menu";
 import {
   mediaControllerBridge,
   type MediaControllerState,
@@ -63,14 +65,14 @@ class MusicAppLayer implements Layer {
       for (let index = 0; index < lines.length; index++) {
         image.drawText(font, 24, 44 + index * 14, lines[index]!, 180);
       }
-      image.drawText(font, 20, height - 16, "Click: open settings   Double-click: back", 110);
+      image.drawText(font, 20, height - 16, `${GESTURE_CLICK} open settings   ${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
 
     if (!media.available) {
       image.drawText(font, 24, 44, "No active media session.", 180);
       image.drawText(font, 24, 62, "Start playback in another app on the phone.", 150);
-      image.drawText(font, 20, height - 16, "Double-click: back to sidebar", 110);
+      image.drawText(font, 20, height - 16, `${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
 
@@ -104,14 +106,13 @@ class MusicAppLayer implements Layer {
       const y = LIST_TOP + (index - this.scrollRow) * ROW_HEIGHT;
       const selected = index === this.selectedIndex;
       if (selected) {
-        image.fillRoundedRect(LIST_X - 6, y - 1, width - 2 * LIST_X + 12, ROW_HEIGHT - 1, 15, 4);
-        image.drawRoundedRect(LIST_X - 6, y - 1, width - 2 * LIST_X + 12, ROW_HEIGHT - 1, 45, 4);
+        drawSelectionHighlight(image, LIST_X - 6, y - 1, width - 2 * LIST_X + 12, ROW_HEIGHT - 1, ctx.stack.isFocused(), 4);
       }
       const value = !row.enabled ? (selected ? 130 : 90) : selected ? 255 : 200;
       image.drawText(font, LIST_X, y + 1, truncate(font, row.label, width - 2 * LIST_X), value);
     }
 
-    image.drawText(font, 20, height - 16, "Scroll: select   Click: activate   Double-click: back", 110);
+    image.drawText(font, 20, height - 16, `${GESTURE_SCROLL} select   ${GESTURE_CLICK} activate   ${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 
@@ -198,6 +199,7 @@ export function createMusicAppWindow(options: InProcessAppOptions): InProcessWin
     windowId: MUSIC_WINDOW_ID,
     title: "Music",
     iconLetter: "M",
+    icon: "music",
     closeable: true,
     actions: options.actions,
     baseLayer: new YieldAtRootLayer(new MusicAppLayer()),

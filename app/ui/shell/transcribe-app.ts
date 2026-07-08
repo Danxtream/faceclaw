@@ -55,6 +55,7 @@ export function createTranscribeAppWindow(options: TranscribeAppOptions): InProc
     windowId: TRANSCRIBE_WINDOW_ID,
     title: "Transcribe",
     iconLetter: "Tr",
+    icon: "mic",
     closeable: true,
     actions,
     baseLayer: new YieldAtRootLayer(layer),

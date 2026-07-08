@@ -5,6 +5,7 @@ import { nightscoutBridge, type NightscoutState } from "../../native/nightscout-
 import { isNightscoutSettingsConfigured } from "../dashboard-settings";
 import { formatAgeShortFromTimestamp, formatTimestamp } from "~/util/date-util";
 
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK } from "../gestures";
 const nightscoutLargeFont = getDefaultLargeFont();
 const NIGHTSCOUT_STALE_MS = 15 * 60 * 1000;
 const NIGHTSCOUT_GRAPH_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -294,7 +295,6 @@ export class NightscoutLayer implements Layer {
     const nightscout = nightscoutBridge.snapshot();
     const nowMs = Date.now();
     const footerY = height - 26;
-    image.drawRect(12, 12, width - 24, height - 24, 52);
     image.drawText(font, 22, 16, "Nightscout", 220);
 
     if (!isNightscoutSettingsConfigured() || nightscout.configurationMissing) {
@@ -306,7 +306,7 @@ export class NightscoutLayer implements Layer {
     if (!nightscout.available || !nightscout.latest) {
       image.drawText(font, 22, 44, "No Nightscout data available.", 180);
       image.drawText(font, 22, 58, truncateLine(nightscout.status, 60), 140);
-      image.drawText(font, 22, footerY, "Click: refresh  Double-click: back", 110);
+      image.drawText(font, 22, footerY, `${GESTURE_CLICK} refresh   ${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
 
@@ -340,7 +340,7 @@ export class NightscoutLayer implements Layer {
     const graphHeight = Math.max(40, height - 128 - 48);
     drawNightscoutGraph(image, { x: 22, y: 128, width: width - 44, height: graphHeight }, nightscout, nowMs, font);
     image.drawText(font, 22, height - 42, "2-hour glucose history with basal / carbs / boluses", 130);
-    image.drawText(font, 22, footerY, "Click: refresh  Double-click: back", 110);
+    image.drawText(font, 22, footerY, `${GESTURE_CLICK} refresh   ${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

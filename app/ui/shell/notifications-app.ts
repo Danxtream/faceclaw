@@ -20,6 +20,7 @@ export function createNotificationsAppWindow(options: InProcessAppOptions): InPr
     windowId: NOTIFICATIONS_WINDOW_ID,
     title: "Notifications",
     iconLetter: "N",
+    icon: "bell",
     closeable: true,
     actions: options.actions,
     baseLayer: new YieldAtRootLayer(new NotificationsListLayer()),

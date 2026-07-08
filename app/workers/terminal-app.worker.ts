@@ -16,6 +16,7 @@ import "@nativescript/core/globals";
 import { GrayImage } from "../graphics/image";
 import { getFont } from "../graphics/bdffont";
 import * as frameTimings from "../native/frame-timings";
+import { GESTURE_DOUBLE_CLICK } from "../ui/gestures";
 import {
   G2MirrorClient,
   type G2MirrorSession,
@@ -356,7 +357,7 @@ function openViewWindowFor(session: G2MirrorSession): void {
   const windowId = `terminal:view:${nextViewSerial++}`;
   const label = sessionLabel(session);
   pendingViews.set(windowId, { socket: session.socket, label });
-  post({ type: "open-window-request", windowId, title: label, iconLetter: "T", focus: true });
+  post({ type: "open-window-request", windowId, title: label, iconLetter: "T", icon: "terminal", focus: true });
 }
 
 function paint(window: TerminalWindow): GrayImage {
@@ -389,7 +390,7 @@ function paintHub(window: HubWindow): GrayImage {
     image.drawText(terminalFont, 32, y + 2, items[index]!.label, selected ? 255 : 200);
   }
 
-  image.drawText(terminalFont, 24, viewportHeight - 24, "Double-click: back to sidebar", 110);
+  image.drawText(terminalFont, 24, viewportHeight - 24, `${GESTURE_DOUBLE_CLICK} back`, 110);
   return image;
 }
 
@@ -404,7 +405,7 @@ function paintView(window: ViewWindow): GrayImage {
   const image = new GrayImage(viewportWidth, viewportHeight, 0);
   if (!window.receivedData) {
     image.drawText(terminalFont, 24, 110, window.status, 170);
-    image.drawText(terminalFont, 24, 130, "Double-click: back to sidebar", 110);
+    image.drawText(terminalFont, 24, 130, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
   const cursor = window.emulator.cursor();

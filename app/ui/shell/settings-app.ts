@@ -37,6 +37,7 @@ export function createSettingsAppWindow(options: SettingsAppOptions): SettingsAp
     windowId: SETTINGS_WINDOW_ID,
     title: "Settings",
     iconLetter: "Se",
+    icon: "settings",
     closeable: true,
     actions: options.actions,
     baseLayer: new YieldAtRootLayer(createSettingsMenuLayer()),

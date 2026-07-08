@@ -334,6 +334,11 @@ class Shell {
     return this.windows[this.selectedIndex] ?? this.windows[0];
   }
 
+  /** Whether a window is the current input target (foreground + focus in-window). */
+  isWindowFocused(windowId: string): boolean {
+    return this.screenOn && this.focus === "window" && this.foregroundWindow()?.windowId === windowId;
+  }
+
   private handleSidebarInput(event: DashboardInputEvent): ShellInputOutcome {
     switch (event.type) {
       case "double-click":

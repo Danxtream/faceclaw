@@ -1,6 +1,8 @@
 import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
 import { GrayImage } from "../../graphics/image";
 import { clamp } from "../../util/numeric-util";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK } from "../gestures";
+import { drawSelectionHighlight } from "../menu";
 import {
   hasAllFilesAccess,
   listDirectory,
@@ -70,14 +72,13 @@ export class FileBrowserLayer implements Layer {
       const y = HEADER_HEIGHT + (index - this.scrollRow) * ROW_HEIGHT;
       const selected = index === this.selectedIndex;
       if (selected) {
-        image.fillRoundedRect(LIST_X - 6, y - 1, width - 2 * LIST_X + 12, ROW_HEIGHT - 1, 15, 4);
-        image.drawRoundedRect(LIST_X - 6, y - 1, width - 2 * LIST_X + 12, ROW_HEIGHT - 1, 45, 4);
+        drawSelectionHighlight(image, LIST_X - 6, y - 1, width - 2 * LIST_X + 12, ROW_HEIGHT - 1, ctx.stack.isFocused(), 4);
       }
       const value = rowValue(row, selected);
       image.drawText(font, LIST_X, y + 1, truncateRight(font, row.label, width - 2 * LIST_X), value);
     }
 
-    image.drawText(font, 20, height - 16, "Click: open   Double-click: up / back", 110);
+    image.drawText(font, 20, height - 16, `${GESTURE_CLICK} open   ${GESTURE_DOUBLE_CLICK} up / back`, 110);
     return image;
   }
 

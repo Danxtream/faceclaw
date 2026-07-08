@@ -4,6 +4,7 @@ import { getDefaultSmallFont, type BdfFont } from "../graphics/bdffont";
 import { clamp } from "../util/numeric-util";
 import { DashboardInputEvent, Layer, LayerContext, PaintBelow } from "./layers";
 
+import { GESTURE_DOUBLE_CLICK } from "./gestures";
 const DEFAULT_MENU_X = 8;
 const DEFAULT_MENU_Y = 8;
 const DEFAULT_MENU_WIDTH = 272;
@@ -45,6 +46,26 @@ export type MenuItem = {
   onSelect: (ctx: LayerContext, menu: MenuLayer) => Promise<void> | void;
   render?: (args: MenuItemRenderArgs) => void;
 };
+
+/**
+ * Draw a selection highlight for a list row. A focused list fills the row and
+ * outlines it; a visible-but-unfocused list draws only the outline, so the
+ * selection stays legible without implying it will receive input.
+ */
+export function drawSelectionHighlight(
+  image: GrayImage,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  focused: boolean,
+  radius = 6,
+): void {
+  if (focused) {
+    image.fillRoundedRect(x, y, width, height, MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL, radius);
+  }
+  image.drawRoundedRect(x, y, width, height, MENU_HIGHLIGHT_SELECTED_BORDER_STROKE, radius);
+}
 
 export function drawToggleMenuItem(
   image: GrayImage,
@@ -122,14 +143,22 @@ export class MenuLayer implements Layer {
     }
 
     const bodyY = y + chromeTop;
+    const focused = ctx.stack.isFocused();
     const lastVisibleRow = Math.min(this.items.length, this.scrollRow + visibleRowCount);
     for (let index = this.scrollRow; index < lastVisibleRow; index++) {
       const item = this.items[index]!;
       const rowY = bodyY + (index - this.scrollRow) * MENU_ROW_HEIGHT;
       const selected = index === this.selectedIndex;
       if (selected) {
-        image.fillRoundedRect(x + 12, rowY + MENU_HIGHLIGHT_Y_OFFSET, width - 24, MENU_HIGHLIGHT_HEIGHT, MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL);
-        image.drawRoundedRect(x + 12, rowY + MENU_HIGHLIGHT_Y_OFFSET, width - 24, MENU_HIGHLIGHT_HEIGHT, MENU_HIGHLIGHT_SELECTED_BORDER_STROKE);
+        drawSelectionHighlight(
+          image,
+          x + 12,
+          rowY + MENU_HIGHLIGHT_Y_OFFSET,
+          width - 24,
+          MENU_HIGHLIGHT_HEIGHT,
+          focused,
+          8,
+        );
       }
       if (item.render) {
         item.render({
@@ -214,7 +243,7 @@ export class TextPageLayer implements Layer {
     for (let index = 0; index < wrapped.length; index++) {
       image.drawText(font, 24, 42 + index * 14, wrapped[index]!, 190);
     }
-    image.drawText(font, 24, 252, "Double-click to go back", 110);
+    image.drawText(font, 24, 252, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

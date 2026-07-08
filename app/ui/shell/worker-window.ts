@@ -1,5 +1,6 @@
 import { GrayImage } from "../../graphics/image";
-import { makeLetterWindowIcon } from "./chrome-layer";
+import { windowIcon } from "./chrome-layer";
+import { type IconName } from "../../graphics/icons";
 import { shell, type ShellWindow } from "./shell";
 
 /**
@@ -24,6 +25,7 @@ export type WorkerAppReply =
       windowId: string;
       title: string;
       iconLetter: string;
+      icon?: IconName;
       focus?: boolean;
     }
   | { type: "set-title"; windowId: string; title: string }
@@ -43,6 +45,8 @@ export type WorkerWindowSpec = {
   windowId: string;
   title: string;
   iconLetter: string;
+  /** Lucide icon name for the sidebar indicator; falls back to iconLetter. */
+  icon?: IconName;
   /** Foreground and focus the window once its surface exists. */
   focus?: boolean;
 };
@@ -84,6 +88,7 @@ export class WorkerAppHost {
             windowId: message.windowId,
             title: message.title,
             iconLetter: message.iconLetter,
+            icon: message.icon,
             focus: message.focus,
           });
           break;
@@ -134,7 +139,7 @@ export class WorkerAppHost {
         this.post({ type: "close-window", windowId: spec.windowId });
         this.options.removeSurface(surfaceId);
       },
-      drawIcon: makeLetterWindowIcon(spec.iconLetter),
+      drawIcon: windowIcon(spec.icon, spec.iconLetter),
       handleInput: (event, frameId) => {
         this.post({ type: "input", windowId: spec.windowId, event, frameId });
       },

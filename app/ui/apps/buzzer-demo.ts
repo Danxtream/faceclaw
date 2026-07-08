@@ -2,6 +2,8 @@ import { getDefaultSmallFont } from "../../graphics/bdffont";
 import { GrayImage } from "../../graphics/image";
 import { clamp } from "../../util/numeric-util";
 import { Layer, type DashboardInputEvent, type LayerActions, type LayerContext } from "../layers";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../gestures";
+import { drawSelectionHighlight } from "../menu";
 import {
   buildSoundSequencePayload,
   CFW_SEQ_MAX,
@@ -36,7 +38,7 @@ export class BuzzerDemoLayer implements Layer {
     const image = new GrayImage(width, height, 0);
 
     image.drawText(font, 20, 8, "Buzzer demo", 220);
-    const status = this.playing ? `Playing: ${this.playing}` : "Click to play";
+    const status = this.playing ? `Playing: ${this.playing}` : `${GESTURE_CLICK} play`;
     image.drawText(font, width - 24 - font.measureText(status), 8, status, 140);
 
     const listHeight = height - HEADER_HEIGHT - FOOTER_HEIGHT;
@@ -54,14 +56,13 @@ export class BuzzerDemoLayer implements Layer {
       const y = HEADER_HEIGHT + (index - this.scrollRow) * ROW_HEIGHT;
       const selected = index === this.selectedIndex;
       if (selected) {
-        image.fillRoundedRect(LIST_X - 6, y - 1, width - 2 * LIST_X + 12, ROW_HEIGHT - 1, 15, 4);
-        image.drawRoundedRect(LIST_X - 6, y - 1, width - 2 * LIST_X + 12, ROW_HEIGHT - 1, 45, 4);
+        drawSelectionHighlight(image, LIST_X - 6, y - 1, width - 2 * LIST_X + 12, ROW_HEIGHT - 1, ctx.stack.isFocused(), 4);
       }
       image.drawText(font, LIST_X, y + 1, effect.name, selected ? 255 : 200);
       image.drawText(font, LIST_X + 110, y + 1, effect.desc, selected ? 180 : 120);
     }
 
-    image.drawText(font, 20, height - 16, "Scroll: select   Click: play   Double-click: back", 110);
+    image.drawText(font, 20, height - 16, `${GESTURE_SCROLL} select   ${GESTURE_CLICK} play   ${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

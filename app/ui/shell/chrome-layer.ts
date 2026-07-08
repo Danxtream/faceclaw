@@ -5,6 +5,7 @@ import { readActiveNotificationIcons } from "../../native/notification-icons";
 import { readPhoneBatteryState } from "../../native/phone-battery";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../../util/render-freshness";
 import { clamp } from "../../util/numeric-util";
+import { renderIcon, type IconName } from "../../graphics/icons";
 import { batteryDisplayModeSetting } from "../dashboard-settings";
 import { Layer } from "../layers";
 import { SHELL_OPAQUE_BLACK, SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
@@ -33,7 +34,7 @@ export type ShellChromeState = {
   trayIcons: GrayImage[];
 };
 
-/** Reusable placeholder window icon: rounded outline with a single letter. */
+/** Placeholder window icon: rounded outline with a single letter. */
 export function makeLetterWindowIcon(letter: string): ShellChromeWindow["drawIcon"] {
   return (image, x, y, size) => {
     const font = getDefaultMediumFont();
@@ -42,6 +43,22 @@ export function makeLetterWindowIcon(letter: string): ShellChromeWindow["drawIco
     const textY = y + Math.max(0, ((size - font.lineHeight) / 2) | 0);
     image.drawText(font, textX, textY, letter, 210);
   };
+}
+
+/** Window icon rendered from an SVG (Lucide), rendered once per size and cached. */
+export function makeSvgWindowIcon(name: IconName): ShellChromeWindow["drawIcon"] {
+  return (image, x, y, size) => {
+    const icon = renderIcon(name, size);
+    if (!icon) return;
+    const dx = x + Math.max(0, ((size - icon.width) / 2) | 0);
+    const dy = y + Math.max(0, ((size - icon.height) / 2) | 0);
+    image.bitBlt(icon, dx, dy, { transparentZero: true });
+  };
+}
+
+/** SVG icon when a name is given, else the letter placeholder. */
+export function windowIcon(icon: IconName | undefined, letter: string): ShellChromeWindow["drawIcon"] {
+  return icon ? makeSvgWindowIcon(icon) : makeLetterWindowIcon(letter);
 }
 
 /**

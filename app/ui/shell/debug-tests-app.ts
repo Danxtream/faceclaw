@@ -43,6 +43,7 @@ export function createDebugTestsAppWindow(options: InProcessAppOptions): InProce
     windowId: DEBUG_TESTS_WINDOW_ID,
     title: "Debug tests",
     iconLetter: "Db",
+    icon: "flask-conical",
     closeable: true,
     actions: options.actions,
     baseLayer: new YieldAtRootLayer(menu),

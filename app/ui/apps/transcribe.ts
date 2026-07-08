@@ -9,6 +9,7 @@ import { Layer, type DashboardInputEvent, type LayerContext } from "../layers";
  * (createTranscribeAppWindow); this layer accumulates the transcript, shows
  * it, and saves it to Downloads on click.
  */
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK } from "../gestures";
 export class TranscribeLayer implements Layer {
   private status = "Listening...";
   // Finalized utterances, plus the live (replace-semantics) partial appended
@@ -37,7 +38,6 @@ export class TranscribeLayer implements Layer {
     const text = this.displayText() || "Listening...";
     const wrapped = wrapTranscribeText(font, text, width - 64);
 
-    image.drawRect(12, 12, width - 24, height - 24, 52);
     image.drawText(font, 24, 20, "Transcribe", 200);
     image.drawText(font, 24, 40, this.saveNotice || this.status, 110);
 
@@ -50,7 +50,7 @@ export class TranscribeLayer implements Layer {
       image.drawText(font, 32, y, wrapped[index]!, 230);
     }
 
-    image.drawText(font, 24, footerY, "Click: save   Double-click: back", 110);
+    image.drawText(font, 24, footerY, `${GESTURE_CLICK} save   ${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

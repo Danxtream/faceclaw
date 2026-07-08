@@ -50,6 +50,7 @@ export function createLauncherWindow(options: LauncherOptions): ShellWindow {
     windowId: LAUNCHER_WINDOW_ID,
     title: "Apps",
     iconLetter: "A",
+    icon: "layout-grid",
     closeable: false,
     actions: options.actions,
     baseLayer: new YieldAtRootLayer(menu),

@@ -12,6 +12,7 @@ import * as frameTimings from "../native/frame-timings";
 import type { DashboardInputEvent } from "../ui/layers";
 import type { WorkerAppMessage } from "../ui/shell/worker-window";
 
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK } from "../ui/gestures";
 declare const global: any;
 declare const com: any;
 
@@ -140,8 +141,8 @@ function paint(window: StopwatchWindow): GrayImage {
 
   const hintsY = window.viewportHeight - 66;
   image.drawText(smallFont, 90, hintsY, stateLabel, 150);
-  image.drawText(smallFont, 90, hintsY + 18, "Click: start / pause", 150);
-  image.drawText(smallFont, 90, hintsY + 36, "Double-click: back to sidebar", 150);
+  image.drawText(smallFont, 90, hintsY + 18, `${GESTURE_CLICK} start / pause`, 150);
+  image.drawText(smallFont, 90, hintsY + 36, `${GESTURE_DOUBLE_CLICK} back`, 150);
   return image;
 }
 
