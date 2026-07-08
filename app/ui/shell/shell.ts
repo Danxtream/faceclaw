@@ -69,7 +69,7 @@ const noopActions: LayerActions = {
   setTranscribeRenderActive: () => {},
   startVoiceCapture: () => {},
   stopVoiceCapture: () => {},
-  playBuzzerNote: () => {},
+  playBuzzerSequence: () => {},
 };
 
 /** Long-press overlay menu; closing it returns focus to the sidebar. */

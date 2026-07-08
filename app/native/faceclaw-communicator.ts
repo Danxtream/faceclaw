@@ -421,13 +421,11 @@ export class FaceclawCommunicatorBridge {
     return this.enqueueJavaCall(() => Boolean(this.communicator.sendShutdown(exitMode)));
   }
 
-  async playBuzzerNote(note: number, oct: number, beat: number): Promise<void> {
+  /** Play a CFW mode-5 kind-4 tone sequence (complete wire payload). */
+  async playBuzzerSequence(payload: Uint8Array): Promise<void> {
+    const snapshot = new Uint8Array(payload);
     await this.enqueueJavaCall(() => {
-      this.communicator.playBuzzerNote(
-        Math.round(note),
-        Math.round(oct),
-        Math.round(beat),
-      );
+      this.communicator.playBuzzerSequence(snapshot.buffer);
     });
   }
 

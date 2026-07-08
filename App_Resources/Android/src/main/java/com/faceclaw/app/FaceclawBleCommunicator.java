@@ -361,23 +361,35 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         interruptibleSleep.interrupt();
     }
 
-    /** Play one quantized buzzer tone via CFW load_image_z mode 5 kind 1. */
-    public void playBuzzerNote(int note, int oct, int beat) {
+    /**
+     * Play a tone sequence via CFW load_image_z mode 5 kind 4. The payload is
+     * the complete wire buffer ([5][4][nSteps][freqLo,freqHi,duty,msLo,msHi]*n,
+     * up to 48 steps), built on the TS side; it rides the arbitrary-payload
+     * image path like the other mode-5 controls.
+     */
+    public void playBuzzerSequence(java.nio.ByteBuffer payload) {
         synchronized (lock) {
             if (!running || !sessionReady || !fixedLayoutCreated) {
-                logLine("skip buzzer note; session not ready");
+                logLine("skip buzzer sequence; session not ready");
                 return;
             }
-            byte[] payload = BleProtocol.buildBuzzerNotePayload(note, oct, beat);
+            byte[] bytes = new byte[payload == null ? 0 : payload.remaining()];
+            if (payload != null) {
+                payload.get(bytes);
+            }
+            if (bytes.length < 3) {
+                logLine("skip buzzer sequence; empty payload");
+                return;
+            }
             OutboundMessage message = messageBuilder.imagePayload(
                 DASHBOARD_TILE,
                 nextMapSessionId(),
-                payload,
-                "buzzer note=" + note + " oct=" + oct + " beat=" + beat,
+                bytes,
+                "buzzer sequence " + bytes.length + "B",
                 connectionOptions.sendImagesToLeft
             );
             message.onTimeout = () -> {
-                handleTransportFailure("buzzer note ack timeout");
+                handleTransportFailure("buzzer sequence ack timeout");
             };
             pendingMessages.addLast(message);
             logLine("queue " + message.label);

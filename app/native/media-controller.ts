@@ -1,6 +1,14 @@
 import { Utils } from "@nativescript/core";
+import { GrayImage } from "../graphics/image";
+import { toUint8Array } from "../util/array-util";
 
 declare const com: any;
+
+export type MediaQueueItem = {
+  id: number;
+  title: string;
+  active: boolean;
+};
 
 export type MediaPlaybackState =
   | "notification-access-required"
@@ -87,6 +95,50 @@ export class FaceclawMediaControllerBridge {
   openNotificationAccessSettings(): void {
     this.ensureController();
     this.controller?.openNotificationAccessSettings();
+  }
+
+  /** Jump playback to a queue item (see getQueue). */
+  async skipToQueueItem(id: number): Promise<void> {
+    this.ensureController();
+    this.controller?.skipToQueueItem(id);
+  }
+
+  /**
+   * Album art for the current item, grayscale, scaled to fit maxSize; null
+   * when the player provides none.
+   */
+  getAlbumArt(maxSize: number): GrayImage | null {
+    if (!global.isAndroid) return null;
+    this.ensureController();
+    if (!this.controller) return null;
+    const bytes = toUint8Array(this.controller.getAlbumArtGray(Math.round(maxSize)));
+    if (bytes.length < 4) return null;
+    const width = bytes[0]! | (bytes[1]! << 8);
+    const height = bytes[2]! | (bytes[3]! << 8);
+    if (width <= 0 || height <= 0 || bytes.length < 4 + width * height) return null;
+    const image = new GrayImage(width, height, 0);
+    image.pixels.set(bytes.subarray(4, 4 + width * height));
+    return image;
+  }
+
+  /** The player's queue (playlist), empty when the player exposes none. */
+  getQueue(): MediaQueueItem[] {
+    if (!global.isAndroid) return [];
+    this.ensureController();
+    if (!this.controller) return [];
+    const json = String(this.controller.getQueueJson() ?? "");
+    if (!json) return [];
+    try {
+      const raw = JSON.parse(json) as Array<{ id?: number; title?: string; active?: boolean }>;
+      return raw.map((item) => ({
+        id: Number(item.id ?? -1),
+        title: String(item.title ?? ""),
+        active: Boolean(item.active),
+      }));
+    } catch (error) {
+      console.warn(`media queue parse failed: ${error}`);
+      return [];
+    }
   }
 
   private ensureController(): void {

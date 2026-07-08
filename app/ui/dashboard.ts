@@ -37,7 +37,7 @@ const dashboardActions: LayerActions = {
   setTranscribeRenderActive: () => {},
   startVoiceCapture: () => {},
   stopVoiceCapture: () => {},
-  playBuzzerNote: () => {},
+  playBuzzerSequence: () => {},
 };
 export const TOP_LEFT_MENU_LAYOUT = { x: 8, y: 8, width: 272 };
 

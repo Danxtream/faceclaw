@@ -121,14 +121,6 @@ public class BleProtocol {
         return wrapEvenHub(5, magic, 9, concat(inner));
     }
 
-    /** CFW load_image_z mode 5 kind 1: play one quantized buzzer note. */
-    public static byte[] buildBuzzerNotePayload(int note, int oct, int beat) {
-        int clampedNote = Math.max(1, Math.min(7, note));
-        int clampedOct = Math.max(0, Math.min(3, oct));
-        int clampedBeat = Math.max(1, Math.min(255, beat));
-        return new byte[] {5, 1, (byte) clampedNote, (byte) clampedOct, (byte) clampedBeat};
-    }
-
     public static byte[] buildImageRawData(ImageTileOptions tile, int sessionId, int totalSize, ImageFragment fragment, int magic) {
         List<byte[]> inner = new ArrayList<>();
         inner.add(encodeVarintField(1, tile.containerId));

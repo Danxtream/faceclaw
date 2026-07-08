@@ -3,13 +3,20 @@ package com.faceclaw.app;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.media.MediaDescription;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
+import android.media.session.MediaSession;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.util.Log;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.util.List;
 
@@ -30,6 +37,13 @@ public class FaceclawMediaController {
 
         @Override
         public void onMetadataChanged(MediaMetadata metadata) {
+            synchronized (lock) {
+                emitStateLocked();
+            }
+        }
+
+        @Override
+        public void onQueueChanged(List<MediaSession.QueueItem> queue) {
             synchronized (lock) {
                 emitStateLocked();
             }
@@ -145,6 +159,107 @@ public class FaceclawMediaController {
         synchronized (lock) {
             if (activeController != null) {
                 activeController.getTransportControls().skipToPrevious();
+            }
+        }
+    }
+
+    public void skipToQueueItem(long queueId) {
+        synchronized (lock) {
+            if (activeController != null) {
+                activeController.getTransportControls().skipToQueueItem(queueId);
+            }
+        }
+    }
+
+    /**
+     * Album art for the active session's current item, grayscale, scaled to
+     * fit within maxSize x maxSize preserving aspect. Returns
+     * [widthLo, widthHi, heightLo, heightHi, pixels...] or an empty array
+     * when no art is available.
+     */
+    public byte[] getAlbumArtGray(int maxSize) {
+        Bitmap art;
+        synchronized (lock) {
+            if (activeController == null) {
+                return new byte[0];
+            }
+            MediaMetadata metadata = activeController.getMetadata();
+            if (metadata == null) {
+                return new byte[0];
+            }
+            art = metadata.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
+            if (art == null) {
+                art = metadata.getBitmap(MediaMetadata.METADATA_KEY_ART);
+            }
+            if (art == null) {
+                art = metadata.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON);
+            }
+        }
+        if (art == null || art.getWidth() <= 0 || art.getHeight() <= 0 || maxSize <= 0) {
+            return new byte[0];
+        }
+        try {
+            float scale = Math.min(1f, Math.min(
+                    (float) maxSize / art.getWidth(),
+                    (float) maxSize / art.getHeight()));
+            int width = Math.max(1, Math.round(art.getWidth() * scale));
+            int height = Math.max(1, Math.round(art.getHeight() * scale));
+            Bitmap scaled = Bitmap.createScaledBitmap(art, width, height, true);
+            if (scaled.getConfig() == Bitmap.Config.HARDWARE) {
+                scaled = scaled.copy(Bitmap.Config.ARGB_8888, false);
+            }
+            int[] pixels = new int[width * height];
+            scaled.getPixels(pixels, 0, width, 0, 0, width, height);
+            byte[] out = new byte[4 + width * height];
+            out[0] = (byte) (width & 0xff);
+            out[1] = (byte) ((width >> 8) & 0xff);
+            out[2] = (byte) (height & 0xff);
+            out[3] = (byte) ((height >> 8) & 0xff);
+            for (int i = 0; i < pixels.length; i++) {
+                int p = pixels[i];
+                int r = (p >> 16) & 0xff;
+                int g = (p >> 8) & 0xff;
+                int b = p & 0xff;
+                out[4 + i] = (byte) ((r * 299 + g * 587 + b * 114) / 1000);
+            }
+            return out;
+        } catch (Exception e) {
+            Log.w("FaceclawMedia", "album art conversion failed", e);
+            return new byte[0];
+        }
+    }
+
+    /**
+     * The active session's queue (playlist) as JSON:
+     * [{"id": long, "title": string, "active": bool}, ...]. Empty string when
+     * the player exposes no queue.
+     */
+    public String getQueueJson() {
+        synchronized (lock) {
+            if (activeController == null) {
+                return "";
+            }
+            List<MediaSession.QueueItem> queue = activeController.getQueue();
+            if (queue == null || queue.isEmpty()) {
+                return "";
+            }
+            PlaybackState state = activeController.getPlaybackState();
+            long activeId = state == null ? -1 : state.getActiveQueueItemId();
+            try {
+                JSONArray out = new JSONArray();
+                for (MediaSession.QueueItem item : queue) {
+                    MediaDescription description = item.getDescription();
+                    CharSequence title = description == null ? null : description.getTitle();
+                    JSONObject entry = new JSONObject();
+                    entry.put("id", item.getQueueId());
+                    entry.put("title", title == null ? "" : title.toString());
+                    entry.put("active", item.getQueueId() == activeId);
+                    out.put(entry);
+                }
+                return out.toString();
+            } catch (Exception e) {
+                Log.w("FaceclawMedia", "queue serialization failed", e);
+                return "";
             }
         }
     }

@@ -54,6 +54,7 @@ import {
   NIGHTSCOUT_SURFACE_ID,
   NIGHTSCOUT_WINDOW_ID,
 } from "../ui/shell/nightscout-app";
+import { createMusicAppWindow, MUSIC_SURFACE_ID, MUSIC_WINDOW_ID } from "../ui/shell/music-app";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { APP_VIEWPORT } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
@@ -234,7 +235,7 @@ class DashboardController {
       setTranscribeRenderActive: (active: boolean) => this.setTranscribeRenderActive(active),
       startVoiceCapture: () => this.startVoiceCapture(),
       stopVoiceCapture: () => this.stopVoiceCapture(),
-      playBuzzerNote: (note: number, oct: number, beat: number) => this.playBuzzerNote(note, oct, beat),
+      playBuzzerSequence: (payload: Uint8Array) => this.playBuzzerSequence(payload),
     };
     this.sharedActions = sharedActions;
     setDashboardActions({
@@ -279,6 +280,7 @@ class DashboardController {
           { appId: "stopwatch", label: "Stopwatch" },
           { appId: "terminal", label: "Terminal" },
           { appId: "teleprompt", label: "Teleprompt" },
+          { appId: "music", label: "Music" },
           { appId: "nightscout", label: "Nightscout" },
           { appId: "notifications", label: "Notifications" },
           { appId: "debug-tests", label: "Debug tests" },
@@ -1138,6 +1140,10 @@ class DashboardController {
       await this.launchInProcessApp(NIGHTSCOUT_WINDOW_ID, NIGHTSCOUT_SURFACE_ID, createNightscoutAppWindow);
       return;
     }
+    if (appId === "music") {
+      await this.launchInProcessApp(MUSIC_WINDOW_ID, MUSIC_SURFACE_ID, createMusicAppWindow);
+      return;
+    }
     if (appId === "teleprompt") {
       await this.launchInProcessApp(TELEPROMPT_WINDOW_ID, TELEPROMPT_SURFACE_ID, (options) =>
         createTelepromptBrowserWindow({
@@ -1320,11 +1326,11 @@ class DashboardController {
     }
   }
 
-  private async playBuzzerNote(note: number, oct: number, beat: number): Promise<void> {
+  private async playBuzzerSequence(payload: Uint8Array): Promise<void> {
     if (this.phase !== "connected" || !this.communicator) {
       return;
     }
-    await this.communicator.playBuzzerNote(note, oct, beat);
+    await this.communicator.playBuzzerSequence(payload);
   }
 
   private setTranscribeRenderActive(active: boolean): void {

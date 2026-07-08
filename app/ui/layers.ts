@@ -23,7 +23,8 @@ export type LayerActions = {
   startVoiceCapture: () => Promise<void> | void;
   /** Stop voice capture; for a cloud provider this also commits for a final result. */
   stopVoiceCapture: () => Promise<void> | void;
-  playBuzzerNote: (note: number, oct: number, beat: number) => Promise<void> | void;
+  /** Play a CFW tone-sequencer payload (see sound-effects.ts). */
+  playBuzzerSequence: (payload: Uint8Array) => Promise<void> | void;
 };
 
 export type PaintBelow = () => GrayImage;
