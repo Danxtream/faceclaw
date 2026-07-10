@@ -1,6 +1,6 @@
 import { Frame, Observable } from "@nativescript/core";
 
-import { setOnboardingCompleted } from "./onboarding-state";
+import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
 
 type OnboardingStep = 1 | 2 | 3;
 
@@ -38,12 +38,12 @@ const STEP_CONTENT: Record<OnboardingStep, StepContent> = {
     showSecondary: true,
   },
   3: {
-    headline: "Disconnect Even First",
+    headline: "Custom Firmware Required",
     tagline: "",
     body:
-      "You can switch back and forth between Faceclaw and the official Even Realities application at any time. However, they can't both be connected to the headset simultaneously. The Even app will reconnect to the glasses whenever you launch it. To disconnect the official Even app, open it, go to the Home tab, select your glasses, open the Connection submenu, and press Disconnect.",
-    primaryLabel: "Configure",
-    secondaryLabel: "Back",
+      "Faceclaw only runs on Even Realities G2 glasses that have Faceclaw's custom firmware installed. You have two choices:\n\n• Preview Only — explore Faceclaw's interface on your phone's screen without pairing any glasses. Nothing is written to a headset.\n\n• Flash Firmware — install the custom firmware on your glasses now, then use Faceclaw for real. This connects to your glasses, asks for confirmation on the lens, then downloads and prepares the firmware.\n\nFlashing replaces the official firmware. It may void your warranty and, like any firmware update, carries a risk of bricking the device. You can only be connected to one app at a time, so disconnect the official Even app before flashing (open it, go to Home, select your glasses, open Connection, and press Disconnect).",
+    primaryLabel: "Flash Firmware",
+    secondaryLabel: "Preview Only",
     showLogo: false,
     showTagline: false,
     showSecondary: true,
@@ -67,10 +67,10 @@ export class OnboardingViewModel extends Observable {
       this.setStep(3);
       return;
     }
-    setOnboardingCompleted(true);
+    // Step 3 primary: proceed to the flashing flow (connect + on-glasses
+    // confirmation + firmware download/patch/verify).
     Frame.topmost()?.navigate({
-      moduleName: "phone-ui/config-page",
-      clearHistory: true,
+      moduleName: "phone-ui/onboarding-flash-page",
     });
   }
 
@@ -80,7 +80,13 @@ export class OnboardingViewModel extends Observable {
       return;
     }
     if (this._step === 3) {
-      this.setStep(2);
+      // Step 3 secondary: skip flashing, use the on-phone preview only.
+      setPreviewOnlyMode(true);
+      setOnboardingCompleted(true);
+      Frame.topmost()?.navigate({
+        moduleName: "phone-ui/main-page",
+        clearHistory: true,
+      });
     }
   }
 

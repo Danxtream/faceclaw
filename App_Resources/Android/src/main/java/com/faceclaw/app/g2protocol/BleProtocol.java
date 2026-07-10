@@ -17,6 +17,11 @@ import java.util.UUID;
 public class BleProtocol {
     public static final String WRITE_CHAR_UUID = "00002760-08c2-11e1-9073-0e8ac72e5401";
     public static final String NOTIFY_CHAR_UUID = "00002760-08c2-11e1-9073-0e8ac72e5402";
+    // Firmware-data service (svc ...e1001): the OTA transfer channel, distinct
+    // from the EvenHub write/notify chars above (which the flasher reuses only
+    // for the keepalive heartbeat).
+    public static final String OTA_DATA_WRITE_UUID = "00002760-08c2-11e1-9073-0e8ac72e0001";
+    public static final String OTA_DATA_NOTIFY_UUID = "00002760-08c2-11e1-9073-0e8ac72e0002";
     public static final String RENDER_NOTIFY_UUID = "00002760-08c2-11e1-9073-0e8ac72e6402";
     public static final String R1_PHONE_NOTIFY_CHAR_UUID = "bae80011-4f05-4503-8e65-3af1f7329d1f";
     public static final String R1_NOTIFY_CHAR_UUID = "bae80013-4f05-4503-8e65-3af1f7329d1f";
@@ -140,6 +145,88 @@ public class BleProtocol {
 
     public static byte[] buildHeartbeat(int magic) {
         return wrapEvenHub(12, magic, 14, encodeVarintField(1, 0));
+    }
+
+    /**
+     * Cmd=0 CreateStartUpPage carrying a text container (the message) plus a
+     * list container (the selectable rows) in one page. Uses stock-firmware-safe
+     * geometry (each container within the stock ~280x130 container-size cap; the
+     * CFW is what lifts that to 576x288), so this works before flashing. The
+     * selected row comes back as an async list event — see parseListSelection.
+     */
+    public static byte[] buildCreatePromptPage(
+        int magic,
+        String textName,
+        int textContainerId,
+        String warningText,
+        String listName,
+        int listContainerId,
+        String[] items
+    ) {
+        List<byte[]> inner = new ArrayList<>();
+        inner.add(encodeVarintField(1, 2)); // ContainerTotalNum: 1 text + 1 list
+        inner.add(encodeMessageField(2, encodeListObject(listName, listContainerId, 0, 150, 280, 120, items, true)));
+        inner.add(encodeMessageField(3, encodeTextObject(textName, textContainerId, 0, 0, 280, 130, warningText, false)));
+        inner.add(encodeVarintField(5, 10000)); // widgetId
+        return wrapEvenHub(0, magic, 3, concat(inner));
+    }
+
+    public static byte[] encodeListObject(
+        String name,
+        int containerId,
+        int x,
+        int y,
+        int width,
+        int height,
+        String[] items,
+        boolean captureEvents
+    ) {
+        List<byte[]> parts = new ArrayList<>();
+        parts.add(encodeVarintField(1, x));
+        parts.add(encodeVarintField(2, y));
+        parts.add(encodeVarintField(3, width));
+        parts.add(encodeVarintField(4, height));
+        parts.add(encodeVarintField(9, containerId));
+        parts.add(encodeStringField(10, name));
+        parts.add(encodeMessageField(11, encodeListItemContainer(items)));
+        if (captureEvents) {
+            parts.add(encodeVarintField(12, 1));
+        }
+        return concat(parts);
+    }
+
+    private static byte[] encodeListItemContainer(String[] items) {
+        List<byte[]> parts = new ArrayList<>();
+        parts.add(encodeVarintField(1, items.length)); // ItemCount
+        parts.add(encodeVarintField(3, 1));            // IsItemSelectBorderEn
+        for (String item : items) {
+            parts.add(encodeStringField(4, item));     // repeated ItemName
+        }
+        return concat(parts);
+    }
+
+    /**
+     * Decode a list-selection async event (sid=0xe0, flag=0x01/0x06). Returns
+     * null if the frame is not a list event. `itemIndex` is 0-based into the
+     * ItemName array the list was built with; `eventType` is EVENT_CLICK for a
+     * confirmed selection (scroll/highlight changes arrive with other types).
+     */
+    public static ListSelection parseListSelection(ParsedFrame frame) {
+        byte[] pb = stripTrailingCrc(frame.pb);
+        byte[] deviceEvent = readFieldBytes(pb, 13);
+        if (deviceEvent == null) {
+            return null;
+        }
+        byte[] listEvent = readFieldBytes(deviceEvent, 1);
+        if (listEvent == null) {
+            return null;
+        }
+        return new ListSelection(
+            readStringFieldValue(listEvent, 2),
+            readStringFieldValue(listEvent, 3),
+            readVarintFieldValue(listEvent, 4, -1),
+            readVarintFieldValue(listEvent, 5, EVENT_CLICK)
+        );
     }
 
     public static byte[] buildAudioControl(int magic, boolean enable) {
@@ -481,6 +568,20 @@ public class BleProtocol {
         VarintResult(int value, int next) {
             this.value = value;
             this.next = next;
+        }
+    }
+
+    public static final class ListSelection {
+        public final String containerName;
+        public final String itemName;
+        public final int itemIndex;
+        public final int eventType;
+
+        ListSelection(String containerName, String itemName, int itemIndex, int eventType) {
+            this.containerName = containerName == null ? "" : containerName;
+            this.itemName = itemName == null ? "" : itemName;
+            this.itemIndex = itemIndex;
+            this.eventType = eventType;
         }
     }
 
