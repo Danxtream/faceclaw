@@ -1,5 +1,6 @@
 import { Application, Frame, ImageSource, Observable, Screen } from "@nativescript/core";
 import { dashboardController } from "../g2/dashboard-controller";
+import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 
 type LayoutOrientation = "portrait" | "landscape";
 
@@ -324,6 +325,22 @@ export class MainViewModel extends Observable {
         this.status = `Failed: ${message}`;
         this.appendLog(`error: ${message}`);
       }
+    }
+  }
+
+  /**
+   * Try to connect automatically on reaching the main page. No-op if already
+   * connecting/connected, or if no glasses are configured (e.g. preview-only
+   * users, who have nothing to connect to).
+   */
+  async autoConnect(): Promise<void> {
+    if (this.phase !== "disconnected") return;
+    const addresses = loadDeviceAddresses();
+    if (!isValidMacAddress(addresses.right) || !isValidMacAddress(addresses.left)) return;
+    try {
+      await dashboardController.connect();
+    } catch {
+      // The controller surfaces failures via status/log; nothing to add here.
     }
   }
 

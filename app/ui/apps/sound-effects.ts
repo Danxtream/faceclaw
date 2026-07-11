@@ -53,6 +53,30 @@ export function effectPhrases(effect: Effect): Step[][] {
   return Array.isArray(effect[0]) ? (effect as Step[][]) : [effect as Step[]];
 }
 
+/** Look up a catalog effect by name (e.g. "questcomplete"). */
+export function findSoundEffect(name: string): SoundEffect | undefined {
+  return SOUND_EFFECTS.find((effect) => effect.name === name);
+}
+
+/**
+ * Play an effect through `play`, pacing phrase-by-phrase (and chunking any
+ * over-long phrase to the firmware's per-message cap) so each sequencer
+ * message lands as the previous phrase finishes.
+ */
+export async function playSoundEffect(
+  effect: SoundEffect,
+  play: (payload: Uint8Array) => Promise<void> | void,
+  sleep: (ms: number) => Promise<void>,
+): Promise<void> {
+  for (const phrase of effectPhrases(effect.make())) {
+    for (let index = 0; index < phrase.length; index += CFW_SEQ_MAX) {
+      const chunk = phrase.slice(index, index + CFW_SEQ_MAX);
+      await play(buildSoundSequencePayload(chunk));
+      await sleep(phraseDurationMs(chunk));
+    }
+  }
+}
+
 // ============================ musical helpers ===============================
 // Equal-tempered pitch from a name like "A4", "C#5", "Bb3". A4 = 440 Hz.
 const SEMI: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };

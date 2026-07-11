@@ -11,6 +11,8 @@ import { onAndroidNotificationPosted } from "../native/notification-icons";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage } from "./firmware-compat";
+import { findSoundEffect, playSoundEffect } from "../ui/apps/sound-effects";
+import { isWelcomeSoundPending, setWelcomeSoundPending } from "../phone-ui/onboarding-state";
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
@@ -130,6 +132,9 @@ class DashboardController {
   private batteryOptimizationWarningVisible = false;
   private displayPreview: ImageSource | null = createInitialDisplayPreview();
   private readonly listeners = new Set<DashboardListener>();
+  // Set at connect time from the persisted flag; the one-time post-onboarding
+  // welcome sound plays on the first rendered frame (proof the session is warm).
+  private welcomeSoundArmed = false;
 
   private communicator: FaceclawCommunicatorBridge | null = null;
   private shellRefreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -359,6 +364,7 @@ class DashboardController {
     this.log = "";
     this.lastInput = "waiting...";
     this.lastSys = "none yet";
+    this.welcomeSoundArmed = isWelcomeSoundPending();
     this.firmwareWarningMessage = "";
     this.refreshBatteryOptimizationStatus();
     this.refreshEvenAppStatus();
@@ -435,6 +441,13 @@ class DashboardController {
       this.offFrameMetrics = communicator.onFrameMetrics((metrics) => {
         if (this.phase === "connected") {
           this.setStatus(`Connected. Last frame: ${this.formatFrameMetrics(metrics)}.`);
+          // A rendered frame means the session is warmed up (fixedLayoutCreated),
+          // so the buzzer won't be dropped. Play the one-time welcome sound now.
+          if (this.welcomeSoundArmed) {
+            this.welcomeSoundArmed = false;
+            setWelcomeSoundPending(false);
+            void this.playWelcomeSound();
+          }
         }
       });
       this.offFirmwareInfo = communicator.onFirmwareInfo((info) => {
@@ -1049,6 +1062,21 @@ class DashboardController {
       return;
     }
     await this.communicator.playBuzzerSequence(payload);
+  }
+
+  /** One-time celebratory jingle on the first connection after onboarding. */
+  private async playWelcomeSound(): Promise<void> {
+    const effect = findSoundEffect("questcomplete");
+    if (!effect) return;
+    try {
+      await playSoundEffect(
+        effect,
+        (payload) => this.playBuzzerSequence(payload),
+        (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      );
+    } catch (error) {
+      this.appendLog(`welcome sound failed: ${this.formatError(error)}`);
+    }
   }
 
   private clearDashboardTimer(): void {

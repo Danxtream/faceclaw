@@ -95,6 +95,9 @@ export function loaded(args: EventData) {
   dashboardController.refreshEvenAppStatus()
 
   const model = page.bindingContext as MainViewModel | null
+  // Automatically connect on reaching the main page (no-op if already
+  // connected or if no glasses are configured).
+  void model?.autoConnect()
   const scrollViews = [
     page.getViewById<ScrollView>('logScrollView'),
     page.getViewById<ScrollView>('logScrollViewLandscape'),
