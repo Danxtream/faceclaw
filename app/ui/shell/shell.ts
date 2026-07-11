@@ -5,6 +5,7 @@ import { DashboardInputEvent, LayerActions, LayerStack } from "../layers";
 import { MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer } from "../apps/voice-input";
 import { SingleNotificationLayer } from "../notifications";
+import { batteryDisplayModeSetting, onAnySettingChanged, timeFormatSetting } from "../dashboard-settings";
 import { ShellChromeLayer, type ShellChromeState, type ShellChromeWindow } from "./chrome-layer";
 import { ShellModalLayer } from "./modal-layer";
 import { SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
@@ -113,9 +114,33 @@ class Shell {
     this.actions,
   );
 
+  // Top-bar settings we mirror into the chrome; a change to either repaints
+  // the shell surface so the top bar reflects it immediately.
+  private topBarSettingsSubscribed = false;
+  private lastBatteryDisplayMode: string | null = null;
+  private lastTimeFormat: string | null = null;
+
   configure(config: ShellConfig): void {
     this.config = config;
     this.stack.setActions(config.actions);
+    this.subscribeToTopBarSettings();
+  }
+
+  private subscribeToTopBarSettings(): void {
+    if (this.topBarSettingsSubscribed) return;
+    this.topBarSettingsSubscribed = true;
+    this.lastBatteryDisplayMode = batteryDisplayModeSetting.get();
+    this.lastTimeFormat = timeFormatSetting.get();
+    onAnySettingChanged(() => {
+      const batteryMode = batteryDisplayModeSetting.get();
+      const timeFormat = timeFormatSetting.get();
+      if (batteryMode === this.lastBatteryDisplayMode && timeFormat === this.lastTimeFormat) {
+        return;
+      }
+      this.lastBatteryDisplayMode = batteryMode;
+      this.lastTimeFormat = timeFormat;
+      this.config.requestShellRender();
+    });
   }
 
   /** Add a window (or replace one with the same windowId, keeping its slot). */

@@ -1,7 +1,7 @@
 import { APP_VIEWPORT } from "../shell/geometry";
 import { MenuLayer, type MenuLayout } from "../menu";
 import { shell } from "../shell/shell";
-import { batteryDisplayModeSetting, elevenLabsApiKeySetting, enumSettingMenuItem, firmwareDebugFlagsSetting, rawScreenshotsEnabledSetting, saveVoiceRecordingsSetting, terminalAuthTokenSetting, terminalHostSetting, terminalPortSetting, textSettingMenuItem, toggleSettingMenuItem, voiceProviderSetting, nightscoutSiteUrlSetting, nightscoutApiTokenSetting, screenTimeoutSetting } from "../dashboard-settings";
+import { batteryDisplayModeSetting, elevenLabsApiKeySetting, enumSettingMenuItem, firmwareDebugFlagsSetting, rawScreenshotsEnabledSetting, saveVoiceRecordingsSetting, terminalAuthTokenSetting, terminalHostSetting, terminalPortSetting, textSettingMenuItem, timeFormatSetting, toggleSettingMenuItem, voiceProviderSetting, nightscoutSiteUrlSetting, nightscoutApiTokenSetting, screenTimeoutSetting } from "../dashboard-settings";
 import { AboutPage } from "./about-page";
 
 // Rendered in the Settings app window (viewport-sized); cap height to it.
@@ -94,6 +94,8 @@ function createDisplaySettingsMenuLayer(): MenuLayer {
       }),
       // Controls the top-bar battery indicators (icon vs percentage).
       enumSettingMenuItem(batteryDisplayModeSetting),
+      // Controls the top-bar clock (24-hour vs 12-hour).
+      enumSettingMenuItem(timeFormatSetting),
     ],
     SETTINGS_MENU_LAYOUT,
   );

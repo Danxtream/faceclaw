@@ -17,6 +17,7 @@ export type NightscoutSettings = {
   apiToken: string;
 };
 export type BatteryDisplayMode = "icon" | "percentage";
+export type TimeFormat = "24h" | "12h";
 export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "never";
 
 type ConfigSettingOptions<TValue, TId extends string> = {
@@ -179,6 +180,15 @@ export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMod
   formatValue: batteryDisplayModeLabel,
 });
 
+export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
+  id: "timeFormat",
+  label: "Time format",
+  storageKey: "display.timeFormat",
+  defaultValue: "24h",
+  values: ["24h", "12h"],
+  formatValue: timeFormatLabel,
+});
+
 export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>({
   id: "screen-timeout",
   label: "Screen timeout",
@@ -306,6 +316,10 @@ export function screenTimeoutLabel(value: ScreenTimeoutSetting): string {
 
 export function batteryDisplayModeLabel(value: BatteryDisplayMode): string {
   return value === "icon" ? "Icon" : "Percentage";
+}
+
+export function timeFormatLabel(value: TimeFormat): string {
+  return value === "12h" ? "12-hour" : "24-hour";
 }
 
 export function loadNightscoutSettings(): NightscoutSettings {
