@@ -12,6 +12,7 @@ import {
   type AndroidNotification,
   type AndroidNotificationAction,
 } from "../native/notification-icons";
+import { isNotificationListenerEnabled } from "../native/notification-access";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../util/render-freshness";
 import { type DashboardInputEvent, type Layer, type LayerContext, type PaintBelow } from "./layers";
 
@@ -81,7 +82,13 @@ export class NotificationsListLayer implements Layer {
     image.drawText(font, width - 96, PAGE_Y + 9, `${selectedIndex + 1}/${notifications.length}`, 150);
 
     if (!notifications.length) {
-      image.drawText(font, 24, 72, "No current Android notifications.", 190);
+      const message = isNotificationListenerEnabled()
+        ? "No current Android notifications."
+        : "Grant permission on your phone to view notifications on the glasses.";
+      const messageLines = wrapText(font, message, width - 48);
+      for (let index = 0; index < messageLines.length; index++) {
+        image.drawText(font, 24, 72 + index * LINE_HEIGHT, messageLines[index]!, 190);
+      }
       image.drawText(font, 24, height - 36, `${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }

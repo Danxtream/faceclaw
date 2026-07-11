@@ -8,6 +8,7 @@ import { startForegroundNotification, stopForegroundNotification, updateForegrou
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
 import { onAndroidNotificationPosted } from "../native/notification-icons";
+import { isNotificationListenerEnabled, requestNotificationListenerAccess } from "../native/notification-access";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage } from "./firmware-compat";
@@ -863,6 +864,12 @@ class DashboardController {
       return;
     }
     if (appId === "notifications") {
+      // Without notification-listener access the tray reads as empty; prompt
+      // the user on the phone so the on-glasses "grant permission" message is
+      // actionable. The app still opens to show that message.
+      if (!isNotificationListenerEnabled()) {
+        requestNotificationListenerAccess();
+      }
       await this.launchInProcessApp(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID, createNotificationsAppWindow);
       return;
     }
