@@ -93,6 +93,7 @@ export class NotificationsListLayer implements Layer {
       return image;
     }
 
+    const focused = ctx.stack.isFocused();
     const listBottom = height;
     const scrollY = scrollForSelected(layouts, selectedIndex, listBottom - LIST_TOP);
     let cursorY = LIST_TOP - scrollY;
@@ -102,7 +103,7 @@ export class NotificationsListLayer implements Layer {
         // Icons are only resolved for cards actually drawn, so a long list
         // does not fetch icons for everything below the fold.
         const icon = iconForNotification(layout.notification.key);
-        drawNotificationCard(image, font, layout, CARD_X, cursorY, cardWidth, index === selectedIndex, icon);
+        drawNotificationCard(image, font, layout, CARD_X, cursorY, cardWidth, index === selectedIndex, focused, icon);
       }
       cursorY += layout.height + CARD_GAP;
       if (cursorY > listBottom + 80) break;
@@ -277,9 +278,13 @@ function drawNotificationCard(
   y: number,
   width: number,
   selected: boolean,
+  focused: boolean,
   icon: GrayImage | null,
 ): void {
-  const fill = selected ? 15 : 1;
+  // Match the shared menu highlight: faint border + black fill when
+  // unselected; bright border when selected; the non-black fill only appears
+  // when the app also has focus (selected-but-unfocused stays black-filled).
+  const fill = selected && focused ? 15 : 1;
   const stroke = selected ? 110 : 38;
   image.fillRoundedRect(x, y, width, layout.height, fill, 8);
   image.drawRoundedRect(x, y, width, layout.height, stroke, 8);
