@@ -16,7 +16,8 @@ import { CFW_PATCH_SET, FirmwarePatchOp } from "./firmware/cfw-patches";
 declare const com: any;
 
 const FIRMWARE_URL = "https://cdn.evenreal.co/firmware/a6966d807634cc97aec641a0dcca358b.bin";
-const OUTPUT_FILENAME = "g2_2.2.4.34_cfw.bin";
+const CFW_OUTPUT_FILENAME = "g2_2.2.4.34_cfw.bin";
+const STOCK_OUTPUT_FILENAME = "g2_2.2.4.34.bin";
 
 export type FirmwareProgress =
   | { phase: "downloading" }
@@ -50,16 +51,7 @@ export async function buildCustomFirmware(
     }
   };
 
-  report({ phase: "downloading" });
-  const base = await downloadFirmware();
-
-  report({ phase: "verifying-base" });
-  const baseSha = sha256Hex(base);
-  if (baseSha !== CFW_PATCH_SET.baseSha256) {
-    throw new FirmwareBuildError(
-      `Downloaded stock firmware failed verification.\nexpected ${CFW_PATCH_SET.baseSha256}\ngot      ${baseSha}`,
-    );
-  }
+  const base = await downloadAndVerifyBase(report);
 
   const patched = applyPatches(new Uint8Array(base), CFW_PATCH_SET.patches, (applied, total) =>
     report({ phase: "patching", applied, total }),
@@ -75,11 +67,51 @@ export async function buildCustomFirmware(
   }
 
   report({ phase: "writing" });
-  const path = `${knownFolders.documents().path}/${OUTPUT_FILENAME}`;
+  const path = `${knownFolders.documents().path}/${CFW_OUTPUT_FILENAME}`;
   writeFile(path, outBuffer);
 
   report({ phase: "done", path, bytes: patched.length });
   return { path, bytes: patched.length, sha256: outSha };
+}
+
+/**
+ * Download and verify the unmodified stock firmware (no patches applied) and
+ * persist it. Used to un-install the custom firmware by reflashing the original
+ * image the CFW was built from.
+ */
+export async function buildStockFirmware(
+  onProgress?: (progress: FirmwareProgress) => void,
+): Promise<BuiltFirmware> {
+  const report = (progress: FirmwareProgress) => {
+    try {
+      onProgress?.(progress);
+    } catch {
+      // progress reporting must never break the build
+    }
+  };
+
+  const base = await downloadAndVerifyBase(report);
+
+  report({ phase: "writing" });
+  const path = `${knownFolders.documents().path}/${STOCK_OUTPUT_FILENAME}`;
+  writeFile(path, base);
+
+  report({ phase: "done", path, bytes: base.byteLength });
+  return { path, bytes: base.byteLength, sha256: CFW_PATCH_SET.baseSha256 };
+}
+
+async function downloadAndVerifyBase(report: (progress: FirmwareProgress) => void): Promise<ArrayBuffer> {
+  report({ phase: "downloading" });
+  const base = await downloadFirmware();
+
+  report({ phase: "verifying-base" });
+  const baseSha = sha256Hex(base);
+  if (baseSha !== CFW_PATCH_SET.baseSha256) {
+    throw new FirmwareBuildError(
+      `Downloaded stock firmware failed verification.\nexpected ${CFW_PATCH_SET.baseSha256}\ngot      ${baseSha}`,
+    );
+  }
+  return base;
 }
 
 async function downloadFirmware(): Promise<ArrayBuffer> {

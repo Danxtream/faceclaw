@@ -27,7 +27,7 @@
         <Label row="5" text="{{ status }}" class="m-t-16" textWrap="true" />
 
         <GridLayout row="6" columns="*,*" class="m-t-16">
-            <Button col="0" text="Save" tap="{{ onSaveTap }}" class="-primary" />
+            <Button col="0" text="{{ saveLabel }}" tap="{{ onSaveTap }}" class="-primary" />
             <Button col="1" text="Back" tap="{{ onBackTap }}" />
         </GridLayout>
 

@@ -67,10 +67,11 @@ export class OnboardingViewModel extends Observable {
       this.setStep(3);
       return;
     }
-    // Step 3 primary: proceed to the flashing flow (connect + on-glasses
-    // confirmation + firmware download/patch/verify).
+    // Step 3 primary: begin the flashing setup — configure device addresses,
+    // then unpair the official app, then check firmware and flash.
     Frame.topmost()?.navigate({
-      moduleName: "phone-ui/onboarding-flash-page",
+      moduleName: "phone-ui/config-page",
+      context: { onboarding: true },
     });
   }
 

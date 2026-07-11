@@ -332,6 +332,29 @@ export class MainViewModel extends Observable {
     Frame.topmost()?.navigate("phone-ui/config-page");
   }
 
+  async onInstallFirmwareTap(): Promise<void> {
+    await this.openFlashPage("install");
+  }
+
+  async onUninstallFirmwareTap(): Promise<void> {
+    await this.openFlashPage("uninstall");
+  }
+
+  private async openFlashPage(mode: "install" | "uninstall"): Promise<void> {
+    // The flasher needs the glasses to itself, so drop the main connection first.
+    if (this.phase === "connected" || this.phase === "charging") {
+      try {
+        await dashboardController.disconnect();
+      } catch {
+        // proceed anyway; the flash page surfaces any connection trouble
+      }
+    }
+    Frame.topmost()?.navigate({
+      moduleName: "phone-ui/onboarding-flash-page",
+      context: { mode, fromOnboarding: false },
+    });
+  }
+
   onToggleLogTap(): void {
     this.showLog = !this.showLog;
   }

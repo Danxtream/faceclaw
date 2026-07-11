@@ -2,6 +2,7 @@
     <ActionBar title="Faceclaw">
         <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
+        <ActionItem text="Uninstall custom firmware" tap="{{ onUninstallFirmwareTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="{{ showLogMenuLabel }}" tap="{{ onToggleLogTap }}" android.position="popup" />
     </ActionBar>
 
@@ -16,7 +17,10 @@
                         <Label text="{{ evenAppConflictMessage }}" textWrap="true" />
                         <Button text="Open Even app settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary" />
                     </StackLayout>
-                    <Label text="{{ firmwareWarningMessage }}" textWrap="true" visibility="{{ firmwareWarningVisibility }}" />
+                    <StackLayout visibility="{{ firmwareWarningVisibility }}">
+                        <Label text="{{ firmwareWarningMessage }}" textWrap="true" />
+                        <Button text="Install custom firmware" tap="{{ onInstallFirmwareTap }}" class="-primary" />
+                    </StackLayout>
                     <StackLayout visibility="{{ batteryOptimizationWarningVisibility }}">
                         <Label text="Android will slow Faceclaw to a crawl when the phone screen is off unless it is exempt from battery optimization." textWrap="true" />
                         <Button text="Allow unrestricted background usage" tap="{{ onAllowBackgroundUsageTap }}" class="-primary" />

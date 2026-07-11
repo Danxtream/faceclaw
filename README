@@ -4,10 +4,10 @@ This is an unofficial user interface for the Even Realities G2 smart glasses.
 It is entirely unofficial, and comes with no support or warranty from Even
 Realities or from anyone.
 
-To use it, you uninstall or unpair the official Even Realities app, then
-install the custom firmware from from https://github.com/jimrandomh/g2flash,
-then install this app on the same phone. Faceclaw is not compatible with the
-stock firmware due to limitations in how the stock firmware handles images.
+This app runs on Android, and requires installing custom firmware on the
+glasses. The Android app itself can install and uninstall the custom firmware;
+it downloads the stock firmware from Even and applies patches generated from
+https://github.com/jimrandomh/g2flash.
 
 THIS IS AN UNFINISHED DEVELOPMENT PROTOTYPE; IF YOU DON'T HAVE ANY PROGRAMMING
 EXPERIENCE, OR YOU AREN'T COMFORTABLE EDITING, COMPILING, AND SIDELOADING AN

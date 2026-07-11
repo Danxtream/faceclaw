@@ -8,6 +8,7 @@ type TextChangeArgs = { value?: string; object?: { text?: string } };
 
 export class ConfigViewModel extends Observable {
   private readonly discovery = new DeviceDiscoveryBridge();
+  private readonly onboarding: boolean;
   private _rightAddress = "";
   private _leftAddress = "";
   private _ringAddress = "";
@@ -15,13 +16,20 @@ export class ConfigViewModel extends Observable {
   private _discoveryLog = "";
   private _discovering = false;
 
-  constructor() {
+  constructor(options?: { onboarding?: boolean }) {
     super();
+    this.onboarding = options?.onboarding ?? false;
     const stored = loadDeviceAddresses();
     this.rightAddress = stored.right;
     this.leftAddress = stored.left;
     this.ringAddress = stored.ring;
-    this.status = "Edit addresses manually, or load them from paired devices or a scan.";
+    this.status = this.onboarding
+      ? "Load the addresses from the glasses you paired with the official Even app, or scan / enter them, then Continue."
+      : "Edit addresses manually, or load them from paired devices or a scan.";
+  }
+
+  get saveLabel(): string {
+    return this.onboarding ? "Continue" : "Save";
   }
 
   get rightAddress(): string {
@@ -111,6 +119,15 @@ export class ConfigViewModel extends Observable {
   }
 
   onBackTap(): void {
+    if (this.onboarding) {
+      const frame = Frame.topmost();
+      if (frame?.canGoBack()) {
+        frame.goBack();
+        return;
+      }
+      frame?.navigate({ moduleName: "phone-ui/onboarding-page", clearHistory: true });
+      return;
+    }
     Frame.topmost()?.navigate({
       moduleName: "phone-ui/main-page",
       clearHistory: true,
@@ -118,28 +135,39 @@ export class ConfigViewModel extends Observable {
   }
 
   onSaveTap(): void {
+    if (!this.saveAddresses()) {
+      return;
+    }
+    if (this.onboarding) {
+      // Continue the onboarding chain: unpair the official app next.
+      Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-unpair-page" });
+    }
+  }
+
+  private saveAddresses(): boolean {
     const right = normalizeMacAddress(this.rightAddress);
     const left = normalizeMacAddress(this.leftAddress);
     const ring = normalizeMacAddress(this.ringAddress);
 
     if (!isValidMacAddress(right)) {
       this.status = "Right arm MAC address is invalid.";
-      return;
+      return false;
     }
     if (!isValidMacAddress(left)) {
       this.status = "Left arm MAC address is invalid.";
-      return;
+      return false;
     }
     if (!isValidMacAddress(ring, true)) {
       this.status = "Ring MAC address is invalid.";
-      return;
+      return false;
     }
 
     saveDeviceAddresses({ right, left, ring });
     this.rightAddress = right;
     this.leftAddress = left;
     this.ringAddress = ring;
-    this.status = "Saved device addresses.";
+    this.status = this.onboarding ? "Saved. Continuing..." : "Saved device addresses.";
+    return true;
   }
 
   private async populateFromDiscovery(

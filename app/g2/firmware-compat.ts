@@ -10,6 +10,12 @@ import { type FirmwareInfo } from "../native/faceclaw-communicator";
 const MIN_FIRMWARE_VERSION = [2, 2, 4, 34];
 const REQUIRED_FIRMWARE_EXTENSION = "imgz";
 
+// The stock firmware release Faceclaw's custom image is built from. Stock at or
+// below this can be flashed with our patched image; a newer stock version is
+// unrecognized (its layout may differ from what our patch set targets).
+export const FLASHABLE_STOCK_VERSION = [2, 2, 4, 34];
+export const FLASHABLE_STOCK_VERSION_TEXT = FLASHABLE_STOCK_VERSION.join(".");
+
 function parseDottedVersion(version: string): number[] {
   return version
     .trim()
@@ -59,4 +65,42 @@ export function firmwareIncompatibilityMessage(info: FirmwareInfo): string | nul
   }
 
   return null;
+}
+
+/** True when the glasses advertise Faceclaw's custom-firmware image extension. */
+export function hasCustomFirmware(info: FirmwareInfo): boolean {
+  return info.capabilities.trim().split(/\s+/).includes(REQUIRED_FIRMWARE_EXTENSION);
+}
+
+/** The higher of the two arms' reported versions, or "" if none reported. */
+export function reportedFirmwareVersion(info: FirmwareInfo): string {
+  const versions = [info.leftVersion, info.rightVersion].map((v) => v.trim()).filter(Boolean);
+  if (versions.length === 0) return "";
+  return versions.reduce((highest, current) =>
+    compareVersions(parseDottedVersion(current), parseDottedVersion(highest)) > 0 ? current : highest,
+  );
+}
+
+/**
+ * How the pre-flash firmware check should treat the connected glasses:
+ * - "custom": Faceclaw's firmware is already installed — nothing to flash.
+ * - "flashable-stock": stock firmware at or below the version we build from.
+ * - "newer-stock": stock firmware newer than we recognize — flash only on override.
+ * - "unknown": no version could be read (treated as a probe/connection failure).
+ */
+export type OnboardingFirmwareKind = "custom" | "flashable-stock" | "newer-stock" | "unknown";
+
+export function classifyOnboardingFirmware(info: FirmwareInfo): {
+  kind: OnboardingFirmwareKind;
+  version: string;
+} {
+  if (hasCustomFirmware(info)) {
+    return { kind: "custom", version: reportedFirmwareVersion(info) };
+  }
+  const version = reportedFirmwareVersion(info);
+  if (!version) {
+    return { kind: "unknown", version: "" };
+  }
+  const comparison = compareVersions(parseDottedVersion(version), FLASHABLE_STOCK_VERSION);
+  return { kind: comparison <= 0 ? "flashable-stock" : "newer-stock", version };
 }

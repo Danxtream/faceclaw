@@ -8,6 +8,7 @@ import {
 } from "../g2/device-addresses";
 import {
   buildCustomFirmware,
+  buildStockFirmware,
   FirmwareBuildError,
   FirmwareProgress,
 } from "../g2/firmware-builder";
@@ -18,11 +19,12 @@ import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
 
 type FlashPhase = "intro" | "prompt" | "building" | "ready" | "flashing" | "flashed" | "error";
 
-// Kept short to fit the glasses' ~50-column text grid.
-const GLASSES_WARNING =
-  "Flashing custom firmware may void your warranty and can brick the glasses. Continue?";
+export type FlashMode = "install" | "uninstall";
 
 export class OnboardingFlashViewModel extends Observable {
+  private readonly mode: FlashMode;
+  private readonly fromOnboarding: boolean;
+
   private _phase: FlashPhase = "intro";
   private _headline = "Flash Custom Firmware";
   private _status = "";
@@ -39,6 +41,30 @@ export class OnboardingFlashViewModel extends Observable {
   private flasher: FirmwareFlasher | null = null;
   private flasherUnsubscribers: Array<() => void> = [];
   private retryAction: () => void = () => this.beginPrompt();
+
+  constructor(options?: { mode?: FlashMode; fromOnboarding?: boolean }) {
+    super();
+    this.mode = options?.mode ?? "install";
+    this.fromOnboarding = options?.fromOnboarding ?? true;
+    this._headline = this.mode === "uninstall" ? "Uninstall Custom Firmware" : "Flash Custom Firmware";
+    this._status =
+      this.mode === "uninstall"
+        ? "This connects to your glasses, asks for confirmation on the lens, then downloads and reflashes the " +
+          "official firmware — removing Faceclaw's custom features."
+        : "This connects to your glasses, asks for confirmation on the lens, then downloads, verifies, and flashes " +
+          "Faceclaw's custom firmware.";
+  }
+
+  // Kept short to fit the glasses' ~50-column text grid.
+  private get glassesWarning(): string {
+    return this.mode === "uninstall"
+      ? "Reinstalling the official firmware removes Faceclaw's custom features. Continue?"
+      : "Flashing custom firmware will void your warranty and carries some risk of bricking the glasses. Continue?";
+  }
+
+  private get noun(): string {
+    return this.mode === "uninstall" ? "official firmware" : "custom firmware";
+  }
 
   // --- observable properties -------------------------------------------------
 
@@ -221,7 +247,7 @@ export class OnboardingFlashViewModel extends Observable {
 
   private startCommunicator(addresses: { right: string; left: string }): void {
     this.disposePrompt();
-    const prompt = new FlashPromptCommunicator(addresses, GLASSES_WARNING);
+    const prompt = new FlashPromptCommunicator(addresses, this.glassesWarning);
     this.prompt = prompt;
 
     this.promptUnsubscribers.push(
@@ -297,13 +323,14 @@ export class OnboardingFlashViewModel extends Observable {
     this.status = "Confirmed. Downloading the stock firmware...";
 
     try {
-      const result = await buildCustomFirmware((progress) => this.reportBuildProgress(progress));
+      const build = this.mode === "uninstall" ? buildStockFirmware : buildCustomFirmware;
+      const result = await build((progress) => this.reportBuildProgress(progress));
       this.firmwarePath = result.path;
       this.busy = false;
       this.setPhase("ready");
       this.headline = "Firmware Ready";
       this.status =
-        `Custom firmware prepared and verified (${result.bytes.toLocaleString()} bytes).\n\n` +
+        `The ${this.noun} is prepared and verified (${result.bytes.toLocaleString()} bytes).\n\n` +
         "Tap Flash Now to write it to your glasses. Keep both lenses powered on and nearby — " +
         "each lens takes a few minutes, and the glasses will reboot when each lens finishes. " +
         "Do not close the app during flashing.";
@@ -404,7 +431,11 @@ export class OnboardingFlashViewModel extends Observable {
       this.progress = 100;
       this.setPhase("flashed");
       this.headline = "All Done";
-      this.status = detail || "Firmware installed. Your glasses are rebooting into Faceclaw's custom firmware.";
+      this.status =
+        detail ||
+        (this.mode === "uninstall"
+          ? "Official firmware reinstalled. Your glasses are rebooting into the stock firmware."
+          : "Firmware installed. Your glasses are rebooting into Faceclaw's custom firmware.");
       return;
     }
     this.toError(detail || "Flashing failed.", () => this.startFlashing());
@@ -429,8 +460,12 @@ export class OnboardingFlashViewModel extends Observable {
   }
 
   private finish(): void {
-    setPreviewOnlyMode(false);
-    setOnboardingCompleted(true);
+    if (this.mode === "install") {
+      // Reaching the app via a successful install completes onboarding and
+      // clears preview-only. (Idempotent when already past onboarding.)
+      setPreviewOnlyMode(false);
+      setOnboardingCompleted(true);
+    }
     this.disposePrompt();
     this.disposeFlasher();
     Frame.topmost()?.navigate({
@@ -443,11 +478,14 @@ export class OnboardingFlashViewModel extends Observable {
     this.disposePrompt();
     this.disposeFlasher();
     const frame = Frame.topmost();
-    if (frame?.canGoBack()) {
+    if (this.fromOnboarding && frame?.canGoBack()) {
       frame.goBack();
-    } else {
-      frame?.navigate({ moduleName: "phone-ui/onboarding-page", clearHistory: true });
+      return;
     }
+    frame?.navigate({
+      moduleName: this.fromOnboarding ? "phone-ui/onboarding-page" : "phone-ui/main-page",
+      clearHistory: true,
+    });
   }
 
   private toError(message: string, retry: () => void): void {
