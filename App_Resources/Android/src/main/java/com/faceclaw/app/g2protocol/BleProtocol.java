@@ -35,6 +35,9 @@ public class BleProtocol {
     public static final int FLAG_NOTIFY = 0x01;
     public static final int FLAG_NOTIFY_ALT = 0x06;
     public static final int CMD_AUDIO_CONTROL = 15;
+    // EvenHub_Cmd_List.APP_REQUEST_OPEN_IMU_PACKET; the accelerometer stream is
+    // gated behind this control message (ImuCtrl, field 22 of the main ctx).
+    public static final int CMD_OPEN_IMU = 19;
 
     public static final int EVENT_CLICK = 0;
     public static final int EVENT_SCROLL_TOP = 1;
@@ -44,6 +47,7 @@ public class BleProtocol {
     public static final int EVENT_FOREGROUND_EXIT = 5;
     public static final int EVENT_ABNORMAL_EXIT = 6;
     public static final int EVENT_SYSTEM_EXIT = 7;
+    public static final int EVENT_IMU_DATA_REPORT = 8;
     public static final int EVENT_RING_LONG_PRESS = 9;
     public static final int EVENT_RING_LONG_PRESS_RELEASE = 10;
 
@@ -235,6 +239,20 @@ public class BleProtocol {
 
     public static byte[] buildShutdown(int magic, int exitMode) {
         return wrapEvenHub(9, magic, 11, encodeVarintField(1, exitMode));
+    }
+
+    /**
+     * IMU control (ImuCtrl = field 22 of the main ctx). IMU_CtrlCmd carries
+     * IMUReportEn (field 1) and reportFrq (field 2). reportFrq is only
+     * meaningful when enabling; on disable we send just the enable flag.
+     */
+    public static byte[] buildImuControl(int magic, boolean enable, int reportFrq) {
+        List<byte[]> inner = new ArrayList<>();
+        inner.add(encodeVarintField(1, enable ? 1 : 0));
+        if (enable && reportFrq > 0) {
+            inner.add(encodeVarintField(2, reportFrq));
+        }
+        return wrapEvenHub(CMD_OPEN_IMU, magic, 22, concat(inner));
     }
 
     public static byte[] buildSettingsQuery(int magic) {
@@ -515,6 +533,55 @@ public class BleProtocol {
                 return defaultValue;
             }
             offset = length.next + length.value;
+        }
+        return defaultValue;
+    }
+
+    /**
+     * Read a `float` (protobuf wire type 5, little-endian fixed32) field. The
+     * g2-kit proto declares IMU_Report_Data's x/y/z as `double`, but the
+     * firmware actually sends them as fixed32 floats (confirmed from captures).
+     * Returns defaultValue if absent.
+     */
+    public static float readFloatFieldValue(byte[] pb, int fieldNumber, float defaultValue) {
+        int offset = 0;
+        while (offset < pb.length) {
+            VarintResult key = readVarint(pb, offset);
+            if (key == null) {
+                return defaultValue;
+            }
+            offset = key.next;
+            int field = key.value >> 3;
+            int wire = key.value & 0x07;
+            if (wire == 0) {
+                VarintResult value = readVarint(pb, offset);
+                if (value == null) {
+                    return defaultValue;
+                }
+                offset = value.next;
+            } else if (wire == 1) {
+                offset += 8;
+            } else if (wire == 5) {
+                if (offset + 4 > pb.length) {
+                    return defaultValue;
+                }
+                if (field == fieldNumber) {
+                    int bits = 0;
+                    for (int i = 0; i < 4; i++) {
+                        bits |= (pb[offset + i] & 0xff) << (8 * i);
+                    }
+                    return Float.intBitsToFloat(bits);
+                }
+                offset += 4;
+            } else if (wire == 2) {
+                VarintResult length = readVarint(pb, offset);
+                if (length == null) {
+                    return defaultValue;
+                }
+                offset = length.next + length.value;
+            } else {
+                return defaultValue;
+            }
         }
         return defaultValue;
     }

@@ -32,6 +32,11 @@ import {
   NOTIFICATIONS_WINDOW_ID,
 } from "../ui/shell/notifications-app";
 import {
+  createCalendarAppWindow,
+  CALENDAR_SURFACE_ID,
+  CALENDAR_WINDOW_ID,
+} from "../ui/shell/calendar-app";
+import {
   createDebugTestsAppWindow,
   DEBUG_TESTS_SURFACE_ID,
   DEBUG_TESTS_WINDOW_ID,
@@ -218,6 +223,7 @@ class DashboardController {
           { appId: "nightscout", label: "Nightscout", icon: "nightscout" },
           { appId: "transcribe", label: "Transcribe", icon: "mic" },
           { appId: "notifications", label: "Notifications", icon: "bell" },
+          { appId: "calendar", label: "Calendar", icon: "calendar" },
           { appId: "debug-tests", label: "Debug tests", icon: "flask-conical" },
           { appId: "settings", label: "Settings", icon: "settings" },
         ],
@@ -871,6 +877,10 @@ class DashboardController {
         requestNotificationListenerAccess();
       }
       await this.launchInProcessApp(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID, createNotificationsAppWindow);
+      return;
+    }
+    if (appId === "calendar") {
+      await this.launchInProcessApp(CALENDAR_WINDOW_ID, CALENDAR_SURFACE_ID, createCalendarAppWindow);
       return;
     }
     if (appId === "debug-tests") {

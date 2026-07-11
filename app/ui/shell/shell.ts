@@ -367,6 +367,15 @@ class Shell {
     return this.screenOn && this.focus === "window" && this.foregroundWindow()?.windowId === windowId;
   }
 
+  /**
+   * Whether a window's content is on screen: it's the foreground window and the
+   * screen is on. Focus-independent — the app viewport stays visible while the
+   * sidebar is focused (the sidebar is just the left strip).
+   */
+  isWindowVisible(windowId: string): boolean {
+    return this.screenOn && this.foregroundWindow()?.windowId === windowId;
+  }
+
   private handleSidebarInput(event: DashboardInputEvent): ShellInputOutcome {
     switch (event.type) {
       case "double-click":

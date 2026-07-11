@@ -107,6 +107,21 @@ public class MessageBuilder {
         );
     }
 
+    public OutboundMessage enableOrDisableImu(boolean enable, int reportFrq) {
+        int magic = magicPool.allocate();
+        return new OutboundMessage(
+            "imu-control",
+            enable ? "IMU enable" : "IMU disable",
+            BleProtocol.SID_EVENHUB,
+            BleProtocol.FLAG_REQUEST,
+            magic,
+            BleProtocol.buildImuControl(magic, enable, reportFrq),
+            ACK_TIMEOUT_MS,
+            -1,
+            false
+        );
+    }
+
     public OutboundMessage createLayout(BleProtocol.ImageTileOptions... tiles) {
         int magic = magicPool.allocate();
         return new OutboundMessage(

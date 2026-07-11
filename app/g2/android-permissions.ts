@@ -2,8 +2,10 @@ import { Application, Utils } from "@nativescript/core";
 
 const PERMISSION_REQUEST_CODE = 4242;
 const VOICE_PERMISSION_REQUEST_CODE = 4243;
+const CALENDAR_PERMISSION_REQUEST_CODE = 4244;
 const POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS";
 const RECORD_AUDIO_PERMISSION = "android.permission.RECORD_AUDIO";
+const READ_CALENDAR_PERMISSION = "android.permission.READ_CALENDAR";
 
 function getActivity(): androidx.appcompat.app.AppCompatActivity {
   const activity = Application.android.foregroundActivity ?? Application.android.startActivity;
@@ -99,5 +101,26 @@ export async function ensureBlePermissions(): Promise<void> {
 
 export async function ensureVoicePermissions(): Promise<void> {
   await ensurePermissions([RECORD_AUDIO_PERMISSION], VOICE_PERMISSION_REQUEST_CODE, "Voice control");
+}
+
+/** Whether READ_CALENDAR has been granted (false off-Android). */
+export function hasCalendarPermission(): boolean {
+  if (!global.isAndroid) return false;
+  return isPermissionGranted(READ_CALENDAR_PERMISSION);
+}
+
+/**
+ * Prompt for READ_CALENDAR if not already granted. Resolves true when the
+ * permission is held afterward, false if the user denied it (or no activity
+ * was available to show the prompt).
+ */
+export async function ensureCalendarPermission(): Promise<boolean> {
+  if (!global.isAndroid) return false;
+  try {
+    await ensurePermissions([READ_CALENDAR_PERMISSION], CALENDAR_PERMISSION_REQUEST_CODE, "Calendar");
+    return true;
+  } catch {
+    return false;
+  }
 }
 

@@ -84,6 +84,9 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     surfaceId: `window:${options.windowId}`,
     closeable: options.closeable,
     close: () => {
+      // Fire onRemoved for any pushed layers so they release resources (e.g. a
+      // demo that enabled a hardware stream) even when closed from within.
+      stack.clearToBase();
       options.onClosed?.();
       options.removeSurface?.();
     },

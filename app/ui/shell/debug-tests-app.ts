@@ -1,6 +1,7 @@
 import { MenuLayer } from "../menu";
 import { ScreenTestLayer } from "../apps/screen-test";
 import { BuzzerDemoLayer } from "../apps/buzzer-demo";
+import { AccelerometerDemoLayer } from "../apps/accelerometer-demo";
 import { APP_VIEWPORT } from "./geometry";
 import {
   createInProcessWindow,
@@ -27,6 +28,12 @@ export function createDebugTestsAppWindow(options: InProcessAppOptions): InProce
         label: "Buzzer demo",
         onSelect: (ctx) => {
           ctx.stack.push(new BuzzerDemoLayer());
+        },
+      },
+      {
+        label: "Accelerometer demo",
+        onSelect: (ctx) => {
+          ctx.stack.push(new AccelerometerDemoLayer(DEBUG_TESTS_WINDOW_ID, ctx.actions.requestRender));
         },
       },
     ],

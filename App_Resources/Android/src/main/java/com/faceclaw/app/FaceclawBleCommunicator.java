@@ -47,6 +47,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private final String ringAddress;
 
     private volatile FaceclawBleCommunicatorListener listener;
+    private final java.util.List<FaceclawImuListener> imuListeners =
+        new java.util.concurrent.CopyOnWriteArrayList<>();
     private volatile Thread workerThread;
     private volatile boolean running;
     private volatile boolean userDisconnectRequested;
@@ -250,6 +252,39 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     public boolean isSessionReady() {
         synchronized (lock) {
             return running && sessionReady;
+        }
+    }
+
+    /**
+     * Enable or disable the IMU (accelerometer) report stream. Fire-and-forget:
+     * the control message is queued ahead of other traffic; readings arrive via
+     * registered FaceclawImuListeners. reportFrq is the requested sample rate
+     * (ignored on disable).
+     */
+    public void setImuReportEnabled(boolean enable, int reportFrq) {
+        synchronized (lock) {
+            if (!running || !sessionReady) {
+                logLine("skip IMU " + (enable ? "enable" : "disable") + "; session not ready");
+                return;
+            }
+            clearMessagesOfKindLocked("imu-control");
+            OutboundMessage message = messageBuilder.enableOrDisableImu(enable, reportFrq);
+            message.onTimeout = () -> logLine("IMU control ack timeout");
+            pendingMessages.addFirst(message);
+            logLine("queue IMU " + (enable ? "enable freq=" + reportFrq : "disable"));
+        }
+        interruptibleSleep.interrupt();
+    }
+
+    public void addImuListener(FaceclawImuListener listener) {
+        if (listener != null) {
+            imuListeners.add(listener);
+        }
+    }
+
+    public void removeImuListener(FaceclawImuListener listener) {
+        if (listener != null) {
+            imuListeners.remove(listener);
         }
     }
 
@@ -579,7 +614,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (frame.ok && address.equalsIgnoreCase(rightAddress) && (frame.flag == BleProtocol.FLAG_NOTIFY || frame.flag == BleProtocol.FLAG_NOTIFY_ALT)) {
                 event = G2Event.decode(frame);
                 if (event != null) {
-                    lastConnectionOrInputAtMs = lastIncomingAtMs;
+                    // Pure IMU samples arrive continuously; don't let them count
+                    // as user input (which would starve battery polling).
+                    boolean pureImuSample = "sys-event".equals(event.kind)
+                        && event.eventType == BleProtocol.EVENT_IMU_DATA_REPORT;
+                    if (!pureImuSample) {
+                        lastConnectionOrInputAtMs = lastIncomingAtMs;
+                    }
                     if ("sys-event".equals(event.kind)) {
                         if (event.eventType == BleProtocol.EVENT_FOREGROUND_EXIT || event.eventType == BleProtocol.EVENT_ABNORMAL_EXIT || event.eventType == BleProtocol.EVENT_SYSTEM_EXIT) {
                             if (shutdownRequested) {
@@ -597,10 +638,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         interruptibleSleep.interrupt();
         if (event != null) {
-            int frameId = FrameTimings.getInstance().startFrame(
-                "input:" + event.kind + " type=" + event.eventType + " src=" + event.eventSource);
-            FrameTimings.getInstance().log(frameId, "input event decoded from BLE notification");
-            emitRingEvent(event.kind, event.containerName, event.eventType, event.eventSource, event.systemExitReasonCode, frameId);
+            if (event.hasImu) {
+                emitImuData(event.imuX, event.imuY, event.imuZ, event.eventSource);
+            }
+            // A standalone IMU_DATA_REPORT is a sensor sample, not a gesture:
+            // deliver it only to IMU listeners, skipping the input pipeline (and
+            // its per-frame latency bookkeeping) to avoid flooding it.
+            boolean pureImuSample = "sys-event".equals(event.kind)
+                && event.eventType == BleProtocol.EVENT_IMU_DATA_REPORT;
+            if (!pureImuSample) {
+                int frameId = FrameTimings.getInstance().startFrame(
+                    "input:" + event.kind + " type=" + event.eventType + " src=" + event.eventSource);
+                FrameTimings.getInstance().log(frameId, "input event decoded from BLE notification");
+                emitRingEvent(event.kind, event.containerName, event.eventType, event.eventSource, event.systemExitReasonCode, frameId);
+            }
         }
     }
 
@@ -1829,6 +1880,21 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 current.onFrameFinished(frameId, outcome);
             } catch (Throwable t) {
                 Log.w(TAG, "listener onFrameFinished failed", t);
+            }
+        });
+    }
+
+    private void emitImuData(double x, double y, double z, int eventSource) {
+        if (imuListeners.isEmpty()) {
+            return;
+        }
+        mainHandler.post(() -> {
+            for (FaceclawImuListener imuListener : imuListeners) {
+                try {
+                    imuListener.onImuData(x, y, z, eventSource);
+                } catch (Throwable t) {
+                    Log.w(TAG, "listener onImuData failed", t);
+                }
             }
         });
     }
