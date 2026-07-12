@@ -129,7 +129,7 @@ export class GrayImage {
     text: string;
     value: number;
   }): void {
-    const lines = wrapText(font, text, this.width);
+    const lines = wrapText(font, text, width);
     for (let i = 0; i < lines.length; i++) {
       this.drawText(font, x, y + i * font.lineHeight, lines[i]!, value);
     }

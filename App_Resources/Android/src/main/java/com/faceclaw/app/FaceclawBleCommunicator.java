@@ -1004,7 +1004,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         enqueueFirmwareDebugFlagsLocked();
                     }
 
-                    if (messageToPrewrite == null && handleHeartbeat()) {
+                    // A frame ready to send right now: don't inject a fresh
+                    // heartbeat in front of it (the image's own ack resets the
+                    // firmware heartbeat timer, so the heartbeat is redundant).
+                    boolean imageWaiting = !shutdownRequested && fixedLayoutCreated && warmedUp
+                            && pendingMessages.isEmpty() && inFlightMessages.isEmpty()
+                            && now >= imageRetryAfterMs
+                            && !getDesiredFingerprint().equals(displayedFingerprint);
+                    if (messageToPrewrite == null && handleHeartbeat(imageWaiting)) {
                         return ConnectionOptions.IDLE_SLEEP_MS;
                     }
 
@@ -1086,7 +1093,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         return message.message.length + 2 > 232;
     }
 
-    private boolean handleHeartbeat() {
+    private boolean handleHeartbeat(boolean imageWaiting) {
         long now = SystemClock.elapsedRealtime();
         boolean heartbeatEligible = !shutdownRequested && warmedUp && fixedLayoutCreated;
         boolean heartbeatPending = heartbeatEligible && hasPendingOrInflightKindLocked("heartbeat");
@@ -1096,6 +1103,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         boolean heartbeatBlocksLeftWrites = heartbeatReady || heartbeatPending;
 
         if (heartbeatReady && !heartbeatPending && inFlightMessages.isEmpty()) {
+            if (imageWaiting && !heartbeatUrgent) {
+                // Defer to the waiting frame: sending it now satisfies the
+                // firmware heartbeat deadline (its ack resets the timer), and
+                // the heartbeat still fires once we reach the URGENT threshold
+                // if rendering goes quiet again. Preserves the pending-heartbeat
+                // inter-lens-sync invariant below (that path is untouched).
+                return false;
+            }
             Log.i(TAG, "Writing heartbeat");
             OutboundMessage heartbeatMessage = createHeartbeatMessage();
             lastHeartbeatSentAtMs = now;
@@ -1479,9 +1494,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // known-displayed; displayedBmp is cleared on connect/reset/timeout
         // paths, so a non-empty value means display state is trusted.
         byte[] incrementalPayload = null;
+        BleImageOptimizer.IncrementalPlan incrementalPlan = null;
         if (connectionOptions.INCREMENTAL_FRAMES && displayedBmp.length > 0) {
-            incrementalPayload = BleImageOptimizer.buildIncrementalImagePayload(displayedBmp, bmp, nextImageFrameId);
-            if (incrementalPayload != null) {
+            incrementalPlan = BleImageOptimizer.buildIncrementalImagePayload(displayedBmp, bmp, nextImageFrameId);
+            if (incrementalPlan != null) {
+                incrementalPayload = incrementalPlan.payload;
                 // advance only when a delta is actually emitted, so consecutive
                 // deltas carry consecutive ids (CFW skip/reorder detection)
                 nextImageFrameId = nextImageFrameId >= 0xfffe ? 1 : nextImageFrameId + 1;
@@ -1493,9 +1510,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         plan.fragments = BleImageOptimizer.planImageFragments(plan.payload, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
         FrameTimings.getInstance().spanEnd(frameId, "compress-and-plan");
         if (incrementalPayload != null) {
+            // changed/box are packed-byte counts (2px each); clusters>1 with
+            // changed<<box means distant small edits merged into an oversized
+            // box (see BleImageOptimizer.IncrementalPlan) — the prime suspect
+            // for a delta spilling into a second, serialized BLE message.
             FrameTimings.getInstance().log(frameId, "incremental update bbox="
                 + ((incrementalPayload[3] & 0xff) * 4) + "x" + ((incrementalPayload[4] & 0xff) * 2)
-                + "+" + ((incrementalPayload[1] & 0xff) * 4) + "+" + ((incrementalPayload[2] & 0xff) * 2));
+                + "+" + ((incrementalPayload[1] & 0xff) * 4) + "+" + ((incrementalPayload[2] & 0xff) * 2)
+                + " changed=" + incrementalPlan.changedBytes + "/" + incrementalPlan.boxBytes + "B"
+                + " clusters=" + incrementalPlan.clusterCount);
         }
 
         int updateId = nextImageUpdateId++;

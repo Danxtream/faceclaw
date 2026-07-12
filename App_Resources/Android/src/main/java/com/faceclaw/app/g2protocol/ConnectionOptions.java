@@ -30,7 +30,7 @@ public class ConnectionOptions {
 
     final boolean sendImagesToLeft = true;
     final boolean skipSessionIds = true;
-    final int WINDOW_SIZE = 1;
+    final int WINDOW_SIZE = 2;
     // Send changed-region (mode 3 bounding box) updates instead of full frames
     // when the previous frame is known to be displayed. Requires firmware with
     // the experimental bbox-incremental mode. Disabled: the firmware-side

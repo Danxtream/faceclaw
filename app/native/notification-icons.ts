@@ -5,7 +5,13 @@ import { toUint8Array } from "../util/array-util";
 declare const com: any;
 
 const ICON_SIZE = 24;
-const ICON_CACHE_MS = 5_000;
+// Backstop TTL only: the icon caches are invalidated eagerly whenever a
+// notification is posted or dismissed (see invalidateIconCaches callers), so
+// the tray is kept fresh by invalidation, not by expiry. A short TTL just
+// forced a blocking main-thread re-fetch (~40-100ms of Java icon
+// rasterization) every few seconds — usually producing a no-change frame that
+// was then discarded. A long backstop keeps that off the render hot path.
+const ICON_CACHE_MS = 60_000;
 
 let cachedIcons: GrayImage[] = [];
 let cachedAtMs = 0;

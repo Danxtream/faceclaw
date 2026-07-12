@@ -7,3 +7,8 @@ and the sherpa-onnx KWS Zipformer GigaSpeech model published by the k2-fsa/sherp
 community.
 
 G2 microphone LC3 decoding uses Google's liblc3: https://github.com/google/liblc3
+
+The optional TerminusV proportional font is by ohnonot, derived from Dimitar
+Zhekov's Terminus: https://framagit.org/ohnonot/terv-terc
+It is distributed under the SIL Open Font License; see
+app/fonts/terminusv/LICENSE.

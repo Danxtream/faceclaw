@@ -1,139 +1,120 @@
-import { APP_VIEWPORT } from "../shell/geometry";
-import { MenuLayer, type MenuLayout } from "../menu";
+import { getDefaultSmallFont } from "../../graphics/bdffont";
+import { getDashboardLogo } from "../../graphics/logo";
 import { shell } from "../shell/shell";
-import { batteryDisplayModeSetting, elevenLabsApiKeySetting, enumSettingMenuItem, firmwareDebugFlagsSetting, rawScreenshotsEnabledSetting, saveVoiceRecordingsSetting, terminalAuthTokenSetting, terminalHostSetting, terminalPortSetting, textSettingMenuItem, timeFormatSetting, toggleSettingMenuItem, voiceProviderSetting, nightscoutSiteUrlSetting, nightscoutApiTokenSetting, screenTimeoutSetting } from "../dashboard-settings";
-import { AboutPage } from "./about-page";
+import {
+  batteryDisplayModeSetting,
+  elevenLabsApiKeySetting,
+  enumSettingMenuItem,
+  firmwareDebugFlagsSetting,
+  rawScreenshotsEnabledSetting,
+  saveVoiceRecordingsSetting,
+  terminalAuthTokenSetting,
+  terminalHostSetting,
+  terminalPortSetting,
+  textSettingMenuItem,
+  timeFormatSetting,
+  toggleSettingMenuItem,
+  uiFontSetting,
+  voiceProviderSetting,
+  nightscoutSiteUrlSetting,
+  nightscoutApiTokenSetting,
+  screenTimeoutSetting,
+} from "../dashboard-settings";
+import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 
-// Rendered in the Settings app window (viewport-sized); cap height to it.
-const SETTINGS_MENU_LAYOUT: MenuLayout = { x: 8, y: 8, width: 272, maxHeight: APP_VIEWPORT.height - 16 };
-
-export function createSettingsMenuLayer(): MenuLayer {
-  return new MenuLayer(
-    "Settings",
-    [
-      {
-        label: "Display",
-        onSelect: (ctx) => {
-          ctx.stack.push(createDisplaySettingsMenuLayer());
-        },
-      },
-      {
-        label: "Voice",
-        onSelect: (ctx) => {
-          ctx.stack.push(createVoiceSettingsMenuLayer());
-        },
-      },
-      {
-        label: "Integrations",
-        onSelect: (ctx) => {
-          ctx.stack.push(createIntegrationsMenuLayer());
-        },
-      },
-      {
-        label: "Terminal",
-        onSelect: (ctx) => {
-          ctx.stack.push(createTerminalSettingsMenuLayer());
-        },
-      },
-      {
-        label: "Developer",
-        onSelect: (ctx) => {
-          ctx.stack.push(createDeveloperSettingsMenuLayer());
-        },
-      },
-      {
-        label: "About",
-        onSelect: (ctx) => {
-          ctx.stack.push(new AboutPage());
-        },
-      },
-      {
-        label: "Quit / Disconnect",
-        onSelect: async (ctx) => {
-          ctx.stack.clearToBase();
-          await ctx.actions.disconnect();
-        },
-      },
-    ],
-    SETTINGS_MENU_LAYOUT,
-  );
+/** The Settings app's master-detail panel (sections on the left, contents on the right). */
+export function createSettingsPanelLayer(): SettingsPanelLayer {
+  return new SettingsPanelLayer(settingsSections());
 }
 
-function createTerminalSettingsMenuLayer(): MenuLayer {
-  return new MenuLayer(
-    "Settings > Terminal",
-    [
-      textSettingMenuItem(terminalHostSetting),
-      textSettingMenuItem(terminalPortSetting),
-      textSettingMenuItem(terminalAuthTokenSetting),
-    ],
-    SETTINGS_MENU_LAYOUT,
-  );
-}
-
-function createDeveloperSettingsMenuLayer(): MenuLayer {
-  return new MenuLayer(
-    "Settings > Developer",
-    [
-      toggleSettingMenuItem(rawScreenshotsEnabledSetting),
-      toggleSettingMenuItem(saveVoiceRecordingsSetting),
-      toggleSettingMenuItem(firmwareDebugFlagsSetting),
-    ],
-    SETTINGS_MENU_LAYOUT,
-  );
-}
-
-function createDisplaySettingsMenuLayer(): MenuLayer {
-  return new MenuLayer(
-    "Settings > Display",
-    [
-      enumSettingMenuItem(screenTimeoutSetting, {
-        onChange: () => {
-          shell.noteUserActivity();
+function settingsSections(): SettingsSection[] {
+  return [
+    {
+      label: "Display",
+      items: [
+        enumSettingMenuItem(screenTimeoutSetting, {
+          onChange: () => {
+            shell.noteUserActivity();
+          },
+        }),
+        // Controls the top-bar battery indicators (icon vs percentage).
+        enumSettingMenuItem(batteryDisplayModeSetting),
+        // Controls the top-bar clock (24-hour vs 12-hour).
+        enumSettingMenuItem(timeFormatSetting),
+        // Selects the UI body typeface (Terminus vs proportional TerminusV).
+        enumSettingMenuItem(uiFontSetting),
+      ],
+    },
+    {
+      label: "Voice",
+      items: [enumSettingMenuItem(voiceProviderSetting), textSettingMenuItem(elevenLabsApiKeySetting)],
+    },
+    {
+      label: "Integrations",
+      items: [
+        {
+          label: "Nightscout",
+          onSelect: (ctx) => {
+            openSettingsSubMenu(ctx, "Nightscout", [
+              textSettingMenuItem(nightscoutSiteUrlSetting),
+              textSettingMenuItem(nightscoutApiTokenSetting),
+            ]);
+          },
         },
-      }),
-      // Controls the top-bar battery indicators (icon vs percentage).
-      enumSettingMenuItem(batteryDisplayModeSetting),
-      // Controls the top-bar clock (24-hour vs 12-hour).
-      enumSettingMenuItem(timeFormatSetting),
-    ],
-    SETTINGS_MENU_LAYOUT,
-  );
-}
-
-function createVoiceSettingsMenuLayer(): MenuLayer {
-  return new MenuLayer(
-    "Settings > Voice",
-    [
-      enumSettingMenuItem(voiceProviderSetting),
-      textSettingMenuItem(elevenLabsApiKeySetting),
-    ],
-    SETTINGS_MENU_LAYOUT,
-  );
-}
-
-function createIntegrationsMenuLayer(): MenuLayer {
-  return new MenuLayer(
-    "Settings > Integrations",
-    [
-      {
-        label: "Nightscout",
-        onSelect: (ctx) => {
-          ctx.stack.push(createNightscoutSettingsMenuLayer());
+      ],
+    },
+    {
+      label: "Terminal",
+      items: [
+        textSettingMenuItem(terminalHostSetting),
+        textSettingMenuItem(terminalPortSetting),
+        textSettingMenuItem(terminalAuthTokenSetting),
+      ],
+    },
+    {
+      label: "Developer",
+      items: [
+        toggleSettingMenuItem(rawScreenshotsEnabledSetting),
+        toggleSettingMenuItem(saveVoiceRecordingsSetting),
+        toggleSettingMenuItem(firmwareDebugFlagsSetting),
+      ],
+    },
+    {
+      label: "About",
+      items: [],
+      renderDetail: renderAbout,
+    },
+    {
+      label: "Quit",
+      items: [
+        {
+          label: "Disconnect from glasses",
+          onSelect: async (ctx) => {
+            ctx.stack.clearToBase();
+            await ctx.actions.disconnect();
+          },
         },
-      },
-    ],
-    SETTINGS_MENU_LAYOUT,
-  );
+      ],
+    },
+  ];
 }
 
-export function createNightscoutSettingsMenuLayer(): MenuLayer {
-  return new MenuLayer(
-    "Settings > Integrations > Nightscout",
-    [
-      textSettingMenuItem(nightscoutSiteUrlSetting),
-      textSettingMenuItem(nightscoutApiTokenSetting),
-    ],
-    SETTINGS_MENU_LAYOUT,
-  );
+function renderAbout(args: { image: import("../../graphics/image").GrayImage; x: number; y: number; width: number }): void {
+  const { image, x, y, width } = args;
+  const font = getDefaultSmallFont();
+  const logo = getDashboardLogo();
+  if (logo) {
+    image.bitBlt(logo, x, y + 4, { transparentZero: true });
+  }
+  const textX = logo ? x + logo.width + 12 : x;
+  image.drawText(font, textX, y + 8, "Faceclaw", 220);
+  image.drawText(font, textX, y + 24, "Dashboard prototype", 170);
+  image.drawTextWrapped({
+    font,
+    x,
+    y: y + 64,
+    width,
+    text: "By James Babcock. Distributed under the GNU General Public License, version 3. Version 0.1.0. Too much of an early janky development prototype to have proper numbered releases.",
+    value: 170,
+  });
 }

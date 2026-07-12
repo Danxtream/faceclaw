@@ -115,7 +115,29 @@ public final class BleImageOptimizer {
      * skipped or duplicated deltas (its diagnostic overlay); the caller advances
      * it by 1 per emitted delta so consecutive deltas are consecutive.
      */
-    public static byte[] buildIncrementalImagePayload(byte[] previousBmp, byte[] newBmp, int frameId) {
+    /**
+     * A mode-3 incremental payload plus diagnostics about how tightly the
+     * bounding box fit the actual change. {@code changedBytes} is how many
+     * packed bytes actually differ; {@code boxBytes} is how many the box sends.
+     * A large box with few changed bytes / multiple clusters means distant
+     * small edits were merged into one oversized box (which can spill past the
+     * fragment size into an extra serialized BLE message).
+     */
+    public static final class IncrementalPlan {
+        public final byte[] payload;
+        public final int changedBytes;
+        public final int boxBytes;
+        public final int clusterCount;
+
+        IncrementalPlan(byte[] payload, int changedBytes, int boxBytes, int clusterCount) {
+            this.payload = payload;
+            this.changedBytes = changedBytes;
+            this.boxBytes = boxBytes;
+            this.clusterCount = clusterCount;
+        }
+    }
+
+    public static IncrementalPlan buildIncrementalImagePayload(byte[] previousBmp, byte[] newBmp, int frameId) {
         int width = BmpUtil.readBmpWidth(newBmp);
         int height = BmpUtil.readBmpHeight(newBmp);
         if (width <= 0 || height <= 0
@@ -130,33 +152,40 @@ public final class BleImageOptimizer {
             return null;
         }
 
-        // Changed bounding box in packed-byte coordinates (1 byte = 2 pixels).
+        // Full diff scan in packed-byte coordinates (1 byte = 2 pixels): the
+        // changed bounding box plus diagnostics (total changed bytes, and how
+        // many disjoint horizontal column-clusters the change splits into).
         int minByteX = stride;
         int maxByteX = -1;
         int minY = height;
         int maxY = -1;
+        int changedBytes = 0;
+        boolean[] columnChanged = new boolean[stride];
         for (int y = 0; y < height; y++) {
             int rowOffset = y * stride;
             for (int x = 0; x < stride; x++) {
                 if (previous[rowOffset + x] != next[rowOffset + x]) {
+                    changedBytes++;
+                    columnChanged[x] = true;
                     if (x < minByteX) minByteX = x;
                     if (x > maxByteX) maxByteX = x;
                     if (y < minY) minY = y;
                     maxY = y;
-                    // The rest of the row only matters for maxByteX; scan from
-                    // the right end to finish this row quickly.
-                    for (int rx = stride - 1; rx > maxByteX; rx--) {
-                        if (previous[rowOffset + rx] != next[rowOffset + rx]) {
-                            maxByteX = rx;
-                            break;
-                        }
-                    }
-                    break;
                 }
             }
         }
         if (maxY < 0) {
             return null; // identical
+        }
+        int clusterCount = 0;
+        boolean inCluster = false;
+        for (int x = minByteX; x <= maxByteX; x++) {
+            if (columnChanged[x]) {
+                if (!inCluster) clusterCount++;
+                inCluster = true;
+            } else {
+                inCluster = false;
+            }
         }
 
         // Pixel-space box, aligned: left/width to multiples of 4, top/height to
@@ -186,7 +215,7 @@ public final class BleImageOptimizer {
         out[5] = (byte) (frameId & 0xff);          // fid_lo
         out[6] = (byte) ((frameId >> 8) & 0xff);   // fid_hi
         System.arraycopy(compressed, 0, out, 7, compressed.length);
-        return out;
+        return new IncrementalPlan(out, changedBytes, region.length, clusterCount);
     }
 
     /**

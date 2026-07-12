@@ -1,8 +1,8 @@
 import { GrayImage } from "../../graphics/image";
 import { LayerActions } from "../layers";
 import { EditTextSettingLayer } from "../dashboard-settings";
-import { createSettingsMenuLayer } from "../dashboard/settings-menus";
-import { createInProcessWindow, YieldAtRootLayer } from "./in-process-window";
+import { createSettingsPanelLayer } from "../dashboard/settings-menus";
+import { createInProcessWindow } from "./in-process-window";
 import { type ShellWindow } from "./shell";
 
 export const SETTINGS_WINDOW_ID = "settings";
@@ -40,7 +40,9 @@ export function createSettingsAppWindow(options: SettingsAppOptions): SettingsAp
     icon: "settings",
     closeable: true,
     actions: options.actions,
-    baseLayer: new YieldAtRootLayer(createSettingsMenuLayer()),
+    // Not wrapped in YieldAtRootLayer: the panel routes double-click itself
+    // (right column -> left column, then left column -> sidebar).
+    baseLayer: createSettingsPanelLayer(),
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,

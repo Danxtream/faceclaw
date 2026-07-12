@@ -6,7 +6,12 @@ import {
   setBooleanSetting,
   setStringSetting,
 } from "~/native/settings-store";
-import { getDefaultSmallFont } from "~/graphics/bdffont";
+import {
+  getDefaultSmallFont,
+  UI_FONT_SETTING_KEY,
+  UI_FONT_VALUES,
+  type UiFontChoice,
+} from "~/graphics/bdffont";
 import { wrapText } from "~/graphics/textwrap";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, MenuLayer } from "./menu";
 import { DashboardInputEvent, Layer, type LayerContext } from "./layers";
@@ -180,6 +185,15 @@ export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMod
   formatValue: batteryDisplayModeLabel,
 });
 
+export const uiFontSetting = new ConfigSettingEnum<UiFontChoice>({
+  id: "uiFont",
+  label: "Font",
+  storageKey: UI_FONT_SETTING_KEY,
+  defaultValue: "terminus",
+  values: UI_FONT_VALUES,
+  formatValue: uiFontLabel,
+});
+
 export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
   id: "timeFormat",
   label: "Time format",
@@ -320,6 +334,10 @@ export function batteryDisplayModeLabel(value: BatteryDisplayMode): string {
 
 export function timeFormatLabel(value: TimeFormat): string {
   return value === "12h" ? "12-hour" : "24-hour";
+}
+
+export function uiFontLabel(value: UiFontChoice): string {
+  return value === "terminusv" ? "TerminusV" : "Terminus";
 }
 
 export function loadNightscoutSettings(): NightscoutSettings {

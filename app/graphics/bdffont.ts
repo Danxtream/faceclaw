@@ -1,4 +1,5 @@
 import { knownFolders } from "@nativescript/core";
+import { getStringSetting, onSettingsStoreChanged } from "~/native/settings-store";
 
 export type Glyph = {
   encoding: number;
@@ -15,6 +16,14 @@ export class BdfFont {
   readonly descent: number;
   readonly lineHeight: number;
   readonly defaultChar: number;
+  /**
+   * Font consulted for code points this font has no glyph for. Used so a
+   * partial-coverage face (e.g. TerminusV, which only ships ISO-8859-1) can
+   * borrow glyphs from a full-coverage face of the same pixel height. The
+   * fallback's glyphs are drawn with *this* font's ascent, so the two must
+   * share a baseline (ascent/descent) for the result to line up.
+   */
+  private readonly fallback?: BdfFont;
   private readonly glyphs: Map<number, Glyph>;
 
   constructor(opts: {
@@ -22,15 +31,18 @@ export class BdfFont {
     descent: number;
     defaultChar: number;
     glyphs: Map<number, Glyph>;
+    fallback?: BdfFont;
   }) {
     this.ascent = opts.ascent;
     this.descent = opts.descent;
     this.lineHeight = opts.ascent + opts.descent;
     this.defaultChar = opts.defaultChar;
     this.glyphs = opts.glyphs;
+    this.fallback = opts.fallback;
   }
 
-  static parse(source: string): BdfFont {
+  static parse(source: string, opts: { fallback?: BdfFont; minEncoding?: number } = {}): BdfFont {
+    const minEncoding = opts.minEncoding ?? 0;
     const lines = source.replace(/\r/g, "").split("\n");
     let ascent = 10;
     let descent = 2;
@@ -92,7 +104,7 @@ export class BdfFont {
           continue;
         }
         if (inner === "ENDCHAR") {
-          if (encoding >= 0) {
+          if (encoding >= minEncoding) {
             glyphs.set(encoding, {
               encoding,
               dwidthX: dwidthX || bbxWidth,
@@ -108,15 +120,25 @@ export class BdfFont {
       }
     }
 
-    return new BdfFont({ ascent, descent, defaultChar, glyphs });
+    return new BdfFont({ ascent, descent, defaultChar, glyphs, fallback: opts.fallback });
+  }
+
+  /** Exact lookup for a single code point, with no default-char substitution. */
+  private getExactGlyph(codePoint: number): Glyph | undefined {
+    return this.glyphs.get(codePoint) ?? this.fallback?.getExactGlyph(codePoint);
   }
 
   getGlyph(codePoint: number): Glyph | undefined {
-    return this.glyphs.get(codePoint) ?? this.glyphs.get(this.defaultChar) ?? this.glyphs.get(63);
+    return (
+      this.getExactGlyph(codePoint) ??
+      this.glyphs.get(this.defaultChar) ??
+      this.glyphs.get(63) ??
+      this.fallback?.getGlyph(codePoint)
+    );
   }
 
   hasGlyph(codePoint: number): boolean {
-    return this.glyphs.has(codePoint);
+    return this.glyphs.has(codePoint) || (this.fallback?.hasGlyph(codePoint) ?? false);
   }
 
   measureText(text: string): number {
@@ -128,34 +150,85 @@ export class BdfFont {
   }
 }
 
-const cachedEmbeddedFonts = new Map<string, BdfFont>();
-
-function loadEmbeddedFont(path: string): BdfFont {
-  const cached = cachedEmbeddedFonts.get(path);
-  if (cached) {
-    return cached;
-  }
-  const file = knownFolders.currentApp().getFile(path);
-  const text = file.readTextSync();
-  const font = BdfFont.parse(text);
-  cachedEmbeddedFonts.set(path, font);
-  return font;
-}
-
 const embeddedFonts = {
   "terminus12": "fonts/terminus/ter-u12n.bdf",
   "terminus16": "fonts/terminus/ter-u16n.bdf",
   "terminus24": "fonts/terminus/ter-u24n.bdf",
   "terminus32": "fonts/terminus/ter-u32n.bdf",
-}
+  // TerminusV is a proportional (variable-width) Terminus derivative that only
+  // covers ISO-8859-1. At 12px it shares Terminus's baseline, so we fall back
+  // to Terminus 12 for any code point outside Latin-1. minEncoding 32 drops
+  // TerminusV's private low-encoding drawing glyphs so control code points fall
+  // through to Terminus too.
+  "terminusv12": "fonts/terminusv/terv12n.bdf",
+} as const;
 type EmbeddedFontName = keyof typeof embeddedFonts;
 
+const fontFallbacks: Partial<Record<EmbeddedFontName, EmbeddedFontName>> = {
+  terminusv12: "terminus12",
+};
+const fontMinEncoding: Partial<Record<EmbeddedFontName, number>> = {
+  terminusv12: 32,
+};
+
+const cachedEmbeddedFonts = new Map<EmbeddedFontName, BdfFont>();
+
+function loadEmbeddedFont(name: EmbeddedFontName): BdfFont {
+  const cached = cachedEmbeddedFonts.get(name);
+  if (cached) {
+    return cached;
+  }
+  const file = knownFolders.currentApp().getFile(embeddedFonts[name]);
+  const text = file.readTextSync();
+  const fallbackName = fontFallbacks[name];
+  const font = BdfFont.parse(text, {
+    fallback: fallbackName ? loadEmbeddedFont(fallbackName) : undefined,
+    minEncoding: fontMinEncoding[name],
+  });
+  cachedEmbeddedFonts.set(name, font);
+  return font;
+}
+
 export function getFont(font: EmbeddedFontName): BdfFont {
-  return loadEmbeddedFont(embeddedFonts[font]);
+  return loadEmbeddedFont(font);
+}
+
+// User-selectable UI typeface. Only the small (12px) font has an alternative,
+// since TerminusV ships no larger sizes; medium/large stay Terminus. The
+// storage key and values are re-used by the settings UI in dashboard-settings.
+export const UI_FONT_SETTING_KEY = "display.uiFont";
+export const UI_FONT_VALUES = ["terminus", "terminusv"] as const;
+export type UiFontChoice = (typeof UI_FONT_VALUES)[number];
+
+const SMALL_FONT_FOR_CHOICE: Record<UiFontChoice, EmbeddedFontName> = {
+  terminus: "terminus12",
+  terminusv: "terminusv12",
+};
+
+// Reading the setting hits a JNI bridge, and getDefaultSmallFont() is called
+// once per menu item per paint, so cache the resolved choice and invalidate it
+// when the setting changes (in any isolate).
+let cachedSmallFontChoice: UiFontChoice | null = null;
+let smallFontListenerInstalled = false;
+
+function currentSmallFontName(): EmbeddedFontName {
+  if (!smallFontListenerInstalled) {
+    onSettingsStoreChanged((key) => {
+      if (key === UI_FONT_SETTING_KEY) cachedSmallFontChoice = null;
+    });
+    smallFontListenerInstalled = true;
+  }
+  if (cachedSmallFontChoice === null) {
+    const raw = getStringSetting(UI_FONT_SETTING_KEY, "terminus");
+    cachedSmallFontChoice = (UI_FONT_VALUES as readonly string[]).includes(raw)
+      ? (raw as UiFontChoice)
+      : "terminus";
+  }
+  return SMALL_FONT_FOR_CHOICE[cachedSmallFontChoice];
 }
 
 export function getDefaultSmallFont(): BdfFont {
-  return getFont("terminus12");
+  return getFont(currentSmallFontName());
 }
 export function getDefaultMediumFont(): BdfFont {
   return getFont("terminus16");
