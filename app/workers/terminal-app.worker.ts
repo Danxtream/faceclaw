@@ -458,8 +458,8 @@ function paint(window: TerminalWindow): GrayImage {
 
 function paintHub(window: HubWindow): GrayImage {
   const image = new GrayImage(viewportWidth, viewportHeight, 0);
+  // No border box: the shell chrome (top bar + sidebar) already frames the app.
   image.drawText(terminalFont, 18, 10, "Terminal", 220);
-  image.drawRect(12, 8, viewportWidth - 24, viewportHeight - 16, 52);
   image.drawText(terminalFont, 24, 30, hubStatusLine(), 170);
 
   let listTop = 52;
