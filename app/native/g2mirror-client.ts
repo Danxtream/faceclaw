@@ -38,6 +38,18 @@ export type G2MirrorState = {
   attachedCommand: string;
 };
 
+/** A page of archived scrollback lines (see PROTOCOL.md "Scrollback history"). */
+export type G2MirrorHistoryReply = {
+  /** Absolute index of lines[0]; the page covers [start, start + lines.length). */
+  start: number;
+  /** Oldest index still retained by the wrapper (older requests return nothing). */
+  oldest: number;
+  /** Current splice point (next line to be archived). */
+  next: number;
+  /** Plain text, ANSI-stripped, oldest-to-newest. */
+  lines: string[];
+};
+
 export type G2MirrorClientOptions = {
   host: string;
   port: number;
@@ -56,10 +68,16 @@ export class G2MirrorClient {
   private status = "Not connected.";
   private sessions: G2MirrorSession[] = [];
   private attachedCommand = "";
+  // Scrollback archive extent: `historyNext` is the splice point (index of the
+  // next line to be archived), `historyOldest` the oldest retained index.
+  private historyNext = 0;
+  private historyOldest = 0;
   private listRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
   private readonly stateListeners = new Set<(state: G2MirrorState) => void>();
   private readonly terminalDataListeners = new Set<(data: Uint8Array, kind: TerminalDataKind) => void>();
+  private readonly snapshotListeners = new Set<(historyNext: number, historyOldest: number) => void>();
+  private readonly historyLinesListeners = new Set<(reply: G2MirrorHistoryReply) => void>();
   private readonly sessionAttachedListeners = new Set<(command: string) => void>();
   private readonly sessionDetachedListeners = new Set<(reason: string) => void>();
   private readonly bellListeners = new Set<(socket: string, lastBellAtMs: number) => void>();
@@ -192,6 +210,27 @@ export class G2MirrorClient {
   }
 
   /**
+   * A snapshot arrived, carrying its scrollback splice point (`history_next`)
+   * and the oldest retained index. Fired after the snapshot's terminal data.
+   */
+  onSnapshot(listener: (historyNext: number, historyOldest: number) => void): () => void {
+    this.snapshotListeners.add(listener);
+    return () => this.snapshotListeners.delete(listener);
+  }
+
+  /** A page of archived scrollback (reply to requestHistory). */
+  onHistoryLines(listener: (reply: G2MirrorHistoryReply) => void): () => void {
+    this.historyLinesListeners.add(listener);
+    return () => this.historyLinesListeners.delete(listener);
+  }
+
+  /** Request archived lines ending just before `before`, paging backwards. */
+  requestHistory(before: number, limit = 200): void {
+    if (this.phase !== "attached") return;
+    this.send({ type: "history", before, limit });
+  }
+
+  /**
    * Write bytes to the attached app's terminal, as a terminal emulator would
    * for keystrokes. `text` is sent as UTF-8; include a trailing "\r" to submit
    * (the Enter key). No-op unless a session is attached.
@@ -272,17 +311,46 @@ export class G2MirrorClient {
         // Session accepted us (relayed from the wrapper).
         this.clearListRefreshTimer();
         this.attachedCommand = String(message.command ?? "");
+        const history = message.history;
+        if (history && typeof history.next === "number") {
+          this.historyNext = Number(history.next) || 0;
+          this.historyOldest = Number(history.oldest) || 0;
+        }
         this.setState("attached", `Attached: ${this.attachedCommand || "session"}`);
         for (const listener of Array.from(this.sessionAttachedListeners)) {
           listener(this.attachedCommand);
         }
         return;
       }
-      case "snapshot":
+      case "snapshot": {
+        const data = decodeBase64(String(message.data ?? ""));
+        if (typeof message.history_next === "number") {
+          this.historyNext = Number(message.history_next) || 0;
+        }
+        for (const listener of Array.from(this.terminalDataListeners)) {
+          listener(data, "snapshot");
+        }
+        for (const listener of Array.from(this.snapshotListeners)) {
+          listener(this.historyNext, this.historyOldest);
+        }
+        return;
+      }
       case "output": {
         const data = decodeBase64(String(message.data ?? ""));
         for (const listener of Array.from(this.terminalDataListeners)) {
-          listener(data, message.type as TerminalDataKind);
+          listener(data, "output");
+        }
+        return;
+      }
+      case "history_lines": {
+        const start = Number(message.start) || 0;
+        const oldest = Number(message.oldest) || 0;
+        const next = Number(message.next) || 0;
+        const rawLines = Array.isArray(message.lines) ? message.lines : [];
+        const lines = rawLines.map((line: any) => stripAnsi(decodeBase64Utf8(String(line?.data ?? ""))));
+        this.historyOldest = oldest;
+        for (const listener of Array.from(this.historyLinesListeners)) {
+          listener({ start, oldest, next, lines });
         }
         return;
       }
@@ -366,6 +434,18 @@ export class G2MirrorClient {
 function decodeBase64(data: string): Uint8Array {
   if (!data) return new Uint8Array(0);
   return toUint8Array(android.util.Base64.decode(data, android.util.Base64.DEFAULT));
+}
+
+function decodeBase64Utf8(data: string): string {
+  if (!data) return "";
+  const bytes = android.util.Base64.decode(data, android.util.Base64.DEFAULT);
+  return String(new java.lang.String(bytes, "UTF-8"));
+}
+
+/** Strip escape sequences (SGR colors, other CSI) so archived lines render as plain text. */
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b-\x1f]/g, "");
 }
 
 function encodeBase64Utf8(text: string): string {

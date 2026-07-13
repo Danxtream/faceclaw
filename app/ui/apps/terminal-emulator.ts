@@ -38,7 +38,9 @@ export class TerminalEmulator {
     this.term = new Terminal({
       cols,
       rows,
-      scrollback: 0,
+      // Retain witnessed lines that scroll off the top; the archive covers
+      // everything before this. Matches the wrapper's default history cap.
+      scrollback: 10000,
       allowProposedApi: true,
     });
   }
@@ -56,18 +58,24 @@ export class TerminalEmulator {
     this.term.reset();
   }
 
-  visibleLines(): string[] {
-    const buffer = this.term.buffer.active;
-    const lines: string[] = [];
-    for (let row = 0; row < this.rows; row++) {
-      const line = buffer.getLine(buffer.viewportY + row);
-      lines.push(line ? line.translateToString(true) : "");
-    }
-    return lines;
+  /** Total lines held (witnessed scrollback + the live screen). */
+  bufferLength(): number {
+    return this.term.buffer.active.length;
   }
 
-  cursor(): { x: number; y: number } {
+  /** Text of buffer line `index` (0 = oldest retained), trailing space trimmed. */
+  lineAt(index: number): string {
+    const line = this.term.buffer.active.getLine(index);
+    return line ? line.translateToString(true) : "";
+  }
+
+  /** Cursor row as an absolute buffer index (baseY + cursorY). */
+  cursorRow(): number {
     const buffer = this.term.buffer.active;
-    return { x: buffer.cursorX, y: buffer.cursorY };
+    return buffer.baseY + buffer.cursorY;
+  }
+
+  cursorCol(): number {
+    return this.term.buffer.active.cursorX;
   }
 }

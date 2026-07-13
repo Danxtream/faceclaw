@@ -23,6 +23,7 @@ import {
   type G2MirrorState,
 } from "../native/g2mirror-client";
 import { onSettingsStoreChanged } from "../native/settings-store";
+import { clamp } from "../util/numeric-util";
 import {
   terminalAuthTokenSetting,
   terminalHostSetting,
@@ -43,6 +44,7 @@ const CELL_HEIGHT = 12;
 const DEVICE_NAME = "Faceclaw G2";
 const HUB_ROW_HEIGHT = 20;
 const RENDER_COALESCE_MS = 33;
+const HISTORY_PAGE = 200;
 
 type BaseWindow = {
   windowId: string;
@@ -67,6 +69,17 @@ type ViewWindow = BaseWindow & {
   attachRequested: boolean;
   status: string;
   unsubscribers: Array<() => void>;
+  // Scrollback model. Absolute line indices span the archive and the emulator:
+  // indices < historyNext are archived lines; >= historyNext are emulator buffer
+  // line (index - historyNext). `archive` holds fetched lines [archiveStart,
+  // historyNext). `scrollTop` is the absolute index of the top visible line, or
+  // null to follow the live bottom.
+  historyNext: number;
+  historyOldest: number;
+  archive: string[];
+  archiveStart: number;
+  scrollTop: number | null;
+  historyFetchInFlight: boolean;
 };
 
 type TerminalWindow = HubWindow | ViewWindow;
@@ -262,8 +275,30 @@ function createViewWindow(windowId: string, surfaceId: string, socket: string, l
     attachRequested: false,
     status: "Connecting...",
     unsubscribers: [],
+    historyNext: 0,
+    historyOldest: 0,
+    archive: [],
+    archiveStart: 0,
+    scrollTop: null,
+    historyFetchInFlight: false,
   };
   window.unsubscribers.push(
+    client.onSnapshot((historyNext, historyOldest) => {
+      // A (re)snapshot resets the emulator, so reset the scroll model too:
+      // follow the bottom and drop any fetched archive (its splice may move).
+      window.historyNext = historyNext;
+      window.historyOldest = historyOldest;
+      window.archive = [];
+      window.archiveStart = historyNext;
+      window.scrollTop = null;
+      window.historyFetchInFlight = false;
+      maybePrefetchHistory(window);
+      scheduleRender(window);
+    }),
+    client.onHistoryLines((reply) => {
+      applyHistoryReply(window, reply);
+      scheduleRender(window);
+    }),
     client.onStateChange((state) => {
       if (state.phase === "connected" && !window.attachRequested) {
         window.attachRequested = true;
@@ -302,8 +337,56 @@ function handleInput(window: TerminalWindow, event: DashboardInputEvent, frameId
     handleHubInput(window, event, frameId);
     return;
   }
-  // View windows are readonly (protocol v1 has no keyboard input).
+  // View windows: scroll gestures page through scrollback; text input arrives
+  // via the separate "text-input" message.
+  if (event.type === "scroll-up" || event.type === "scroll-down") {
+    handleViewScroll(window, event.type === "scroll-up" ? -1 : 1, frameId);
+    return;
+  }
   frameTimings.finishFrame(frameId, "discarded: terminal view ignored input");
+}
+
+/** Top visible absolute line index when following the live bottom. */
+function followTop(window: ViewWindow): number {
+  return window.historyNext + window.emulator.bufferLength() - gridRows;
+}
+
+function handleViewScroll(window: ViewWindow, direction: -1 | 1, frameId: number): void {
+  const page = Math.max(1, gridRows - 1);
+  const bottomTop = followTop(window);
+  const minTop = window.archiveStart;
+  const currentTop = window.scrollTop ?? bottomTop;
+  const newTop = clamp(currentTop + direction * page, Math.min(minTop, bottomTop), bottomTop);
+  // Snapping to (or below) the live bottom re-locks to follow mode.
+  window.scrollTop = newTop >= bottomTop ? null : newTop;
+  maybePrefetchHistory(window);
+  renderAndSubmit(window, frameId);
+}
+
+/** Fetch an older page of archive when the view nears the top of what's loaded. */
+function maybePrefetchHistory(window: ViewWindow): void {
+  if (window.historyFetchInFlight) return;
+  if (window.archiveStart <= window.historyOldest) return; // nothing older retained
+  const top = window.scrollTop ?? followTop(window);
+  if (window.archive.length === 0 || top - window.archiveStart <= gridRows) {
+    window.historyFetchInFlight = true;
+    window.client.requestHistory(window.archiveStart, HISTORY_PAGE);
+  }
+}
+
+function applyHistoryReply(window: ViewWindow, reply: { start: number; oldest: number; lines: string[] }): void {
+  window.historyFetchInFlight = false;
+  window.historyOldest = reply.oldest;
+  if (!reply.lines.length) {
+    // Nothing older was returned; stop asking below what we already have.
+    window.historyOldest = window.archiveStart;
+    return;
+  }
+  // The page ends just before our request (archiveStart); prepend it.
+  if (reply.start < window.archiveStart) {
+    window.archive = reply.lines.concat(window.archive);
+    window.archiveStart = reply.start;
+  }
 }
 
 type HubItem = {
@@ -417,15 +500,46 @@ function paintView(window: ViewWindow): GrayImage {
     image.drawText(terminalFont, 24, 130, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
-  const cursor = window.emulator.cursor();
-  image.fillRect(cursor.x * CELL_WIDTH, cursor.y * CELL_HEIGHT, CELL_WIDTH, CELL_HEIGHT, 70);
-  const lines = window.emulator.visibleLines();
-  for (let row = 0; row < lines.length; row++) {
-    const line = lines[row]!;
-    if (line.length === 0) continue;
-    image.drawText(terminalFont, 0, row * CELL_HEIGHT, line, 200);
+
+  const rows = gridRows;
+  const historyNext = window.historyNext;
+  const bufferLength = window.emulator.bufferLength();
+  const bottomTop = historyNext + bufferLength - rows;
+  const following = window.scrollTop === null;
+  const top = following ? bottomTop : clamp(window.scrollTop!, window.archiveStart, bottomTop);
+
+  // Draw the cursor only if its line is within the visible window.
+  const cursorScreenRow = historyNext + window.emulator.cursorRow() - top;
+  if (cursorScreenRow >= 0 && cursorScreenRow < rows) {
+    image.fillRect(window.emulator.cursorCol() * CELL_WIDTH, cursorScreenRow * CELL_HEIGHT, CELL_WIDTH, CELL_HEIGHT, 70);
+  }
+
+  for (let row = 0; row < rows; row++) {
+    const absolute = top + row;
+    let text = "";
+    if (absolute >= historyNext) {
+      const bufferIndex = absolute - historyNext;
+      if (bufferIndex >= 0 && bufferIndex < bufferLength) text = window.emulator.lineAt(bufferIndex);
+    } else if (absolute >= window.archiveStart) {
+      text = window.archive[absolute - window.archiveStart] ?? "";
+    }
+    if (text.length) image.drawText(terminalFont, 0, row * CELL_HEIGHT, text, 200);
+  }
+
+  if (!following) {
+    drawScrollIndicator(image, top, window.archiveStart, bottomTop);
   }
   return image;
+}
+
+/** Right-edge scrollbar showing the view position within the scrollback. */
+function drawScrollIndicator(image: GrayImage, top: number, minTop: number, maxTop: number): void {
+  const trackX = viewportWidth - 3;
+  image.fillRect(trackX, 0, 3, viewportHeight, 30);
+  const fraction = clamp((top - minTop) / Math.max(1, maxTop - minTop), 0, 1);
+  const thumbHeight = 24;
+  const thumbY = Math.round((viewportHeight - thumbHeight) * fraction);
+  image.fillRect(trackX, thumbY, 3, thumbHeight, 150);
 }
 
 /** Coalesce bursty repaint triggers (terminal output) into ~30fps renders. */
