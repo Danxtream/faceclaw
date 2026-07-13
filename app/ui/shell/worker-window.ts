@@ -13,6 +13,7 @@ export type WorkerAppMessage =
   | { type: "open-window"; windowId: string; surfaceId: string; viewport: { width: number; height: number } }
   | { type: "close-window"; windowId: string }
   | { type: "input"; windowId: string; event: unknown; frameId: number }
+  | { type: "text-input"; windowId: string; text: string }
   | { type: "render"; windowId: string }
   | { type: "foreground"; windowId: string; foreground: boolean }
   | { type: "screen"; on: boolean };
@@ -145,6 +146,9 @@ export class WorkerAppHost {
       },
       requestRender: () => {
         this.post({ type: "render", windowId: spec.windowId });
+      },
+      receiveTextInput: (text) => {
+        this.post({ type: "text-input", windowId: spec.windowId, text });
       },
       setForeground: (foreground) => {
         this.options.setSurfaceVisible(surfaceId, foreground);

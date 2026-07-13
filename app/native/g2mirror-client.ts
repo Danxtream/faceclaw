@@ -2,6 +2,7 @@ import { toUint8Array } from "../util/array-util";
 
 declare const com: any;
 declare const android: any;
+declare const java: any;
 
 /**
  * Client for the g2mirror terminal-mirroring protocol (see
@@ -190,6 +191,16 @@ export class G2MirrorClient {
     this.send({ type: "view" });
   }
 
+  /**
+   * Write bytes to the attached app's terminal, as a terminal emulator would
+   * for keystrokes. `text` is sent as UTF-8; include a trailing "\r" to submit
+   * (the Enter key). No-op unless a session is attached.
+   */
+  sendInput(text: string): void {
+    if (this.phase !== "attached" || !text) return;
+    this.send({ type: "input", data: encodeBase64Utf8(text) });
+  }
+
   unview(): void {
     if (this.phase !== "attached") return;
     this.send({ type: "unview" });
@@ -355,6 +366,11 @@ export class G2MirrorClient {
 function decodeBase64(data: string): Uint8Array {
   if (!data) return new Uint8Array(0);
   return toUint8Array(android.util.Base64.decode(data, android.util.Base64.DEFAULT));
+}
+
+function encodeBase64Utf8(text: string): string {
+  const bytes = new java.lang.String(text).getBytes("UTF-8");
+  return String(android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP));
 }
 
 function shortenError(message: string): string {

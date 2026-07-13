@@ -42,6 +42,11 @@ export type ShellWindow = {
   handleInput: (event: DashboardInputEvent, frameId: number) => Promise<void> | void;
   /** Repaint and resubmit this window's surface. */
   requestRender: () => void;
+  /**
+   * Deliver a text string to the window (e.g. finalized voice input). Optional:
+   * only windows that consume typed text (the terminal) implement it.
+   */
+  receiveTextInput?: (text: string) => void;
   /** Foreground state changed: this window's surface is (not) the visible one. */
   setForeground?: (foreground: boolean) => void;
   /** Screen turned on/off; hidden or screen-off windows should stop painting. */
@@ -418,14 +423,23 @@ class Shell {
   }
 
   private openVoiceDialog(): void {
-    const layer = new VoiceInputLayer(this.config.actions, () => {
-      if (this.activeVoiceLayer === layer) {
-        this.activeVoiceLayer = null;
-      }
-    });
+    const layer = new VoiceInputLayer(
+      this.config.actions,
+      () => {
+        if (this.activeVoiceLayer === layer) {
+          this.activeVoiceLayer = null;
+        }
+      },
+      (text) => this.sendTextToForegroundWindow(text),
+    );
     this.activeVoiceLayer = layer;
     this.stack.push(layer);
     layer.startCapture();
+  }
+
+  /** Deliver a text string to the foreground window (e.g. finalized voice input). */
+  sendTextToForegroundWindow(text: string): void {
+    this.foregroundWindow()?.receiveTextInput?.(text);
   }
 
   private openOverlayMenu(): void {

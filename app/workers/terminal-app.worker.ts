@@ -109,6 +109,15 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       handleInput(window, message.event as DashboardInputEvent, message.frameId);
       break;
     }
+    case "text-input": {
+      const window = windows.get(message.windowId);
+      // Only attached view windows have a terminal to type into. Append "\r"
+      // (the Enter key) so voice-dictated text is submitted as a command.
+      if (window && window.kind === "view") {
+        window.client.sendInput(`${message.text}\r`);
+      }
+      break;
+    }
     case "render": {
       const window = windows.get(message.windowId);
       if (window) renderAndSubmit(window, 0);
