@@ -1,7 +1,9 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
-import { GESTURE_DOUBLE_CLICK } from "../gestures";
+import { refineDictation, type AnthropicStreamHandle } from "../../native/anthropic";
+import { anthropicApiKeySetting } from "../dashboard-settings";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, gestureHints } from "../gestures";
 import { drawSelectionHighlight } from "../menu";
 import { Layer, type DashboardInputEvent, type LayerActions, type LayerContext } from "../layers";
 
@@ -11,21 +13,46 @@ const DIALOG_W = G2_LENS_WIDTH - 80;
 const DIALOG_H = G2_LENS_HEIGHT - 80;
 const TEXT_MAX_WIDTH = DIALOG_W - 32;
 const MENU_ROW_H = 20;
+const MENU_ROWS = 3;
+// After the mic stops, the provider's final transcript can trail in (cloud
+// commit round-trip); wait this long for it before refining with what we have.
+const FOLLOWUP_FINALIZE_TIMEOUT_MS = 1200;
+
+/**
+ * The dialog's lifecycle. "capturing" is the first utterance (push-to-talk or
+ * click-to-finish); "menu" is the Send / Continue / Discard menu; "continuing"
+ * records a follow-up utterance (always click-to-finish); "refining" streams
+ * the LLM-merged text, then returns to "menu".
+ */
+type VoicePhase = "capturing" | "menu" | "continuing" | "refining";
 
 /**
  * Push-to-talk voice dialog, drawn on top of whatever is already on screen.
  * The mic runs while the button is held (long-press); releasing it stops the
- * mic and shows a Send / Discard menu. Send delivers the transcript to the
- * foreground window (e.g. the terminal); Discard (or double-click) closes.
+ * mic and shows a Send / Continue / Discard menu. Send delivers the transcript
+ * to the foreground window (e.g. the terminal); Discard (or double-click)
+ * closes. Continue records another utterance — extra content or a spoken edit
+ * ("change X to Y", "insert ... after ...") — and merges it into the message
+ * with an LLM, landing back on the same menu.
+ *
+ * When opened from a menu instead of a held button (finishOnClick), there is
+ * no release event to end the capture, so a single click stops the mic.
  */
 export class VoiceInputLayer implements Layer {
+  private phase: VoicePhase = "capturing";
   private status = "Listening...";
+  // The active utterance. displayText() is what the dialog shows and what
+  // Send delivers; the refine flow also writes the merged result here.
   private finalizedText = "";
   private liveText = "";
+  // Snapshot of the message when Continue starts, so a failed or cancelled
+  // continuation can fall back to it.
+  private baseText = "";
+  /** Whether the mic is running (capture bookkeeping, not UI state). */
   private capturing = false;
-  // Set once the button is released: the mic has stopped and the Send/Discard
-  // menu is active.
-  private finished = false;
+  /** Continuation stopped; waiting for the trailing final transcript. */
+  private followupFinalizeTimer: ReturnType<typeof setTimeout> | null = null;
+  private refineHandle: AnthropicStreamHandle | null = null;
   private menuIndex = 0;
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeStatus: (() => void) | null = null;
@@ -34,12 +61,15 @@ export class VoiceInputLayer implements Layer {
     private readonly actions: LayerActions,
     private readonly onClosed: () => void,
     private readonly onSend: (text: string) => void,
+    private readonly finishOnClick = false,
   ) {}
 
   startCapture(): void {
     if (this.capturing) return;
     this.unsubscribeTranscript = voiceControlBridge.onTranscript((event) => this.onTranscript(event));
     this.unsubscribeStatus = voiceControlBridge.onStatus((state) => {
+      // The refine stage owns the status line ("Refining...", error text).
+      if (this.phase === "refining") return;
       this.status = state.status;
       this.actions.requestRender();
     });
@@ -48,14 +78,18 @@ export class VoiceInputLayer implements Layer {
     this.actions.requestRender();
   }
 
-  /** Button released: stop the mic, finalize, and show the Send/Discard menu. */
+  /** Button released (or click in finishOnClick mode): stop the mic. */
   endCapture(): void {
     if (!this.capturing) return;
+    if (this.phase === "continuing") {
+      this.endContinuationCapture();
+      return;
+    }
     this.capturing = false;
-    this.finished = true;
+    this.phase = "menu";
     void this.actions.stopVoiceCapture();
     if (this.status.startsWith("Listening")) {
-      this.status = "Send or discard?";
+      this.status = "Send, continue, or discard?";
     }
     this.actions.requestRender();
   }
@@ -73,58 +107,94 @@ export class VoiceInputLayer implements Layer {
     image.drawText(font, left, DIALOG_Y + 12, this.capturing ? "Voice ●" : "Voice", 220);
     image.drawText(font, left, DIALOG_Y + 30, truncate(font, this.status, TEXT_MAX_WIDTH), 130);
 
+    const inMenu = this.phase === "menu";
     const hasText = this.displayText().trim().length > 0;
-    // Leave room for the two-row menu when finished.
-    const textBottom = this.finished ? DIALOG_Y + DIALOG_H - 2 * MENU_ROW_H - 8 : DIALOG_Y + DIALOG_H - 8;
+    // Leave room for the three-row menu when it is showing.
+    const textBottom = inMenu ? DIALOG_Y + DIALOG_H - MENU_ROWS * MENU_ROW_H - 8 : DIALOG_Y + DIALOG_H - 8;
     const textTop = DIALOG_Y + 56;
     const maxLines = Math.max(1, ((textBottom - textTop) / 16) | 0);
 
-    const text = this.displayText() || (this.capturing ? "Listening..." : "(no speech detected)");
+    const text = this.displayText() || this.placeholderText();
     const wrapped = wrapText(font, text, TEXT_MAX_WIDTH);
     const firstLine = Math.max(0, wrapped.length - maxLines);
     for (let index = firstLine; index < wrapped.length; index++) {
       image.drawText(font, left, textTop + (index - firstLine) * 16, wrapped[index]!, 235);
     }
 
-    if (this.finished) {
-      const labels = ["Send", "Discard"];
-      const menuTop = DIALOG_Y + DIALOG_H - 2 * MENU_ROW_H - 2;
-      for (let i = 0; i < labels.length; i++) {
+    if (inMenu) {
+      const hasLlmKey = anthropicApiKeySetting.get().trim().length > 0;
+      const rows: Array<{ label: string; dim: boolean }> = [
+        // Dim "Send" when there is nothing to send.
+        { label: "Send", dim: !hasText },
+        { label: hasLlmKey ? "Continue" : "Continue (Needs LLM API key)", dim: !hasLlmKey },
+        { label: "Discard", dim: false },
+      ];
+      const menuTop = DIALOG_Y + DIALOG_H - MENU_ROWS * MENU_ROW_H - 2;
+      for (let i = 0; i < rows.length; i++) {
         const rowY = menuTop + i * MENU_ROW_H;
         const selected = i === this.menuIndex;
         if (selected) {
           drawSelectionHighlight(image, left - 4, rowY - 2, DIALOG_W - 24, MENU_ROW_H - 2, true, 6);
         }
-        // Dim "Send" when there is nothing to send.
-        const dim = i === 0 && !hasText;
-        image.drawText(font, left + 4, rowY + 2, labels[i]!, dim ? 90 : selected ? 255 : 200);
+        const row = rows[i]!;
+        image.drawText(font, left + 4, rowY + 2, row.label, row.dim ? 90 : selected ? 255 : 200);
       }
     } else {
-      image.drawText(font, left, DIALOG_Y + DIALOG_H - 14, `${GESTURE_DOUBLE_CLICK} close`, 110);
+      image.drawText(font, left, DIALOG_Y + DIALOG_H - 14, this.hintText(), 110);
     }
     return image;
   }
 
   handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
-    if (!this.finished) {
-      if (event.type === "double-click") {
-        ctx.stack.pop();
-      }
-      return;
+    switch (this.phase) {
+      case "capturing":
+        if (event.type === "double-click") {
+          ctx.stack.pop();
+        } else if (this.finishOnClick && event.type === "click") {
+          this.endCapture();
+        }
+        return;
+      case "continuing":
+        if (event.type === "click") {
+          this.endContinuationCapture();
+        } else if (event.type === "double-click") {
+          this.cancelContinuation("Continuation cancelled");
+        }
+        return;
+      case "refining":
+        if (event.type === "double-click") {
+          this.cancelContinuation("Refinement cancelled");
+        }
+        return;
+      case "menu":
+        this.handleMenuInput(event, ctx);
+        return;
     }
+  }
+
+  private handleMenuInput(event: DashboardInputEvent, ctx: LayerContext): void {
     switch (event.type) {
       case "scroll-up":
+        this.menuIndex = (this.menuIndex + MENU_ROWS - 1) % MENU_ROWS;
+        this.actions.requestRender();
+        return;
       case "scroll-down":
-        // Two options; either scroll direction toggles the selection.
-        this.menuIndex = (this.menuIndex + 1) % 2;
+        this.menuIndex = (this.menuIndex + 1) % MENU_ROWS;
         this.actions.requestRender();
         return;
       case "click":
         if (this.menuIndex === 0) {
           const text = this.displayText().trim();
           if (text) this.onSend(text);
+          ctx.stack.pop();
+        } else if (this.menuIndex === 1) {
+          if (anthropicApiKeySetting.get().trim()) {
+            this.startContinuation();
+          }
+          // No key: the row is disabled; the click does nothing.
+        } else {
+          ctx.stack.pop();
         }
-        ctx.stack.pop();
         return;
       case "double-click":
         ctx.stack.pop();
@@ -134,11 +204,100 @@ export class VoiceInputLayer implements Layer {
     }
   }
 
+  /** Continue selected: keep the message aside and record a follow-up. */
+  private startContinuation(): void {
+    this.baseText = this.displayText().trim();
+    this.finalizedText = "";
+    this.liveText = "";
+    this.phase = "continuing";
+    this.status = "Listening...";
+    this.capturing = true;
+    void this.actions.startVoiceCapture();
+    this.actions.requestRender();
+  }
+
+  /** Follow-up tap: stop the mic, then refine once the transcript finalizes. */
+  private endContinuationCapture(): void {
+    if (!this.capturing) return;
+    this.capturing = false;
+    void this.actions.stopVoiceCapture();
+    this.status = "Refining...";
+    this.actions.requestRender();
+    // The provider's committed transcript arrives shortly after stop; refine
+    // when it does, or after a timeout with whatever partials we have.
+    this.followupFinalizeTimer = setTimeout(() => this.beginRefine(), FOLLOWUP_FINALIZE_TIMEOUT_MS);
+  }
+
+  private beginRefine(): void {
+    if (this.followupFinalizeTimer !== null) {
+      clearTimeout(this.followupFinalizeTimer);
+      this.followupFinalizeTimer = null;
+    }
+    if (this.phase !== "continuing") return;
+    const followup = this.displayText().trim();
+    if (!followup) {
+      this.backToMenu(this.baseText, "No follow-up heard");
+      return;
+    }
+    this.phase = "refining";
+    this.finalizedText = "";
+    this.liveText = "";
+    this.status = "Refining...";
+    this.actions.requestRender();
+    this.refineHandle = refineDictation({
+      apiKey: anthropicApiKeySetting.get(),
+      original: this.baseText,
+      followup,
+      onTextDelta: (_delta, textSoFar) => {
+        this.finalizedText = textSoFar;
+        this.actions.requestRender();
+      },
+      onDone: (text) => {
+        this.refineHandle = null;
+        this.backToMenu(text, "Send, continue, or discard?");
+      },
+      onError: (message) => {
+        this.refineHandle = null;
+        this.backToMenu(this.baseText, message);
+      },
+    });
+  }
+
+  /** Abort a continuation (mic or LLM stage) and restore the prior message. */
+  private cancelContinuation(status: string): void {
+    if (this.capturing) {
+      this.capturing = false;
+      void this.actions.stopVoiceCapture();
+    }
+    this.refineHandle?.cancel();
+    this.refineHandle = null;
+    this.backToMenu(this.baseText, status);
+  }
+
+  private backToMenu(text: string, status: string): void {
+    if (this.followupFinalizeTimer !== null) {
+      clearTimeout(this.followupFinalizeTimer);
+      this.followupFinalizeTimer = null;
+    }
+    this.finalizedText = text;
+    this.liveText = "";
+    this.phase = "menu";
+    this.menuIndex = 0;
+    this.status = status;
+    this.actions.requestRender();
+  }
+
   onRemoved(): void {
     this.unsubscribeTranscript?.();
     this.unsubscribeTranscript = null;
     this.unsubscribeStatus?.();
     this.unsubscribeStatus = null;
+    if (this.followupFinalizeTimer !== null) {
+      clearTimeout(this.followupFinalizeTimer);
+      this.followupFinalizeTimer = null;
+    }
+    this.refineHandle?.cancel();
+    this.refineHandle = null;
     if (this.capturing) {
       this.capturing = false;
       void this.actions.stopVoiceCapture();
@@ -152,13 +311,48 @@ export class VoiceInputLayer implements Layer {
     return `${this.finalizedText} ${this.liveText}`;
   }
 
+  private placeholderText(): string {
+    switch (this.phase) {
+      case "capturing":
+        return "Listening...";
+      case "continuing":
+        return "Say more, or describe an edit...";
+      case "refining":
+        return "Refining...";
+      case "menu":
+        return "(no speech detected)";
+    }
+  }
+
+  private hintText(): string {
+    switch (this.phase) {
+      case "capturing":
+        return this.finishOnClick
+          ? gestureHints([[GESTURE_CLICK, "done"], [GESTURE_DOUBLE_CLICK, "close"]])
+          : `${GESTURE_DOUBLE_CLICK} close`;
+      case "continuing":
+        return gestureHints([[GESTURE_CLICK, "done"], [GESTURE_DOUBLE_CLICK, "cancel"]]);
+      case "refining":
+      default:
+        return `${GESTURE_DOUBLE_CLICK} cancel`;
+    }
+  }
+
   private onTranscript(event: VoiceTranscriptEvent): void {
+    // The refine stream owns the text buffers once it starts; a transcript
+    // that trails in after that point is stale.
+    if (this.phase === "refining") return;
     if (event.isFinal) {
       const finalText = event.text.trim() || this.liveText.trim();
       if (finalText) {
         this.finalizedText = this.finalizedText ? `${this.finalizedText} ${finalText}` : finalText;
       }
       this.liveText = "";
+      if (this.phase === "continuing" && this.followupFinalizeTimer !== null) {
+        // The follow-up finalized; no need to keep waiting.
+        this.beginRefine();
+        return;
+      }
     } else {
       this.liveText = event.text.trim();
     }

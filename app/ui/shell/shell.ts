@@ -422,7 +422,7 @@ class Shell {
     next?.requestRender();
   }
 
-  private openVoiceDialog(): void {
+  private openVoiceDialog(finishOnClick = false): void {
     const layer = new VoiceInputLayer(
       this.config.actions,
       () => {
@@ -431,6 +431,7 @@ class Shell {
         }
       },
       (text) => this.sendTextToForegroundWindow(text),
+      finishOnClick,
     );
     this.activeVoiceLayer = layer;
     this.stack.push(layer);
@@ -447,8 +448,14 @@ class Shell {
     const items: MenuItem[] = [
       {
         label: "Voice input",
-        onSelect: () => {
-          this.openVoiceDialog();
+        onSelect: (ctx) => {
+          // Pop the menu first (its onRemoved yields focus to the sidebar),
+          // then take focus back: the transcript is aimed at the window the
+          // menu was opened over. The button is no longer held here, so the
+          // dialog finishes on click instead of long-press-release.
+          ctx.stack.pop();
+          this.focus = "window";
+          this.openVoiceDialog(true);
         },
       },
     ];

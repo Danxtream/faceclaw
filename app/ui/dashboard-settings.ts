@@ -261,6 +261,16 @@ export const elevenLabsApiKeySetting = new ConfigSettingString({
   formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
 });
 
+export const anthropicApiKeySetting = new ConfigSettingString({
+  id: "anthropic-api-key",
+  label: "Anthropic key",
+  storageKey: "llm.anthropicApiKey",
+  defaultValue: "",
+  editorTitle: "Anthropic API key",
+  glassesEditTitle: "Edit Anthropic key",
+  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+});
+
 export const terminalHostSetting = new ConfigSettingString({
   id: "terminal-host",
   label: "Host",

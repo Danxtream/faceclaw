@@ -173,6 +173,7 @@ function openWindow(windowId: string, surfaceId: string, viewport: { width: numb
   if (pendingView) {
     pendingViews.delete(windowId);
     windows.set(windowId, createViewWindow(windowId, surfaceId, pendingView.socket, pendingView.label));
+    renderHubWindows();
     return;
   }
   windows.set(windowId, {
@@ -199,6 +200,9 @@ function closeWindow(windowId: string): void {
     window.client.stop();
   }
   windows.delete(windowId);
+  if (window.kind === "view") {
+    renderHubWindows();
+  }
 }
 
 function clientOptions() {
@@ -401,9 +405,17 @@ function hubItems(): HubItem[] {
 
   if (phase === "connected" || phase === "attached") {
     for (const session of state?.sessions ?? []) {
+      const openWindowId = viewWindowIdForSocket(session.socket);
       items.push({
-        label: sessionLabel(session),
-        onSelect: () => openViewWindowFor(session),
+        label: openWindowId ? `${sessionLabel(session)}  [open]` : sessionLabel(session),
+        onSelect: () => {
+          const windowId = viewWindowIdForSocket(session.socket);
+          if (windowId) {
+            post({ type: "focus-window", windowId });
+          } else {
+            openViewWindowFor(session);
+          }
+        },
       });
     }
     if (!state?.sessions.length) {
@@ -443,6 +455,21 @@ function handleHubInput(window: HubWindow, event: DashboardInputEvent, frameId: 
       frameTimings.finishFrame(frameId, "discarded: terminal hub ignored input");
       return;
   }
+}
+
+/**
+ * Window id of the view already showing this session's terminal, if any.
+ * Includes views that were requested but whose surface hasn't opened yet, so
+ * a quick double-select can't spawn two windows for one session.
+ */
+function viewWindowIdForSocket(socket: string): string | null {
+  for (const window of windows.values()) {
+    if (window.kind === "view" && window.socket === socket) return window.windowId;
+  }
+  for (const [windowId, pending] of pendingViews) {
+    if (pending.socket === socket) return windowId;
+  }
+  return null;
 }
 
 function openViewWindowFor(session: G2MirrorSession): void {
@@ -595,8 +622,8 @@ function renderAndSubmit(window: TerminalWindow, inputFrameId: number): void {
 
 function sessionLabel(session: G2MirrorSession): string {
   if (session.title) {
-    return `${session.title}  (pid ${session.pid})`;
+    return session.title;
   }
   const hint = session.cwdHint.replace(/^_+/, "").replace(/_+/g, "/");
-  return `${hint || "session"}  (pid ${session.pid})`;
+  return hint || "session";
 }

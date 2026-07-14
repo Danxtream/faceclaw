@@ -21,6 +21,11 @@ export type WorkerAppMessage =
 export type WorkerAppReply =
   | { type: "yield-focus"; windowId: string }
   | {
+      /** Foreground and focus one of the app's existing windows. */
+      type: "focus-window";
+      windowId: string;
+    }
+  | {
       /** App-initiated window (e.g. a terminal view opened from the hub list). */
       type: "open-window-request";
       windowId: string;
@@ -82,6 +87,12 @@ export class WorkerAppHost {
           // Only the focused window's yield is meaningful.
           if (shell.foregroundWindow()?.windowId === message.windowId) {
             shell.yieldFocusToSidebar();
+          }
+          break;
+        case "focus-window":
+          if (this.openWindows.has(message.windowId)) {
+            shell.focusWindow(message.windowId);
+            this.options.requestShellRender();
           }
           break;
         case "open-window-request":

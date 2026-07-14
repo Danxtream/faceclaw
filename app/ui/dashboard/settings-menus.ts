@@ -2,6 +2,7 @@ import { getDefaultSmallFont } from "../../graphics/bdffont";
 import { getDashboardLogo } from "../../graphics/logo";
 import { shell } from "../shell/shell";
 import {
+  anthropicApiKeySetting,
   batteryDisplayModeSetting,
   elevenLabsApiKeySetting,
   enumSettingMenuItem,
@@ -47,7 +48,14 @@ function settingsSections(): SettingsSection[] {
     },
     {
       label: "Voice",
-      items: [enumSettingMenuItem(voiceProviderSetting), textSettingMenuItem(elevenLabsApiKeySetting)],
+      items: [enumSettingMenuItem(voiceProviderSetting)],
+    },
+    {
+      label: "API Keys",
+      items: [
+        textSettingMenuItem(elevenLabsApiKeySetting),
+        textSettingMenuItem(anthropicApiKeySetting),
+      ],
     },
     {
       label: "Integrations",
