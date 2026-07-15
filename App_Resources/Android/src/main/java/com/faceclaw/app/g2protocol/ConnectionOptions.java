@@ -30,7 +30,12 @@ public class ConnectionOptions {
 
     final boolean sendImagesToLeft = true;
     final boolean skipSessionIds = true;
-    final int WINDOW_SIZE = 2;
+    // Max messages in flight (awaiting ack) at once — full pipelining. >1 lets a
+    // frame be sent before the previous frame's ack returns, hiding the BLE ack
+    // round-trip that otherwise serialized every update. Requires firmware that
+    // accepts pipelined image messages (the CFW snapshot/deferred FIFO). At 1 the
+    // communicator behaves exactly as before (serial sends + last-packet prewrite).
+    final int WINDOW_SIZE = 3;
     // Send changed-region (mode 3 bounding box) updates instead of full frames
     // when the previous frame is known to be displayed. Requires firmware with
     // the experimental bbox-incremental mode. Disabled: the firmware-side
@@ -39,4 +44,19 @@ public class ConnectionOptions {
     // composite onto stale content per-lens. Re-enable once the firmware
     // guarantees the compositing base.
     final boolean INCREMENTAL_FRAMES = true;
+
+    // Send several tight rectangle deltas as one CFW mode-8 multi-segment message
+    // instead of a single bounding box, when the change splits into regions whose
+    // bounding box wastes bytes (distant edits, or a sparse box). Requires firmware
+    // with mode-8 multi-rect support; needs INCREMENTAL_FRAMES (same seeded shadow).
+    // Falls back to the single bounding box whenever multi-rect isn't smaller.
+    final boolean MULTI_RECT_FRAMES = true;
+    // Cap on rects per batch. Each rect consumes a distinct CFW frame id, and the
+    // firmware's duplicate-fid ring holds 16, so keep several batches of history
+    // within it. Above this the split is abandoned for a single bounding box.
+    public static final int MULTI_RECT_MAX_RECTS = 6;
+    // Don't bother splitting when the single bounding box already compresses this
+    // small (one tight rect); only attempt multi-rect above it or when the box
+    // spans multiple horizontal clusters.
+    public static final int MULTI_RECT_MIN_PAYLOAD = 900;
 }

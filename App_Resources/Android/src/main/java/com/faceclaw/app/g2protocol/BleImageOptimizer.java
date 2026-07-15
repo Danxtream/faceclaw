@@ -200,6 +200,20 @@ public final class BleImageOptimizer {
             return null; // whole screen changed; full update is strictly better
         }
 
+        byte[] out = encodeMode3Rect(next, stride, left, top, boxWidth, boxHeight, frameId);
+        return new IncrementalPlan(out, changedBytes, (boxWidth >> 1) * boxHeight, clusterCount);
+    }
+
+    /**
+     * Encode one CFW mode-3 rectangle delta:
+     *   [3][left/4][top/2][width/4][height/2][fid_lo][fid_hi][zlib box pixels]
+     * left/width must be multiples of 4 (=> left>>1, width>>1 are whole bytes), top/
+     * height multiples of 2. The box pixels are top-down rows of `next` (4bpp packed,
+     * width>>1 bytes/row). Shared by the single-bbox path and each rect of a mode-8
+     * multi-rect batch.
+     */
+    private static byte[] encodeMode3Rect(byte[] next, int stride, int left, int top,
+            int boxWidth, int boxHeight, int fid) {
         int regionStride = boxWidth >> 1;
         byte[] region = new byte[regionStride * boxHeight];
         for (int y = 0; y < boxHeight; y++) {
@@ -212,10 +226,192 @@ public final class BleImageOptimizer {
         out[2] = (byte) (top / 2);
         out[3] = (byte) (boxWidth / 4);
         out[4] = (byte) (boxHeight / 2);
-        out[5] = (byte) (frameId & 0xff);          // fid_lo
-        out[6] = (byte) ((frameId >> 8) & 0xff);   // fid_hi
+        out[5] = (byte) (fid & 0xff);          // fid_lo
+        out[6] = (byte) ((fid >> 8) & 0xff);   // fid_hi
         System.arraycopy(compressed, 0, out, 7, compressed.length);
-        return new IncrementalPlan(out, changedBytes, region.length, clusterCount);
+        return out;
+    }
+
+    /**
+     * A CFW mode-8 multi-segment payload (`[8][count]` then per-rect
+     * `[len16][mode-3 submsg]`) carrying several tight rectangle deltas instead of
+     * one bounding box, plus diagnostics. Each rect is applied to the firmware
+     * shadow with the panel push deferred, then presented once. Used when the change
+     * splits into regions whose bounding box wastes bytes (distant edits, or a sparse
+     * box); the caller falls back to the single-rect path when this returns null or
+     * isn't smaller.
+     */
+    public static final class MultiRectPlan {
+        public final byte[] payload;
+        public final int rectCount;
+        public final int coveredBytes;   // sum of rect region bytes, pre-compression
+        public final int nextFid;        // fid to resume from (rectCount consumed)
+
+        MultiRectPlan(byte[] payload, int rectCount, int coveredBytes, int nextFid) {
+            this.payload = payload;
+            this.rectCount = rectCount;
+            this.coveredBytes = coveredBytes;
+            this.nextFid = nextFid;
+        }
+    }
+
+    // Break-even tuning for the rect splitter. Splitting adds ~15 fixed bytes per
+    // rect (seglen + mode-3 header + fid + zlib framing) and loses cross-rect
+    // dictionary sharing, so only split across gaps big enough to pay for that.
+    // Gaps are in the changed-mask's native units: whole 4bpp bytes (2px) for
+    // columns, rows for the vertical bands. Kept above the 4px/2px box alignment so
+    // aligned rects never overlap.
+    private static final int MULTI_RECT_V_GAP_ROWS = 4;
+    private static final int MULTI_RECT_H_GAP_BYTES = 6;
+
+    /**
+     * Build a mode-8 multi-rect payload for the change between two same-size 4bpp
+     * frames, assigning consecutive frame ids starting at fidStart (each rect needs a
+     * distinct fid — the CFW skips duplicate fids). Returns null when the change is a
+     * single region (use the single-rect path), when it fragments past maxRects, or
+     * when the frames aren't comparable.
+     */
+    public static MultiRectPlan buildMultiRectImagePayload(byte[] previousBmp, byte[] newBmp, int fidStart, int maxRects) {
+        int width = BmpUtil.readBmpWidth(newBmp);
+        int height = BmpUtil.readBmpHeight(newBmp);
+        if (width <= 0 || height <= 0
+                || width != BmpUtil.readBmpWidth(previousBmp)
+                || height != BmpUtil.readBmpHeight(previousBmp)) {
+            return null;
+        }
+        byte[] previous = BmpUtil.pack4bppFromBmp(previousBmp);
+        byte[] next = BmpUtil.pack4bppFromBmp(newBmp);
+        int stride = (width + 1) >> 1;
+        if (previous.length != stride * height || next.length != stride * height) {
+            return null;
+        }
+
+        List<int[]> rects = computeSplitRects(previous, next, stride, width, height, maxRects);
+        if (rects == null || rects.size() < 2) {
+            return null; // single region (or too fragmented): caller uses the bbox path
+        }
+
+        List<byte[]> subs = new ArrayList<>(rects.size());
+        int coveredBytes = 0;
+        int fid = fidStart;
+        int total = 2; // [8][count]
+        for (int[] r : rects) {
+            byte[] sub = encodeMode3Rect(next, stride, r[0], r[1], r[2], r[3], fid);
+            subs.add(sub);
+            coveredBytes += (r[2] >> 1) * r[3];
+            total += 2 + sub.length; // len16 + submsg
+            fid = (fid >= 0xfffe) ? 1 : fid + 1;
+        }
+
+        byte[] out = new byte[total];
+        out[0] = 8;
+        out[1] = (byte) rects.size();
+        int pos = 2;
+        for (byte[] sub : subs) {
+            out[pos] = (byte) (sub.length & 0xff);
+            out[pos + 1] = (byte) ((sub.length >> 8) & 0xff);
+            pos += 2;
+            System.arraycopy(sub, 0, out, pos, sub.length);
+            pos += sub.length;
+        }
+        return new MultiRectPlan(out, rects.size(), coveredBytes, fid);
+    }
+
+    /**
+     * Split the changed region between two packed 4bpp frames into a small set of
+     * aligned rectangles that together cover every changed pixel: maximal vertical
+     * bands of changed rows (merging gaps < V_GAP), each split into horizontal column
+     * clusters (merging gaps < H_GAP), with each cluster's rows tightened to where it
+     * actually changes. Rects are pixel-space {left,top,width,height}, left/width
+     * aligned to 4px and top/height to 2px. Returns null if there's no change or the
+     * split exceeds maxRects (caller falls back to a single bounding box).
+     */
+    private static List<int[]> computeSplitRects(byte[] previous, byte[] next, int stride, int width, int height, int maxRects) {
+        boolean[] rowChanged = new boolean[height];
+        boolean anyChange = false;
+        for (int y = 0; y < height; y++) {
+            int off = y * stride;
+            for (int x = 0; x < stride; x++) {
+                if (previous[off + x] != next[off + x]) {
+                    rowChanged[y] = true;
+                    anyChange = true;
+                    break;
+                }
+            }
+        }
+        if (!anyChange) {
+            return null;
+        }
+
+        List<int[]> rects = new ArrayList<>();
+        boolean[] col = new boolean[stride];
+        int y = 0;
+        while (y < height) {
+            if (!rowChanged[y]) { y++; continue; }
+            // Extend a vertical band across changed rows, hopping unchanged gaps < V_GAP.
+            int bandTop = y;
+            int bandBot = y;
+            int cur = y + 1;
+            while (cur < height) {
+                if (rowChanged[cur]) { bandBot = cur; cur++; continue; }
+                int g = cur;
+                while (g < height && !rowChanged[g]) g++;
+                if (g < height && (g - cur) < MULTI_RECT_V_GAP_ROWS) { cur = g; } else break;
+            }
+
+            // Columns changed anywhere in the band.
+            Arrays.fill(col, false);
+            for (int yy = bandTop; yy <= bandBot; yy++) {
+                if (!rowChanged[yy]) continue;
+                int off = yy * stride;
+                for (int x = 0; x < stride; x++) {
+                    if (previous[off + x] != next[off + x]) col[x] = true;
+                }
+            }
+
+            // Split the band into horizontal clusters, hopping column gaps < H_GAP.
+            int x = 0;
+            while (x < stride) {
+                if (!col[x]) { x++; continue; }
+                int cL = x;
+                int cR = x;
+                int cx = x + 1;
+                while (cx < stride) {
+                    if (col[cx]) { cR = cx; cx++; continue; }
+                    int g = cx;
+                    while (g < stride && !col[g]) g++;
+                    if (g < stride && (g - cx) < MULTI_RECT_H_GAP_BYTES) { cx = g; } else break;
+                }
+
+                // Tighten this cluster's rows to those that change within [cL,cR].
+                int tTop = height;
+                int tBot = -1;
+                for (int yy = bandTop; yy <= bandBot; yy++) {
+                    if (!rowChanged[yy]) continue;
+                    int off = yy * stride;
+                    for (int xx = cL; xx <= cR; xx++) {
+                        if (previous[off + xx] != next[off + xx]) {
+                            if (yy < tTop) tTop = yy;
+                            tBot = yy;
+                            break;
+                        }
+                    }
+                }
+                if (tBot >= 0) {
+                    int left = (cL * 2) & ~3;
+                    int rightExclusive = Math.min(width, (((cR + 1) * 2) + 3) & ~3);
+                    int top = tTop & ~1;
+                    int bottomExclusive = Math.min(height, (tBot + 2) & ~1);
+                    rects.add(new int[]{left, top, rightExclusive - left, bottomExclusive - top});
+                    if (rects.size() > maxRects) {
+                        return null; // too fragmented: a single bounding box is simpler
+                    }
+                }
+                x = cR + 1;
+            }
+            y = bandBot + 1;
+        }
+        return rects;
     }
 
     /**

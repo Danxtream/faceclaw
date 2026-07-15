@@ -109,6 +109,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private String displayedFingerprint = "";
     private byte[] displayedBmp = new byte[0];
+    // The frame the firmware shadow will hold once the current image pipeline
+    // drains: the most recently ENQUEUED image, which is the correct base for the
+    // next delta when frames are pipelined (displayedBmp only reflects the last
+    // ACKED frame and lags behind). Set at enqueue; cleared whenever the image
+    // pipeline is cleared (clearAllMessagesLocked / clearMessagesOfKindLocked
+    // "image"), so it is only ever read while it holds a valid current-session base.
+    private byte[] lastEnqueuedImageBmp = new byte[0];
+    private String lastEnqueuedFingerprint = "";
     private final Map<Integer, BleImageOptimizer.ImageUpdateStats> imageUpdateStats = new HashMap<>();
 
     private final Object desiredTilesLock = new Object();
@@ -328,9 +336,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 appContext, java.nio.ByteBuffer.wrap(composite.gray), composite.width, composite.height);
     }
 
-    /** Show or hide a compositor surface; takes effect at the next composite. */
+    /**
+     * Show or hide a compositor surface, immediately submitting the resulting
+     * frame. Recompositing here (rather than waiting for the next surface
+     * update) is what makes a just-foregrounded window's retained frame
+     * actually appear — otherwise a static window (e.g. the terminal hub) whose
+     * frame landed while briefly hidden would stay blank until its next repaint.
+     */
     public void setSurfaceVisible(String id, boolean visible) {
         compositor.setSurfaceVisible(id, visible);
+        SurfaceCompositor.Composite composite = compositor.composite();
+        byte[] bmp = BmpUtil.build4bppBmp(composite.gray, composite.width, composite.height);
+        storeDesiredComposite(composite, bmp, 0, 0);
     }
 
     /**
@@ -956,11 +973,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         handleAckTimeoutLocked(oldest);
                         return 0;
                     }
-                    if (sessionReady
+                    if (connectionOptions.WINDOW_SIZE <= 1
+                            && sessionReady
                             && prewrittenMessage == null
                             && !pendingMessages.isEmpty()
                             && canPrewriteCandidate(pendingMessages.peekFirst())
                             && !shouldBlockPrewriteForHeartbeatLocked(now)) {
+                        // Only the serial (window==1) path pre-sends the all-but-last
+                        // packet; with a real window we just send the next message fully.
                         messageToPrewrite = pendingMessages.peekFirst();
                     }
                 }
@@ -1004,24 +1024,30 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         enqueueFirmwareDebugFlagsLocked();
                     }
 
+                    // Up to WINDOW_SIZE messages may be in flight at once (full
+                    // pipelining); a slot frees when an ack arrives.
+                    boolean windowHasRoom = inFlightMessages.size() < Math.max(1, connectionOptions.WINDOW_SIZE);
                     // A frame ready to send right now: don't inject a fresh
                     // heartbeat in front of it (the image's own ack resets the
                     // firmware heartbeat timer, so the heartbeat is redundant).
                     boolean imageWaiting = !shutdownRequested && fixedLayoutCreated && warmedUp
-                            && pendingMessages.isEmpty() && inFlightMessages.isEmpty()
+                            && !hasPendingOrInflightKindLocked("heartbeat")
                             && now >= imageRetryAfterMs
-                            && !getDesiredFingerprint().equals(displayedFingerprint);
+                            && !getDesiredFingerprint().equals(lastEnqueuedFingerprint);
                     if (messageToPrewrite == null && handleHeartbeat(imageWaiting)) {
                         return ConnectionOptions.IDLE_SLEEP_MS;
                     }
 
-                    if (messageToPrewrite == null && sessionReady && inFlightMessages.isEmpty() && !pendingMessages.isEmpty()) {
-                        OutboundMessage pending = pendingMessages.peekFirst();
+                    if (messageToPrewrite == null && sessionReady && windowHasRoom && !pendingMessages.isEmpty()) {
                         messageToWrite = pendingMessages.removeFirst();
                         Log.i(TAG, "sending pending message: " + messageToWrite.label);
-                    } else if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()
+                    } else if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && warmedUp
+                            && windowHasRoom && !hasPendingImageLocked()
                             && now >= imageRetryAfterMs
-                            && !getDesiredFingerprint().equals(displayedFingerprint)) {
+                            && !getDesiredFingerprint().equals(lastEnqueuedFingerprint)) {
+                        // Enqueue the next frame's delta against lastEnqueuedImageBmp
+                        // (what the shadow will be), so it can pipeline behind an
+                        // image still awaiting its ack.
                         Log.i(TAG, "Enqueued image update");
                         enqueueDesiredImageLocked();
                         return 0;
@@ -1064,7 +1090,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         int frameIdToFinish = 0;
         synchronized (lock) {
             synchronized (desiredTilesLock) {
-                if (desiredFrameId != 0 && !displayedFingerprint.isEmpty() && desiredFingerprint.equals(displayedFingerprint)) {
+                if (desiredFrameId != 0 && !lastEnqueuedFingerprint.isEmpty() && desiredFingerprint.equals(lastEnqueuedFingerprint)) {
                     frameIdToFinish = desiredFrameId;
                     desiredFrameId = 0;
                 }
@@ -1483,25 +1509,49 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (bmp == null) {
             bmp = new byte[0];
         }
-        if (Arrays.equals(bmp, displayedBmp)) {
-            displayedFingerprint = fingerprint;
+        if (Arrays.equals(bmp, lastEnqueuedImageBmp)) {
+            lastEnqueuedFingerprint = fingerprint;
             finishFrame(frameId, "discarded: image content identical to displayed");
             return;
         }
 
         FrameTimings.getInstance().spanStart(frameId, "compress-and-plan");
-        // Incremental (mode 3 bounding box) update when the previous frame is
-        // known-displayed; displayedBmp is cleared on connect/reset/timeout
-        // paths, so a non-empty value means display state is trusted.
+        // Incremental (mode 3 bounding box) update against the last ENQUEUED frame
+        // (the base the firmware shadow will hold when this update is applied).
+        // lastEnqueuedImageBmp is cleared whenever the image pipeline is cleared, so
+        // a non-empty value means the display base is trusted.
         byte[] incrementalPayload = null;
-        BleImageOptimizer.IncrementalPlan incrementalPlan = null;
-        if (connectionOptions.INCREMENTAL_FRAMES && displayedBmp.length > 0) {
-            incrementalPlan = BleImageOptimizer.buildIncrementalImagePayload(displayedBmp, bmp, nextImageFrameId);
-            if (incrementalPlan != null) {
-                incrementalPayload = incrementalPlan.payload;
+        String incrementalLog = null;
+        if (connectionOptions.INCREMENTAL_FRAMES && lastEnqueuedImageBmp.length > 0) {
+            int baseFid = nextImageFrameId;
+            BleImageOptimizer.IncrementalPlan single =
+                BleImageOptimizer.buildIncrementalImagePayload(lastEnqueuedImageBmp, bmp, baseFid);
+            if (single != null) {
+                incrementalPayload = single.payload;
                 // advance only when a delta is actually emitted, so consecutive
                 // deltas carry consecutive ids (CFW skip/reorder detection)
                 nextImageFrameId = nextImageFrameId >= 0xfffe ? 1 : nextImageFrameId + 1;
+                incrementalLog = "incremental update bbox="
+                    + ((single.payload[3] & 0xff) * 4) + "x" + ((single.payload[4] & 0xff) * 2)
+                    + "+" + ((single.payload[1] & 0xff) * 4) + "+" + ((single.payload[2] & 0xff) * 2)
+                    + " changed=" + single.changedBytes + "/" + single.boxBytes + "B"
+                    + " clusters=" + single.clusterCount;
+
+                // When the bounding box spans multiple clusters or is sizeable, try
+                // splitting into tight rects (CFW mode-8). Only replace the single
+                // box if the multi-rect message is actually smaller on the wire.
+                if (connectionOptions.MULTI_RECT_FRAMES
+                        && (single.clusterCount > 1 || single.payload.length > ConnectionOptions.MULTI_RECT_MIN_PAYLOAD)) {
+                    BleImageOptimizer.MultiRectPlan multi = BleImageOptimizer.buildMultiRectImagePayload(
+                        lastEnqueuedImageBmp, bmp, baseFid, ConnectionOptions.MULTI_RECT_MAX_RECTS);
+                    if (multi != null && multi.payload.length < single.payload.length) {
+                        incrementalPayload = multi.payload;
+                        nextImageFrameId = multi.nextFid;   // rectCount fids consumed
+                        incrementalLog = "multi-rect update n=" + multi.rectCount
+                            + " covered=" + multi.coveredBytes + "B"
+                            + " payload=" + multi.payload.length + "B (vs bbox " + single.payload.length + "B)";
+                    }
+                }
             }
         }
         BleImageOptimizer.TileImagePlan plan = incrementalPayload != null
@@ -1509,16 +1559,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             : new BleImageOptimizer.TileImagePlan(0, DASHBOARD_TILE, bmp, nextMapSessionId());
         plan.fragments = BleImageOptimizer.planImageFragments(plan.payload, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
         FrameTimings.getInstance().spanEnd(frameId, "compress-and-plan");
-        if (incrementalPayload != null) {
-            // changed/box are packed-byte counts (2px each); clusters>1 with
-            // changed<<box means distant small edits merged into an oversized
-            // box (see BleImageOptimizer.IncrementalPlan) — the prime suspect
-            // for a delta spilling into a second, serialized BLE message.
-            FrameTimings.getInstance().log(frameId, "incremental update bbox="
-                + ((incrementalPayload[3] & 0xff) * 4) + "x" + ((incrementalPayload[4] & 0xff) * 2)
-                + "+" + ((incrementalPayload[1] & 0xff) * 4) + "+" + ((incrementalPayload[2] & 0xff) * 2)
-                + " changed=" + incrementalPlan.changedBytes + "/" + incrementalPlan.boxBytes + "B"
-                + " clusters=" + incrementalPlan.clusterCount);
+        if (incrementalLog != null) {
+            FrameTimings.getInstance().log(frameId, incrementalLog);
         }
 
         int updateId = nextImageUpdateId++;
@@ -1528,6 +1570,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             BleProtocol.ImageFragment fragment = plan.fragments.get(i);
             enqueueImageFragmentLocked(plan, fragment, fingerprint, updateId, i + 1, messageCount, true);
         }
+        // This frame is now the base for the next delta (it will be the firmware
+        // shadow once applied), even though it hasn't been acked yet — that is what
+        // lets the next frame pipeline behind it. plan.bmp is the full frame.
+        lastEnqueuedImageBmp = BmpUtil.copyTileBmp(plan.bmp);
+        lastEnqueuedFingerprint = fingerprint;
 
         FrameTimings.getInstance().log(frameId, "queued image update#" + updateId
                 + " messages=" + messageCount + " payload=" + plan.payload.length + "B");
@@ -1750,11 +1797,31 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 magicPool.release(message.sid, message.magic, message.label, "cleared inflight " + kind);
             }
         }
+        if ("image".equals(kind)) {
+            // The image pipeline was flushed (e.g. ack timeout -> keyframe resync):
+            // drop the pipelined delta base so the next image is a full keyframe.
+            lastEnqueuedImageBmp = new byte[0];
+            lastEnqueuedFingerprint = "";
+        }
     }
 
     private void clearAllMessagesLocked(String reason) {
         clearPendingMessagesLocked(reason);
         clearInFlightMessagesLocked(reason);
+        // The image pipeline is gone: drop the pipelined delta base so the next
+        // image is a full keyframe rather than a delta onto a stale base.
+        lastEnqueuedImageBmp = new byte[0];
+        lastEnqueuedFingerprint = "";
+    }
+
+    /** Any image update whose fragments are still queued (not yet sent). */
+    private boolean hasPendingImageLocked() {
+        for (OutboundMessage message : pendingMessages) {
+            if ("image".equals(message.kind)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void clearPendingMessagesLocked(String reason) {
