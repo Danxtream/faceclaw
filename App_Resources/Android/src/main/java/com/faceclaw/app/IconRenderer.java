@@ -77,13 +77,27 @@ public final class IconRenderer {
             bitmap.getPixels(pixels, 0, size, 0, 0, size, size);
             byte[] gray = new byte[size * size];
             for (int i = 0; i < pixels.length; i++) {
-                gray[i] = (byte) ((pixels[i] >>> 24) & 0xff); // alpha = coverage
+                gray[i] = (byte) quantizeCoverage((pixels[i] >>> 24) & 0xff); // alpha = coverage
             }
             return gray;
         } catch (Exception e) {
             Log.w(TAG, "icon render failed", e);
             return new byte[0];
         }
+    }
+
+    /**
+     * Snap antialiased coverage toward hard edges so the 4bpp frames sent
+     * over BLE deflate better: mostly-transparent and mostly-opaque pixels
+     * become exactly 0/255 (long runs, and 0 stays color-key transparent for
+     * bitBlt), and only genuinely half-covered edge pixels keep one mid gray.
+     * The packed frame then uses a 3-symbol alphabet instead of all 16
+     * levels, at icon sizes this is visually near-identical.
+     */
+    private static int quantizeCoverage(int alpha) {
+        if (alpha < 64) return 0;
+        if (alpha >= 192) return 255;
+        return 128;
     }
 
     private static void appendElement(Path path, String tag, String attrs) {
