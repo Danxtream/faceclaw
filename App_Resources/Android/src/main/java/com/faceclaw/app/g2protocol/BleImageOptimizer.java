@@ -74,7 +74,7 @@ public final class BleImageOptimizer {
         final int tileIndex;
         final BleProtocol.ImageTileOptions tile;
         final byte[] bmp;      // raw 4bpp BMP, kept for the displayed-tile dedup cache
-        final byte[] payload;  // bytes actually streamed: mode-6 zlib 4bpp when it shrinks, else == bmp
+        final byte[] payload;  // bytes actually streamed: mode-6 zlib(rle(4bpp)) when it shrinks, else == bmp
         final int sessionId;
         List<BleProtocol.ImageFragment> fragments = Collections.emptyList();
 
@@ -104,7 +104,7 @@ public final class BleImageOptimizer {
      * Build a mode-3 bounding-box incremental payload, or null when a full
      * update should be sent instead (frames not comparable, or the changed
      * region spans the whole screen). Wire format:
-     *   [3][left/4][top/2][width/4][height/2][fid_lo][fid_hi][zlib of headerless 4bpp region]
+     *   [3][left/4][top/2][width/4][height/2][fid_lo][fid_hi][zlib(rle(headerless 4bpp region))]
      * The region is top-down rows of the NEW frame, stride width/2 bytes. The
      * box is aligned so left/width are multiples of 4 pixels and top/height
      * multiples of 2 rows, letting each coordinate fit one byte and avoiding
@@ -206,11 +206,11 @@ public final class BleImageOptimizer {
 
     /**
      * Encode one CFW mode-3 rectangle delta:
-     *   [3][left/4][top/2][width/4][height/2][fid_lo][fid_hi][zlib box pixels]
+     *   [3][left/4][top/2][width/4][height/2][fid_lo][fid_hi][zlib(rle(box pixels))]
      * left/width must be multiples of 4 (=> left>>1, width>>1 are whole bytes), top/
      * height multiples of 2. The box pixels are top-down rows of `next` (4bpp packed,
-     * width>>1 bytes/row). Shared by the single-bbox path and each rect of a mode-8
-     * multi-rect batch.
+     * width>>1 bytes/row), run-length encoded before deflate. Shared by the single-bbox
+     * path and each rect of a mode-8 multi-rect batch.
      */
     private static byte[] encodeMode3Rect(byte[] next, int stride, int left, int top,
             int boxWidth, int boxHeight, int fid) {
@@ -219,7 +219,7 @@ public final class BleImageOptimizer {
         for (int y = 0; y < boxHeight; y++) {
             System.arraycopy(next, (top + y) * stride + (left >> 1), region, y * regionStride, regionStride);
         }
-        byte[] compressed = deflate(region);
+        byte[] compressed = deflate(rleEncode(region));
         byte[] out = new byte[7 + compressed.length];
         out[0] = 3;
         out[1] = (byte) (left / 4);
@@ -415,9 +415,9 @@ public final class BleImageOptimizer {
     }
 
     /**
-     * zlib-deflate headerless 4bpp pixels for CFW load_image_z mode 6 when it
-     * shrinks the payload. Wire format: [6][zlib stream]. A raw BMP (starts 'B')
-     * is sent verbatim when compression does not help.
+     * RLE- then zlib-compress headerless 4bpp pixels for CFW load_image_z mode 6 when
+     * it shrinks the payload. Wire format: [6][zlib(rle(4bpp pixels))]. A raw BMP
+     * (starts 'B') is sent verbatim when compression does not help.
      */
     static byte[] maybeCompress(byte[] bmp) {
         if (bmp == null || bmp.length == 0) {
@@ -427,7 +427,7 @@ public final class BleImageOptimizer {
         if (packed.length == 0) {
             return bmp;
         }
-        byte[] z = deflate(packed);
+        byte[] z = deflate(rleEncode(packed));
         if (z == null || z.length + 1 >= packed.length) {
             return bmp;
         }
@@ -435,6 +435,56 @@ public final class BleImageOptimizer {
         out[0] = 6;
         System.arraycopy(z, 0, out, 1, z.length);
         return out;
+    }
+
+    /**
+     * Run-length encode packed 4bpp pixels for CFW modes 3 and 6, whose payload is
+     * zlib(rle(pixels)) rather than zlib(pixels). Runs are over the pixel NIBBLES of
+     * {@code pix} in wire order (high nibble = left pixel), including the pad nibble
+     * that ends each row at odd widths — i.e. {@code pix} read as 2*length nibbles.
+     * One token is:
+     * <pre>
+     *   [cnt4|color4]                 cnt 1..15
+     *   [0|color4][cnt8]              cnt 1..255
+     *   [0|color4][0][cntLo][cntHi]   cnt 1..65535, little-endian
+     * </pre>
+     * with the low nibble always the color; runs longer than 65535 split across
+     * tokens. Worst case (every nibble its own run) is exactly one byte per nibble,
+     * which is what the buffer is sized for.
+     */
+    static byte[] rleEncode(byte[] pix) {
+        int n = pix.length * 2;
+        byte[] out = new byte[n];
+        int o = 0;
+        int i = 0;
+        while (i < n) {
+            int v = nibbleAt(pix, i);
+            int j = i + 1;
+            while (j < n && nibbleAt(pix, j) == v) j++;
+            int run = j - i;
+            while (run > 0) {
+                int c = Math.min(run, 0xffff);
+                if (c <= 15) {
+                    out[o++] = (byte) ((c << 4) | v);
+                } else if (c <= 255) {
+                    out[o++] = (byte) v;        // high nibble 0 = escape to an 8-bit count
+                    out[o++] = (byte) c;
+                } else {
+                    out[o++] = (byte) v;
+                    out[o++] = 0;               // 8-bit count 0 = escape to a 16-bit count
+                    out[o++] = (byte) (c & 0xff);
+                    out[o++] = (byte) (c >> 8);
+                }
+                run -= c;
+            }
+            i = j;
+        }
+        return Arrays.copyOf(out, o);
+    }
+
+    private static int nibbleAt(byte[] pix, int i) {
+        int b = pix[i >> 1] & 0xff;
+        return (i & 1) != 0 ? (b & 0x0f) : (b >> 4);
     }
 
     private static byte[] deflate(byte[] data) {
