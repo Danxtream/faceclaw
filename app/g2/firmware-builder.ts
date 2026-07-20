@@ -1,6 +1,6 @@
 /**
  * Builds the Faceclaw custom firmware on-device: downloads the stock Even
- * Realities G2 2.2.4.34 image from Even's CDN, verifies its SHA-256, applies
+ * Realities G2 2.2.6.10 image from Even's CDN, verifies its SHA-256, applies
  * the committed byte-patch set (cfw-patches.ts), verifies the patched SHA-256,
  * and writes the result to app storage.
  *
@@ -15,9 +15,9 @@ import { CFW_PATCH_SET, FirmwarePatchOp } from "./firmware/cfw-patches";
 
 declare const com: any;
 
-const FIRMWARE_URL = "https://cdn.evenreal.co/firmware/a6966d807634cc97aec641a0dcca358b.bin";
-const CFW_OUTPUT_FILENAME = "g2_2.2.4.34_cfw.bin";
-const STOCK_OUTPUT_FILENAME = "g2_2.2.4.34.bin";
+const FIRMWARE_URL = "https://cdn.evenreal.co/firmware/e28738432d7b612d625331b00383149b.bin";
+const CFW_OUTPUT_FILENAME = "g2_2.2.6.10_cfw.bin";
+const STOCK_OUTPUT_FILENAME = "g2_2.2.6.10.bin";
 
 export type FirmwareProgress =
   | { phase: "downloading" }
