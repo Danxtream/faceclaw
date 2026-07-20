@@ -13,8 +13,8 @@ export type DashboardInputEvent =
   /**
    * The on-glasses "Hey Even" wakeword fired. Delivered on sid 0x07 by the
    * stock firmware regardless of CFW; the CFW additionally suppresses the stock
-   * Even AI app so this is ours to handle. Unlike every other input event this
-   * one is honoured while the screen is off.
+   * Even AI app so this is ours to handle. Its configured action may be applied
+   * while the screen is off, unlike ordinary input events.
    */
   | { type: "wakeword" }
   | { type: "unknown"; kind: string; eventSource: number; eventType: number };

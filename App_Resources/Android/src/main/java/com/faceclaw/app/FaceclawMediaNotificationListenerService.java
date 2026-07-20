@@ -388,7 +388,11 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
         if (statusBarNotification == null || statusBarNotification.getNotification() == null) {
             return false;
         }
-        if (service.getPackageName().equals(statusBarNotification.getPackageName())) {
+        // The dashboard's own persistent foreground notification is noise, but
+        // Timer expiry notifications deliberately flow through the same mirror
+        // and modal path as notifications from other Android apps.
+        if (service.getPackageName().equals(statusBarNotification.getPackageName())
+                && !FaceclawTimerNotifications.isTimerNotification(statusBarNotification)) {
             return false;
         }
         Notification notification = statusBarNotification.getNotification();

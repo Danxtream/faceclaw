@@ -181,6 +181,11 @@ class LauncherGridLayer implements Layer {
  * new window.
  */
 export function createLauncherWindow(options: LauncherOptions): ShellWindow {
+  const sortedOptions: LauncherOptions = {
+    ...options,
+    apps: [...options.apps].sort((a, b) => a.label.localeCompare(b.label)),
+  };
+
   return createInProcessWindow({
     appId: "launcher",
     windowId: LAUNCHER_WINDOW_ID,
@@ -191,7 +196,7 @@ export function createLauncherWindow(options: LauncherOptions): ShellWindow {
     actions: options.actions,
     // Not wrapped in YieldAtRootLayer: the grid handles double-click itself to
     // back out of item selection before yielding to the sidebar.
-    baseLayer: new LauncherGridLayer(options),
+    baseLayer: new LauncherGridLayer(sortedOptions),
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
   }).window;

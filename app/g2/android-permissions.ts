@@ -3,9 +3,11 @@ import { Application, Utils } from "@nativescript/core";
 const PERMISSION_REQUEST_CODE = 4242;
 const VOICE_PERMISSION_REQUEST_CODE = 4243;
 const CALENDAR_PERMISSION_REQUEST_CODE = 4244;
+const LOCATION_PERMISSION_REQUEST_CODE = 4245;
 const POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS";
 const RECORD_AUDIO_PERMISSION = "android.permission.RECORD_AUDIO";
 const READ_CALENDAR_PERMISSION = "android.permission.READ_CALENDAR";
+const ACCESS_COARSE_LOCATION_PERMISSION = "android.permission.ACCESS_COARSE_LOCATION";
 
 function getActivity(): androidx.appcompat.app.AppCompatActivity {
   const activity = Application.android.foregroundActivity ?? Application.android.startActivity;
@@ -124,3 +126,26 @@ export async function ensureCalendarPermission(): Promise<boolean> {
   }
 }
 
+/** Whether approximate foreground location access has been granted. */
+export function hasLocationPermission(): boolean {
+  if (!global.isAndroid) return false;
+  return isPermissionGranted(ACCESS_COARSE_LOCATION_PERMISSION);
+}
+
+/**
+ * Prompt for approximate foreground location access. Weather only needs a
+ * coarse coordinate, which avoids asking for more precise access than needed.
+ */
+export async function ensureLocationPermission(): Promise<boolean> {
+  if (!global.isAndroid) return false;
+  try {
+    await ensurePermissions(
+      [ACCESS_COARSE_LOCATION_PERMISSION],
+      LOCATION_PERMISSION_REQUEST_CODE,
+      "Location",
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}

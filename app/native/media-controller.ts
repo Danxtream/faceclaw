@@ -23,10 +23,14 @@ export type MediaControllerState = {
   available: boolean;
   accessEnabled: boolean;
   packageName: string;
+  appName: string;
   playbackState: MediaPlaybackState;
   title: string;
   artist: string;
   album: string;
+  positionMs: number;
+  durationMs: number;
+  playbackSpeed: number;
   status: string;
   canPlayPause: boolean;
   canSkipNext: boolean;
@@ -37,10 +41,14 @@ const DEFAULT_MEDIA_STATE: MediaControllerState = {
   available: false,
   accessEnabled: false,
   packageName: "",
+  appName: "",
   playbackState: "idle",
   title: "",
   artist: "",
   album: "",
+  positionMs: -1,
+  durationMs: -1,
+  playbackSpeed: 0,
   status: "Media controller unavailable.",
   canPlayPause: false,
   canSkipNext: false,
@@ -52,6 +60,7 @@ export class FaceclawMediaControllerBridge {
   private controller: any | null = null;
   private listenerProxy: any | null = null;
   private state: MediaControllerState = { ...DEFAULT_MEDIA_STATE };
+  private stateUpdatedAtMs = Date.now();
   private started = false;
 
   onStateChange(listener: (state: MediaControllerState) => void): () => void {
@@ -61,7 +70,12 @@ export class FaceclawMediaControllerBridge {
   }
 
   snapshot(): MediaControllerState {
-    return { ...this.state };
+    const state = { ...this.state };
+    if (state.playbackState === "playing" && state.positionMs >= 0 && state.playbackSpeed !== 0) {
+      state.positionMs += (Date.now() - this.stateUpdatedAtMs) * state.playbackSpeed;
+      state.positionMs = Math.max(0, state.durationMs > 0 ? Math.min(state.positionMs, state.durationMs) : state.positionMs);
+    }
+    return state;
   }
 
   async start(): Promise<void> {
@@ -101,6 +115,21 @@ export class FaceclawMediaControllerBridge {
   async skipToQueueItem(id: number): Promise<void> {
     this.ensureController();
     this.controller?.skipToQueueItem(id);
+  }
+
+  /** Current Android music-stream volume normalized to 0..100. */
+  getMediaVolumePercent(): number {
+    if (!global.isAndroid) return -1;
+    this.ensureController();
+    if (!this.controller) return -1;
+    return Math.max(-1, Math.min(100, Math.round(Number(this.controller.getMediaVolumePercent()))));
+  }
+
+  /** Set Android's music-stream volume from a normalized 0..100 value. */
+  setMediaVolumePercent(volumePercent: number): void {
+    if (!global.isAndroid) return;
+    this.ensureController();
+    this.controller?.setMediaVolumePercent(Math.max(0, Math.min(100, Math.round(volumePercent))));
   }
 
   /**
@@ -152,9 +181,13 @@ export class FaceclawMediaControllerBridge {
       onStateChange: (
         playbackState: string,
         packageName: string,
+        appName: string,
         title: string,
         artist: string,
         album: string,
+        positionMs: number,
+        durationMs: number,
+        playbackSpeed: number,
         canPlayPause: boolean,
         canSkipNext: boolean,
         canSkipPrevious: boolean,
@@ -165,15 +198,20 @@ export class FaceclawMediaControllerBridge {
           available: Boolean(title || artist || album || packageName) || String(playbackState) !== "idle",
           accessEnabled: Boolean(accessEnabled),
           packageName: String(packageName),
+          appName: String(appName),
           playbackState: normalizePlaybackState(String(playbackState)),
           title: String(title),
           artist: String(artist),
           album: String(album),
+          positionMs: Number(positionMs),
+          durationMs: Number(durationMs),
+          playbackSpeed: Number(playbackSpeed),
           status: String(status),
           canPlayPause: Boolean(canPlayPause),
           canSkipNext: Boolean(canSkipNext),
           canSkipPrevious: Boolean(canSkipPrevious),
         };
+        this.stateUpdatedAtMs = Date.now();
         for (const listener of this.stateListeners) {
           listener(this.snapshot());
         }

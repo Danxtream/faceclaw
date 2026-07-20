@@ -24,6 +24,7 @@ export type NightscoutSettings = {
 export type BatteryDisplayMode = "icon" | "percentage";
 export type TimeFormat = "24h" | "12h";
 export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "never";
+export type WakeWordAction = "voice-input" | "off" | "turn-screen-on";
 
 type ConfigSettingOptions<TValue, TId extends string> = {
   id: TId;
@@ -243,11 +244,26 @@ const voiceProviderLabels: Record<VoiceProvider, string> = {
 
 export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   id: "voice-provider",
-  label: "Provider",
+  label: "Transcription Provider",
   storageKey: "voice.provider",
   defaultValue: "onboard",
   values: ["onboard", "elevenlabs", "whisper"],
   formatValue: (value) => voiceProviderLabels[value] ?? value,
+});
+
+const wakeWordActionLabels: Record<WakeWordAction, string> = {
+  "voice-input": "Voice Input",
+  off: "Off",
+  "turn-screen-on": "Turn Screen On",
+};
+
+export const wakeWordActionSetting = new ConfigSettingEnum<WakeWordAction>({
+  id: "wake-word-action",
+  label: "Wakeword Action (\"Hey Even\")",
+  storageKey: "voice.wakeWordAction",
+  defaultValue: "voice-input",
+  values: ["voice-input", "off", "turn-screen-on"],
+  formatValue: (value) => wakeWordActionLabels[value] ?? value,
 });
 
 export const saveVoiceRecordingsSetting = new ConfigSettingBoolean({

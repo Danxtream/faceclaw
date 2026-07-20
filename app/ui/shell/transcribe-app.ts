@@ -1,6 +1,5 @@
 import { imageFromAsciiArt } from "../../graphics/image";
 import { TranscribeLayer } from "../apps/transcribe";
-import type { LayerActions } from "../layers";
 import {
   createInProcessWindow,
   YieldAtRootLayer,
@@ -49,7 +48,6 @@ export type TranscribeAppOptions = InProcessAppOptions & {
  */
 export function createTranscribeAppWindow(options: TranscribeAppOptions): InProcessWindow {
   const layer = new TranscribeLayer();
-  const actions: LayerActions = { ...options.actions };
   const app = createInProcessWindow({
     appId: "transcribe",
     windowId: TRANSCRIBE_WINDOW_ID,
@@ -57,7 +55,7 @@ export function createTranscribeAppWindow(options: TranscribeAppOptions): InProc
     iconLetter: "Tr",
     icon: "mic",
     closeable: true,
-    actions,
+    actions: options.actions,
     baseLayer: new YieldAtRootLayer(layer),
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
@@ -68,10 +66,9 @@ export function createTranscribeAppWindow(options: TranscribeAppOptions): InProc
       options.onClosed();
     },
   });
-  // start() wires the layer's transcript/status subscriptions; the LayerStack
-  // exposes its context through a paint, but the layer needs it up front, so
-  // build a minimal context here.
-  layer.start({ stack: app.stack, actions });
+  // Wire async state changes to this window's renderer, rather than the
+  // controller action from which the window-specific actions were derived.
+  layer.start(app.requestRender);
   options.startContinuousVoiceCapture();
   shell.setTrayIcon(TRAY_ICON_ID, MIC_ICON);
   return app;

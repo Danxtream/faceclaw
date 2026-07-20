@@ -3,7 +3,10 @@ package com.faceclaw.app;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.media.AudioManager;
 import android.media.MediaDescription;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
@@ -12,6 +15,7 @@ import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Log;
 
@@ -26,6 +30,7 @@ public class FaceclawMediaController {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ComponentName listenerComponent;
     private final MediaSessionManager sessionManager;
+    private final AudioManager audioManager;
 
     private final MediaController.Callback controllerCallback = new MediaController.Callback() {
         @Override
@@ -71,6 +76,7 @@ public class FaceclawMediaController {
         this.appContext = context.getApplicationContext();
         this.listenerComponent = new ComponentName(appContext, FaceclawMediaNotificationListenerService.class);
         this.sessionManager = (MediaSessionManager) appContext.getSystemService(Context.MEDIA_SESSION_SERVICE);
+        this.audioManager = (AudioManager) appContext.getSystemService(Context.AUDIO_SERVICE);
     }
 
     public void setListener(FaceclawMediaControllerListener listener) {
@@ -169,6 +175,30 @@ public class FaceclawMediaController {
                 activeController.getTransportControls().skipToQueueItem(queueId);
             }
         }
+    }
+
+    /** Current phone media-stream volume normalized to the range 0..100. */
+    public int getMediaVolumePercent() {
+        if (audioManager == null) {
+            return -1;
+        }
+        int maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        if (maxVolume <= 0) {
+            return 0;
+        }
+        int currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+        return Math.max(0, Math.min(100, Math.round(currentVolume * 100f / maxVolume)));
+    }
+
+    /** Set the phone media-stream volume from a normalized 0..100 value. */
+    public void setMediaVolumePercent(int volumePercent) {
+        if (audioManager == null) {
+            return;
+        }
+        int clampedPercent = Math.max(0, Math.min(100, volumePercent));
+        int maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        int streamVolume = Math.round(clampedPercent * maxVolume / 100f);
+        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, streamVolume, 0);
     }
 
     /**
@@ -352,9 +382,13 @@ public class FaceclawMediaController {
 
         String playbackState = started ? "idle" : "stopped";
         String packageName = "";
+        String appName = "";
         String title = "";
         String artist = "";
         String album = "";
+        long positionMs = -1L;
+        long durationMs = -1L;
+        float playbackSpeed = 0f;
         boolean canPlayPause = false;
         boolean canSkipNext = false;
         boolean canSkipPrevious = false;
@@ -368,6 +402,7 @@ public class FaceclawMediaController {
             status = "No active media session.";
         } else {
             packageName = safe(activeController.getPackageName());
+            appName = getApplicationLabel(packageName);
             PlaybackState state = activeController.getPlaybackState();
             MediaMetadata metadata = activeController.getMetadata();
             playbackState = playbackStateName(state);
@@ -375,6 +410,14 @@ public class FaceclawMediaController {
                 title = safe(metadata.getString(MediaMetadata.METADATA_KEY_TITLE));
                 artist = safe(metadata.getString(MediaMetadata.METADATA_KEY_ARTIST));
                 album = safe(metadata.getString(MediaMetadata.METADATA_KEY_ALBUM));
+                durationMs = metadata.getLong(MediaMetadata.METADATA_KEY_DURATION);
+                if (durationMs <= 0L) {
+                    durationMs = -1L;
+                }
+            }
+            if (state != null) {
+                positionMs = estimatedPositionMs(state, durationMs);
+                playbackSpeed = state.getPlaybackSpeed();
             }
             long actions = state == null ? 0L : state.getActions();
             canPlayPause = (actions & PlaybackState.ACTION_PLAY_PAUSE) != 0
@@ -387,9 +430,13 @@ public class FaceclawMediaController {
 
         final String finalPlaybackState = playbackState;
         final String finalPackageName = packageName;
+        final String finalAppName = appName;
         final String finalTitle = title;
         final String finalArtist = artist;
         final String finalAlbum = album;
+        final long finalPositionMs = positionMs;
+        final long finalDurationMs = durationMs;
+        final float finalPlaybackSpeed = playbackSpeed;
         final boolean finalCanPlayPause = canPlayPause;
         final boolean finalCanSkipNext = canSkipNext;
         final boolean finalCanSkipPrevious = canSkipPrevious;
@@ -399,9 +446,13 @@ public class FaceclawMediaController {
         mainHandler.post(() -> currentListener.onStateChange(
                 finalPlaybackState,
                 finalPackageName,
+                finalAppName,
                 finalTitle,
                 finalArtist,
                 finalAlbum,
+                finalPositionMs,
+                finalDurationMs,
+                finalPlaybackSpeed,
                 finalCanPlayPause,
                 finalCanSkipNext,
                 finalCanSkipPrevious,
@@ -427,6 +478,39 @@ public class FaceclawMediaController {
             default:
                 return "idle";
         }
+    }
+
+    /** PlaybackState positions are snapshots; advance a playing snapshot to now. */
+    private long estimatedPositionMs(PlaybackState state, long durationMs) {
+        long positionMs = state.getPosition();
+        if (positionMs == PlaybackState.PLAYBACK_POSITION_UNKNOWN) {
+            return -1L;
+        }
+        if (state.getState() == PlaybackState.STATE_PLAYING) {
+            long updatedAtMs = state.getLastPositionUpdateTime();
+            if (updatedAtMs > 0L) {
+                positionMs += (long) ((SystemClock.elapsedRealtime() - updatedAtMs) * state.getPlaybackSpeed());
+            }
+        }
+        positionMs = Math.max(0L, positionMs);
+        return durationMs > 0L ? Math.min(positionMs, durationMs) : positionMs;
+    }
+
+    /** Resolve a media session's package id to the user-facing installed app name. */
+    private String getApplicationLabel(String packageName) {
+        if (packageName == null || packageName.isEmpty()) {
+            return "";
+        }
+        PackageManager packageManager = appContext.getPackageManager();
+        try {
+            ApplicationInfo applicationInfo = packageManager.getApplicationInfo(packageName, 0);
+            CharSequence label = packageManager.getApplicationLabel(applicationInfo);
+            if (label != null && label.length() > 0) {
+                return label.toString();
+            }
+        } catch (PackageManager.NameNotFoundException ignored) {
+        }
+        return packageName;
     }
 
     private String safe(String value) {

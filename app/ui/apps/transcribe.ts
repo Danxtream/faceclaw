@@ -20,14 +20,14 @@ export class TranscribeLayer implements Layer {
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeStatus: (() => void) | null = null;
 
-  start(ctx: LayerContext): void {
+  start(requestRender: () => void): void {
     this.unsubscribeTranscript = voiceControlBridge.onTranscript((event) => {
       this.onTranscript(event);
-      ctx.actions.requestRender();
+      requestRender();
     });
     this.unsubscribeStatus = voiceControlBridge.onStatus((state) => {
       this.status = state.status;
-      ctx.actions.requestRender();
+      requestRender();
     });
   }
 

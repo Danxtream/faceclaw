@@ -5,7 +5,12 @@ import { DashboardInputEvent, LayerActions, LayerStack } from "../layers";
 import { MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer } from "../apps/voice-input";
 import { SingleNotificationLayer } from "../notifications";
-import { batteryDisplayModeSetting, onAnySettingChanged, timeFormatSetting } from "../dashboard-settings";
+import {
+  batteryDisplayModeSetting,
+  onAnySettingChanged,
+  timeFormatSetting,
+  wakeWordActionSetting,
+} from "../dashboard-settings";
 import { ShellChromeLayer, type ShellChromeState, type ShellChromeWindow } from "./chrome-layer";
 import { ShellModalLayer } from "./modal-layer";
 import { SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
@@ -318,21 +323,25 @@ class Shell {
   }
 
   async receiveInput(event: DashboardInputEvent, frameId = 0): Promise<ShellInputOutcome> {
-    this.lastInputAtMs = Date.now();
-
-    // The wakeword is handled before the screen-off short-circuit: "Hey Even"
-    // is meant to work from a dark screen, which is the whole point of it.
-    // With the CFW the stock Even AI app never launches, so the firmware does
-    // not power the display for us either -- we wake it ourselves.
+    // The wakeword is handled before the screen-off short-circuit so its
+    // configured action can work from a dark screen. With the CFW the stock
+    // Even AI app never launches, so the firmware does not power the display
+    // for us either -- actions that need it wake the screen themselves.
     if (event.type === "wakeword") {
-      if (!this.screenOn) {
-        this.wake("sidebar");
+      const action = wakeWordActionSetting.get();
+      if (action === "off") {
+        return { shell: false, window: false };
       }
-      if (!this.activeVoiceLayer) {
+
+      this.lastInputAtMs = Date.now();
+      const wokeScreen = !this.screenOn && this.wake("sidebar");
+      if (action === "voice-input" && !this.activeVoiceLayer) {
         this.openVoiceDialog(false, true);
       }
-      return { shell: true, window: false };
+      return { shell: wokeScreen || action === "voice-input", window: false };
     }
+
+    this.lastInputAtMs = Date.now();
 
     if (!this.screenOn) {
       if (event.type === "double-click") {

@@ -21,6 +21,7 @@ import {
   nightscoutSiteUrlSetting,
   nightscoutApiTokenSetting,
   screenTimeoutSetting,
+  wakeWordActionSetting,
 } from "../dashboard-settings";
 import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 
@@ -49,7 +50,10 @@ function settingsSections(): SettingsSection[] {
     },
     {
       label: "Voice",
-      items: [enumSettingMenuItem(voiceProviderSetting)],
+      items: [
+        enumSettingMenuItem(wakeWordActionSetting),
+        enumSettingMenuItem(voiceProviderSetting),
+      ],
     },
     {
       label: "API Keys",
@@ -118,13 +122,13 @@ function renderAbout(args: { image: import("../../graphics/image").GrayImage; x:
   }
   const textX = logo ? x + logo.width + 12 : x;
   image.drawText(font, textX, y + 8, "Faceclaw", 220);
-  image.drawText(font, textX, y + 24, "Dashboard prototype", 170);
+  image.drawText(font, textX, y + 24, "v0.2.0", 170);
   image.drawTextWrapped({
     font,
     x,
     y: y + 64,
     width,
-    text: "By James Babcock. Distributed under the GNU General Public License, version 3. Version 0.1.0. Too much of an early janky development prototype to have proper numbered releases.",
+    text: "By James Babcock. Distributed under the GNU General Public License, version 3.",
     value: 170,
   });
 }

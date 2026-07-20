@@ -37,6 +37,11 @@ import {
   CALENDAR_WINDOW_ID,
 } from "../ui/shell/calendar-app";
 import {
+  createWeatherAppWindow,
+  WEATHER_SURFACE_ID,
+  WEATHER_WINDOW_ID,
+} from "../ui/shell/weather-app";
+import {
   createDebugTestsAppWindow,
   DEBUG_TESTS_SURFACE_ID,
   DEBUG_TESTS_WINDOW_ID,
@@ -229,7 +234,7 @@ class DashboardController {
           requestRender: () => shell.foregroundWindow()?.requestRender(),
         },
         apps: [
-          { appId: "stopwatch", label: "Stopwatch", icon: "timer" },
+          { appId: "timer", label: "Timer", icon: "timer" },
           { appId: "terminal", label: "Terminal", icon: "terminal" },
           { appId: "teleprompt", label: "Teleprompt", icon: "file-text" },
           { appId: "music", label: "Music", icon: "music" },
@@ -237,6 +242,7 @@ class DashboardController {
           { appId: "transcribe", label: "Transcribe", icon: "mic" },
           { appId: "notifications", label: "Notifications", icon: "bell" },
           { appId: "calendar", label: "Calendar", icon: "calendar" },
+          { appId: "weather", label: "Weather", icon: "cloud-sun" },
           { appId: "debug-tests", label: "Debug tests", icon: "flask-conical" },
           { appId: "settings", label: "Settings", icon: "settings" },
         ],
@@ -854,8 +860,8 @@ class DashboardController {
     if (existing) return existing;
     // Worker paths must be string literals for the webpack worker loader.
     let worker: Worker;
-    if (appId === "stopwatch") {
-      worker = new Worker("../workers/stopwatch-app.worker");
+    if (appId === "timer") {
+      worker = new Worker("../workers/timer-app.worker");
     } else if (appId === "terminal") {
       worker = new Worker("../workers/terminal-app.worker");
     } else {
@@ -896,6 +902,10 @@ class DashboardController {
     }
     if (appId === "calendar") {
       await this.launchInProcessApp(CALENDAR_WINDOW_ID, CALENDAR_SURFACE_ID, createCalendarAppWindow);
+      return;
+    }
+    if (appId === "weather") {
+      await this.launchInProcessApp(WEATHER_WINDOW_ID, WEATHER_SURFACE_ID, createWeatherAppWindow);
       return;
     }
     if (appId === "debug-tests") {
@@ -945,10 +955,17 @@ class DashboardController {
       this.appendLog("launched terminal:hub");
       return;
     }
-    const serial = this.nextWindowSerial++;
-    const windowId = `${appId}:${serial}`;
-    host.openWindow({ windowId, title: `Stopwatch ${serial}`, iconLetter: "S", icon: "timer", focus: true });
-    this.appendLog(`launched ${windowId}`);
+    if (appId === "timer") {
+      const existing = shell.getWindows().find((window) => window.appId === "timer");
+      if (existing) {
+        shell.focusWindow(existing.windowId);
+        this.requestShellRender();
+        return;
+      }
+      host.openWindow({ windowId: "timer:main", title: "Timer", iconLetter: "T", icon: "timer", focus: true });
+      this.appendLog("launched timer:main");
+      return;
+    }
   }
 
   /** Create/refresh a window surface on the compositor, if connected. */
