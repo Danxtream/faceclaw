@@ -8,6 +8,7 @@ export class MainViewModel extends Observable {
   private _status = "Disconnected.";
   private _log = "";
   private _displayPreview: ImageSource | null = null;
+  private _displayPreviewMessage = "";
   private _layoutOrientation: LayoutOrientation = this.readLayoutOrientation();
   private _activeTextSettingId: string | null = null;
   private _activeTextSettingTitle = "";
@@ -27,6 +28,7 @@ export class MainViewModel extends Observable {
       this.status = snapshot.status;
       this.log = snapshot.log;
       this.displayPreview = snapshot.displayPreview;
+      this.displayPreviewMessage = snapshot.displayPreviewMessage;
       this.phase = snapshot.phase;
       this.activeTextSettingId = snapshot.activeTextSettingId;
       this.activeTextSettingTitle = snapshot.activeTextSettingTitle;
@@ -75,12 +77,33 @@ export class MainViewModel extends Observable {
     }
   }
 
+  get displayPreviewMessage(): string {
+    return this._displayPreviewMessage;
+  }
+
+  set displayPreviewMessage(value: string) {
+    if (this._displayPreviewMessage !== value) {
+      this._displayPreviewMessage = value;
+      this.notifyPropertyChange("displayPreviewMessage", value);
+      this.notifyPropertyChange("displayPreviewMessageVisibility", this.displayPreviewMessageVisibility);
+      this.notifyPropertyChange("displayPreviewVisibility", this.displayPreviewVisibility);
+    }
+  }
+
   get hasDisplayPreview(): boolean {
     return this._displayPreview !== null;
   }
 
+  /**
+   * The preview and its stand-in message are mutually exclusive and occupy the
+   * same box, so the form doesn't reflow when one replaces the other.
+   */
   get displayPreviewVisibility(): "visible" | "collapse" {
-    return this.hasDisplayPreview ? "visible" : "collapse";
+    return this.hasDisplayPreview && !this._displayPreviewMessage ? "visible" : "collapse";
+  }
+
+  get displayPreviewMessageVisibility(): "visible" | "collapse" {
+    return this._displayPreviewMessage ? "visible" : "collapse";
   }
 
   get displayPreviewHeight(): number {

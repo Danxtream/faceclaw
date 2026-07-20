@@ -108,6 +108,7 @@ export class FaceclawCommunicatorBridge {
   private readonly stateListeners = new Set<(state: CommunicatorState) => void>();
   private readonly ringListeners = new Set<(event: RawInputEvent) => void>();
   private readonly batteryListeners = new Set<(state: HeadsetBatteryState) => void>();
+  private readonly silentModeListeners = new Set<(silent: boolean) => void>();
   private readonly evenAppConflictListeners = new Set<(message: string) => void>();
   private readonly frameMetricsListeners = new Set<(metrics: FrameMetrics) => void>();
   private readonly firmwareInfoListeners = new Set<(info: FirmwareInfo) => void>();
@@ -158,6 +159,9 @@ export class FaceclawCommunicatorBridge {
           chargingStatus: Number(headsetCharging),
         };
         this.emitAsync(this.batteryListeners, state);
+      },
+      onSilentMode: (silent: boolean) => {
+        this.emitAsync(this.silentModeListeners, Boolean(silent));
       },
       onEvenAppConflict: (message: string) => {
         this.emitAsync(this.evenAppConflictListeners, String(message));
@@ -237,6 +241,15 @@ export class FaceclawCommunicatorBridge {
   onBatteryState(listener: (state: HeadsetBatteryState) => void): () => void {
     this.batteryListeners.add(listener);
     return () => this.batteryListeners.delete(listener);
+  }
+
+  /**
+   * Silent mode, toggled on the glasses by long-pressing both touchpads. While
+   * it is on the firmware ignores all input and blanks the display.
+   */
+  onSilentMode(listener: (silent: boolean) => void): () => void {
+    this.silentModeListeners.add(listener);
+    return () => this.silentModeListeners.delete(listener);
   }
 
   onEvenAppConflict(listener: (message: string) => void): () => void {

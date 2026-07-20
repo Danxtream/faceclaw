@@ -90,6 +90,12 @@ export type DashboardSnapshot = {
   status: string;
   log: string;
   displayPreview: ImageSource | null;
+  /**
+   * When non-empty, the phone UI shows this instead of the display preview:
+   * the preview would be a black rectangle indistinguishable from dead
+   * glasses, and this says which harmless thing is actually going on.
+   */
+  displayPreviewMessage: string;
   activeTextSettingId: string | null;
   activeTextSettingTitle: string;
   activeTextSettingValue: string;
@@ -114,6 +120,8 @@ const SCREEN_TIMEOUT_CHECK_MS = 1_000;
 const FOREGROUND_NOTIFICATION_MIN_UPDATE_MS = 30_000;
 const FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS = 6_000;
 const CONNECTED_PREVIEW_MIN_UPDATE_MS = 1_000;
+// Below this, a disconnect is more likely a flat battery than a BLE problem.
+const LOW_BATTERY_PERCENT = 5;
 const EVEN_APP_DETECTED_MESSAGE =
   "The Even Realities app appears to be running. If Faceclaw has trouble connecting, open its app settings and force stop it.";
 
@@ -155,6 +163,10 @@ class DashboardController {
   private firmwareWarningMessage = "";
   private batteryOptimizationWarningVisible = false;
   private displayPreview: ImageSource | null = createInitialDisplayPreview();
+  private silentMode = false;
+  // Last battery level the glasses reported, kept across disconnects so a
+  // drop-off right after a low reading can be explained as a flat battery.
+  private lastHeadsetBattery: number | null = null;
   private readonly listeners = new Set<DashboardListener>();
   // Set at connect time from the persisted flag; the one-time post-onboarding
   // welcome sound plays on the first rendered frame (proof the session is warm).
@@ -168,6 +180,7 @@ class DashboardController {
   private offLog: (() => void) | null = null;
   private offRing: (() => void) | null = null;
   private offBattery: (() => void) | null = null;
+  private offSilentMode: (() => void) | null = null;
   private offEvenAppConflict: (() => void) | null = null;
   private offFrameMetrics: (() => void) | null = null;
   private offFirmwareInfo: (() => void) | null = null;
@@ -299,6 +312,7 @@ class DashboardController {
       status: this.status,
       log: this.log,
       displayPreview: this.displayPreview,
+      displayPreviewMessage: this.displayPreviewMessage(),
       activeTextSettingId: this.activeTextSetting?.id ?? null,
       activeTextSettingTitle: this.activeTextSetting?.editorTitle ?? "",
       activeTextSettingValue: this.activeTextSetting?.get() ?? "",
@@ -309,6 +323,28 @@ class DashboardController {
       rawScreenshotsEnabled: rawScreenshotsEnabledSetting.get(),
       batteryOptimizationWarningVisible: this.batteryOptimizationWarningVisible,
     };
+  }
+
+  /**
+   * Message to show in place of the display preview, or "" to show the preview.
+   *
+   * Both cases look identical to a dead pair of glasses from the phone side:
+   * silent mode blanks the display and swallows input while the BLE session
+   * stays up, and a battery that just ran out simply stops answering.
+   */
+  private displayPreviewMessage(): string {
+    if (this.silentMode && (this.phase === "connected" || this.phase === "charging")) {
+      return "Connected (Silent mode enabled)";
+    }
+    const connectionFailing = this.phase === "disconnected" || this.phase === "connecting";
+    if (
+      connectionFailing &&
+      this.lastHeadsetBattery !== null &&
+      this.lastHeadsetBattery < LOW_BATTERY_PERCENT
+    ) {
+      return "Disconnected (low battery)";
+    }
+    return "";
   }
 
   /**
@@ -444,7 +480,13 @@ class DashboardController {
           this.appendLog(`input handler failed: ${message}`);
         });
       });
+      this.offSilentMode = communicator.onSilentMode((silent) => {
+        if (this.silentMode === silent) return;
+        this.silentMode = silent;
+        this.emit();
+      });
       this.offBattery = communicator.onBatteryState((state) => {
+        this.lastHeadsetBattery = state.battery >= 0 ? state.battery : null;
         shell.setBatteryLevels({
           headset: state.battery,
           headsetCharging: state.chargingStatus > 0,
@@ -545,6 +587,8 @@ class DashboardController {
       this.offRing = null;
       this.offBattery?.();
       this.offBattery = null;
+      this.offSilentMode?.();
+      this.offSilentMode = null;
       this.offEvenAppConflict?.();
       this.offEvenAppConflict = null;
       this.offFrameMetrics?.();
@@ -585,6 +629,8 @@ class DashboardController {
     this.offRing = null;
     this.offBattery?.();
     this.offBattery = null;
+    this.offSilentMode?.();
+    this.offSilentMode = null;
     this.offEvenAppConflict?.();
     this.offEvenAppConflict = null;
     this.offFrameMetrics?.();
@@ -1146,6 +1192,11 @@ class DashboardController {
   private setPhase(phase: ConnectionPhase): void {
     if (this.phase === phase) return;
     this.phase = phase;
+    if (phase === "disconnected") {
+      // Kept across "connecting": silent mode blocks app launches, so it can
+      // itself cause the reconnect churn, and Java re-reports it either way.
+      this.silentMode = false;
+    }
     this.emit();
   }
 

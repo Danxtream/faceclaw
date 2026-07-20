@@ -5,6 +5,7 @@ public interface FaceclawBleCommunicatorListener {
     void onStateChange(String phase, String status);
     void onRingEvent(String kind, String containerName, int eventType, int eventSource, int systemExitReasonCode, int frameId);
     void onBatteryState(int headsetBattery, int headsetCharging);
+    void onSilentMode(boolean silent);
     void onEvenAppConflict(String message);
     void onFrameMetrics(int paintMs, int transmitMs, int tileCount);
     void onFrameFinished(int frameId, String outcome);

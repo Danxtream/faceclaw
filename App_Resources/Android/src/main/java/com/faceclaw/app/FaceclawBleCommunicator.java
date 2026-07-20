@@ -99,6 +99,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private long lastShutdownExitAtMs = 0;
     private int headsetBattery = -1;
     private int headsetCharging = -1;
+    // Silent mode: 1 = on, 0 = off, -1 = not yet known. See updateSilentModeLocked.
+    private int silentMode = -1;
     private boolean audioCaptureActive;
     private boolean firmwareInfoQueried;
     // Glasses are in the charging case: nobody is wearing them, so display
@@ -190,6 +192,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             workerThread = null;
             resetSessionStateLocked();
             clearAllMessagesLocked("disconnect");
+            // Unknown until the next connection's first push or settings poll.
+            silentMode = -1;
         }
         bleManager.disconnect(rightAddress);
         bleManager.disconnect(leftAddress);
@@ -624,6 +628,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         G2Event event = null;
         synchronized (lock) {
             lastIncomingAtMs = SystemClock.elapsedRealtime();
+            if (frame.ok && frame.sid == BleProtocol.SID_UI_SETTING) {
+                // Device-initiated settings push. It carries a magic the glasses
+                // chose, so it would otherwise fall through to resolveAckLocked,
+                // match nothing, and be logged as an unexpected ack.
+                int pushedSilentMode = BleProtocol.parseSilentModePush(frame.pb);
+                if (pushedSilentMode >= 0) {
+                    updateSilentModeLocked(pushedSilentMode > 0);
+                    return;
+                }
+            }
             if (frame.ok && frame.msgSeq >= 0 && frame.flag != BleProtocol.FLAG_NOTIFY && frame.flag != BleProtocol.FLAG_NOTIFY_ALT) {
                 lastAckAtMs = lastIncomingAtMs;
                 resolveAckLocked(frame.sid, frame.msgSeq, frame.pb);
@@ -637,6 +651,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         && event.eventType == BleProtocol.EVENT_IMU_DATA_REPORT;
                     if (!pureImuSample) {
                         lastConnectionOrInputAtMs = lastIncomingAtMs;
+                    }
+                    if ("list-click".equals(event.kind) || "text-click".equals(event.kind)) {
+                        // Container-routed touchpad input reached us, so the
+                        // firmware is dispatching input: silent mode is off,
+                        // whether or not its end-of-silent push arrived.
+                        updateSilentModeLocked(false);
                     }
                     if ("sys-event".equals(event.kind)) {
                         if (event.eventType == BleProtocol.EVENT_FOREGROUND_EXIT || event.eventType == BleProtocol.EVENT_ABNORMAL_EXIT || event.eventType == BleProtocol.EVENT_SYSTEM_EXIT) {
@@ -1664,6 +1684,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 headsetBattery = snapshot.battery;
                 headsetCharging = snapshot.charging;
                 emitBatteryState(headsetBattery, headsetCharging);
+                if (snapshot.silentMode >= 0) {
+                    // Backstop for the push in onNotification: the firmware is
+                    // confirmed to push silent-mode-on, but the off transition is
+                    // not, so re-read the authoritative value on every poll.
+                    updateSilentModeLocked(snapshot.silentMode > 0);
+                }
                 updateChargingModeLocked(snapshot.charging > 0, snapshot.battery);
             }
             BleProtocol.FirmwareInfo firmwareInfo = BleProtocol.parseSettingsFirmwareInfo(message.ackPayload);
@@ -1675,6 +1701,22 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             logLine("Battery query timed out");
         };
         return message;
+    }
+
+    /**
+     * Track silent mode, which the wearer toggles by long-pressing both
+     * touchpads at once. While it is on the firmware refuses input events and
+     * app launches and powers the display down, so the glasses look dead even
+     * though the BLE session is healthy; the phone UI says so explicitly.
+     */
+    private void updateSilentModeLocked(boolean silent) {
+        int next = silent ? 1 : 0;
+        if (silentMode == next) {
+            return;
+        }
+        silentMode = next;
+        logLine(silent ? "glasses entered silent mode" : "glasses left silent mode");
+        emitSilentMode(silent);
     }
 
     /**
@@ -1921,6 +1963,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         audioPacketListener = null;
         displayedFingerprint = "";
         displayedBmp = new byte[0];
+        // Deliberately not clearing silentMode: it is a property of the glasses,
+        // not of our session, and silent mode blocks app launches, so it can be
+        // the very cause of the session teardown that got us here.
     }
 
     private boolean hasPendingOrInflightTileLocked(int tileIndex) {
@@ -1985,6 +2030,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 } catch (Throwable t) {
                     Log.w(TAG, "listener onImuData failed", t);
                 }
+            }
+        });
+    }
+
+    private void emitSilentMode(boolean silent) {
+        final FaceclawBleCommunicatorListener current = listener;
+        if (current == null) {
+            return;
+        }
+        mainHandler.post(() -> {
+            try {
+                current.onSilentMode(silent);
+            } catch (Throwable t) {
+                Log.w(TAG, "listener onSilentMode failed", t);
             }
         });
     }

@@ -11,6 +11,13 @@
             <StackLayout row="0" visibility="{{ displayPreviewVisibility }}">
                 <Image src="{{ displayPreview }}" stretch="fill" height="{{ displayPreviewHeight }}" />
             </StackLayout>
+            <GridLayout
+                row="0"
+                class="display-preview-message"
+                height="{{ displayPreviewHeight }}"
+                visibility="{{ displayPreviewMessageVisibility }}">
+                <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
+            </GridLayout>
             <GridLayout row="1" rows="auto,auto,auto,*" class="p-20">
                 <StackLayout row="0" class="m-b-8">
                     <StackLayout visibility="{{ evenAppConflictWarningVisibility }}">
@@ -62,6 +69,16 @@
                         width="{{ landscapeDisplayPreviewWidth }}"
                         height="{{ landscapeDisplayPreviewHeight }}" />
                 </StackLayout>
+                <GridLayout
+                    row="0"
+                    col="0"
+                    class="display-preview-message"
+                    horizontalAlignment="left"
+                    width="{{ landscapeDisplayPreviewWidth }}"
+                    height="{{ landscapeDisplayPreviewHeight }}"
+                    visibility="{{ displayPreviewMessageVisibility }}">
+                    <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
+                </GridLayout>
                 <StackLayout row="0" col="1" class="m-l-16">
                     <GridLayout rows="auto,auto,auto" columns="*,*,*">
                         <Button row="0" col="1" text="Swipe up" tap="{{ onSyntheticUpTap }}" />

@@ -31,6 +31,8 @@ public class BleProtocol {
     public static final int SID_APP_LAUNCH = 0x01;
     public static final int SID_EVENHUB = 0xe0;
     public static final int SID_UI_SETTING = 0x09;
+    /** G2SettingPackage.commandId for device-initiated pushes (vs. 2 = app read). */
+    public static final int SETTINGS_CMD_DEVICE_SEND_TO_APP = 3;
     // UI_FOREGROUND_EVEN_AI_ID: the stock "Even AI" assistant app. It is a
     // FOREGROUND app, whereas EvenHub (and therefore faceclaw) is the
     // BACKGROUND app -- which is why an Even AI launch draws over us.
@@ -286,10 +288,37 @@ public class BleProtocol {
         }
         int battery = readVarintFieldValue(request, 12, -1);
         int charging = readVarintFieldValue(request, 13, -1);
+        int silentMode = readVarintFieldValue(request, 14, -1);
         if (battery < 0) {
             return null;
         }
-        return new BatterySnapshot(battery, charging);
+        return new BatterySnapshot(battery, charging, silentMode);
+    }
+
+    /**
+     * Silent mode from an unsolicited settings push. The wearer toggles silent
+     * mode by long-pressing both touchpads at once; the firmware then sends
+     * G2SettingPackage{commandId=3 (DeviceSendToAPP), deviceSendInfoToApp(5){
+     * silentModeSwitch(2)}} on sid 0x09, with a magic it picked itself, so this
+     * arrives outside the request/ack flow.
+     *
+     * Returns -1 when the frame is not such a push. Ordinary settings-read acks
+     * (the battery poll) carry commandId=2 and deviceReceiveRequestFromApp in
+     * field 4, so they never match and stay on the normal ack path.
+     */
+    public static int parseSilentModePush(byte[] pb) {
+        if (pb == null) {
+            return -1;
+        }
+        byte[] root = stripTrailingCrc(pb);
+        if (readVarintFieldValue(root, 1, -1) != SETTINGS_CMD_DEVICE_SEND_TO_APP) {
+            return -1;
+        }
+        byte[] info = readFieldBytes(root, 5);
+        if (info == null) {
+            return -1;
+        }
+        return readVarintFieldValue(info, 2, -1);
     }
 
     /**
@@ -699,10 +728,13 @@ public class BleProtocol {
     public static final class BatterySnapshot {
         final int battery;
         final int charging;
+        /** 1 = silent mode on, 0 = off, -1 = the ack didn't carry the field. */
+        final int silentMode;
 
-        BatterySnapshot(int battery, int charging) {
+        BatterySnapshot(int battery, int charging, int silentMode) {
             this.battery = battery;
             this.charging = charging;
+            this.silentMode = silentMode;
         }
     }
 
