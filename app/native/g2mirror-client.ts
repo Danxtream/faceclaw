@@ -13,6 +13,10 @@ declare const java: any;
 
 const PROTOCOL_VERSION = 1;
 const SESSION_LIST_REFRESH_MS = 3_000;
+// Wrapper-side pause between submitted text and its trailing "\r". Apps that
+// infer pasting from bytes arriving in one read (e.g. Claude Code) would
+// otherwise treat the "\r" as a pasted newline instead of the Enter key.
+const SUBMIT_DELAY_MS = 150;
 
 export type G2MirrorSession = {
   socket: string;
@@ -238,6 +242,22 @@ export class G2MirrorClient {
   sendInput(text: string): void {
     if (this.phase !== "attached" || !text) return;
     this.send({ type: "input", data: encodeBase64Utf8(text) });
+  }
+
+  /**
+   * Send `text` followed by Enter ("\r") as one input message, with a
+   * wrapper-side pause before the "\r" (the protocol's `delays` field) so the
+   * app reads it as a separate Enter keypress rather than the tail of a
+   * paste. Older wrappers ignore `delays`, so this degrades to sendInput.
+   */
+  submitInput(text: string): void {
+    if (this.phase !== "attached") return;
+    const textByteLength = new java.lang.String(text).getBytes("UTF-8").length;
+    this.send({
+      type: "input",
+      data: encodeBase64Utf8(`${text}\r`),
+      delays: [{ at: textByteLength, ms: SUBMIT_DELAY_MS }],
+    });
   }
 
   unview(): void {

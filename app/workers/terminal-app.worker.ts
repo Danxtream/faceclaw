@@ -124,10 +124,11 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
     }
     case "text-input": {
       const window = windows.get(message.windowId);
-      // Only attached view windows have a terminal to type into. Append "\r"
-      // (the Enter key) so voice-dictated text is submitted as a command.
+      // Only attached view windows have a terminal to type into. submitInput
+      // appends Enter ("\r") after a wrapper-side pause so paste-detecting
+      // apps (e.g. Claude Code) submit instead of inserting a newline.
       if (window && window.kind === "view") {
-        window.client.sendInput(`${message.text}\r`);
+        window.client.submitInput(message.text);
       }
       break;
     }
