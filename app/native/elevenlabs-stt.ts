@@ -1,5 +1,6 @@
+import { encodeBase64 } from "./cloud-stt";
+
 declare const com: any;
-declare const android: any;
 
 /**
  * ElevenLabs realtime speech-to-text over WebSocket.
@@ -164,14 +165,4 @@ export class ElevenLabsSttClient {
         return;
     }
   }
-}
-
-function encodeBase64(bytes: Uint8Array): string {
-  if (!global.isAndroid) return "";
-  const javaBytes = Array.create("byte", bytes.length);
-  for (let i = 0; i < bytes.length; i++) {
-    const value = bytes[i]!;
-    javaBytes[i] = value > 127 ? value - 256 : value;
-  }
-  return String(android.util.Base64.encodeToString(javaBytes, android.util.Base64.NO_WRAP));
 }

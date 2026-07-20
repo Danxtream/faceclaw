@@ -63,6 +63,7 @@ import { APP_VIEWPORT } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
 import {
   elevenLabsApiKeySetting,
+  openAiApiKeySetting,
   nightscoutApiTokenSetting,
   firmwareDebugFlagsSetting,
   nightscoutSiteUrlSetting,
@@ -676,6 +677,7 @@ class DashboardController {
           communicator: communicator.getNativeCommunicator(),
           provider: voiceProviderSetting.get(),
           elevenLabsApiKey: elevenLabsApiKeySetting.get(),
+          openAiApiKey: openAiApiKeySetting.get(),
           saveRecording: saveVoiceRecordingsSetting.get(),
           endpointing,
         };

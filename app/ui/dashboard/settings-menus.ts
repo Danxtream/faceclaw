@@ -5,6 +5,7 @@ import {
   anthropicApiKeySetting,
   batteryDisplayModeSetting,
   elevenLabsApiKeySetting,
+  openAiApiKeySetting,
   enumSettingMenuItem,
   firmwareDebugFlagsSetting,
   rawScreenshotsEnabledSetting,
@@ -54,6 +55,7 @@ function settingsSections(): SettingsSection[] {
       label: "API Keys",
       items: [
         textSettingMenuItem(elevenLabsApiKeySetting),
+        textSettingMenuItem(openAiApiKeySetting),
         textSettingMenuItem(anthropicApiKeySetting),
       ],
     },

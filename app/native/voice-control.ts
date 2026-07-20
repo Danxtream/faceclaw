@@ -1,6 +1,8 @@
 import { Utils } from "@nativescript/core";
 
+import { CloudSttClient } from "./cloud-stt";
 import { ElevenLabsSttClient } from "./elevenlabs-stt";
+import { OpenAiRealtimeSttClient } from "./openai-stt";
 import { toUint8Array } from "../util/array-util";
 
 declare const com: any;
@@ -9,7 +11,7 @@ export type VoiceControlState = {
   status: string;
 };
 
-export type VoiceProviderKind = "onboard" | "elevenlabs";
+export type VoiceProviderKind = "onboard" | "elevenlabs" | "whisper";
 
 export type VoiceTranscriptEvent = {
   /**
@@ -24,6 +26,7 @@ export type PushToTalkOptions = {
   communicator: any;
   provider: VoiceProviderKind;
   elevenLabsApiKey: string;
+  openAiApiKey: string;
   saveRecording: boolean;
   /**
    * Watch the mic and fire onSpeechEnd when the speaker stops. For hands-free
@@ -51,7 +54,7 @@ export class FaceclawVoiceControlBridge {
   // listener, so push-to-talk and the Transcribe window both receive text.
   private readonly captureHolders = new Set<CaptureHolder>();
   // Non-null while a cloud provider owns the transcript; Java only decodes PCM.
-  private cloudClient: ElevenLabsSttClient | null = null;
+  private cloudClient: CloudSttClient | null = null;
 
   onStatus(listener: (state: VoiceControlState) => void): () => void {
     this.statusListeners.add(listener);
@@ -111,25 +114,48 @@ export class FaceclawVoiceControlBridge {
     this.controller?.setSaveRecordings(options.saveRecording);
     this.controller?.setEndpointing(Boolean(options.endpointing));
 
-    if (options.provider === "elevenlabs" && options.elevenLabsApiKey.trim()) {
-      this.cloudClient = new ElevenLabsSttClient({
-        apiKey: options.elevenLabsApiKey.trim(),
-        onTranscript: (event) => this.emitTranscript(event.text, event.isFinal),
-        onStatus: (status) => this.setStatus(status),
-        onError: (message) => this.setStatus(message),
-      });
-      this.cloudClient.start();
+    const cloudClient = this.createCloudClient(options);
+    if (cloudClient) {
+      this.cloudClient = cloudClient;
+      cloudClient.start();
       this.started = true;
       this.controller?.start("cloud");
       return;
     }
 
-    if (options.provider === "elevenlabs") {
-      this.setStatus("No ElevenLabs key set; using on-device voice.");
-    }
     this.cloudClient = null;
     this.started = true;
     this.controller?.start("onboard");
+  }
+
+  /**
+   * The cloud provider for this session, or null to transcribe on-device.
+   * A cloud provider whose API key is missing falls back to on-device rather
+   * than failing the capture outright.
+   */
+  private createCloudClient(options: PushToTalkOptions): CloudSttClient | null {
+    if (options.provider === "onboard") return null;
+    const sttOptions = {
+      apiKey: "",
+      onTranscript: (event: { text: string; isFinal: boolean }) =>
+        this.emitTranscript(event.text, event.isFinal),
+      onStatus: (status: string) => this.setStatus(status),
+      onError: (message: string) => this.setStatus(message),
+    };
+    if (options.provider === "elevenlabs") {
+      const apiKey = options.elevenLabsApiKey.trim();
+      if (!apiKey) {
+        this.setStatus("No ElevenLabs key set; using on-device voice.");
+        return null;
+      }
+      return new ElevenLabsSttClient({ ...sttOptions, apiKey });
+    }
+    const apiKey = options.openAiApiKey.trim();
+    if (!apiKey) {
+      this.setStatus("No OpenAI key set; using on-device voice.");
+      return null;
+    }
+    return new OpenAiRealtimeSttClient({ ...sttOptions, apiKey });
   }
 
   private releaseCapture(holder: CaptureHolder, commit: boolean): void {
@@ -147,7 +173,7 @@ export class FaceclawVoiceControlBridge {
       return;
     }
     // Order matters for cloud: stopping the Java controller flushes any final
-    // decode/PCM; then commit so ElevenLabs finalizes the transcript.
+    // decode/PCM; then commit so the provider finalizes the transcript.
     this.controller?.stop();
     this.started = false;
     if (commit) {

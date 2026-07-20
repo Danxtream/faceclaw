@@ -233,15 +233,21 @@ export const firmwareDebugFlagsSetting = new ConfigSettingBoolean({
   defaultValue: false,
 });
 
-export type VoiceProvider = "onboard" | "elevenlabs";
+export type VoiceProvider = "onboard" | "elevenlabs" | "whisper";
+
+const voiceProviderLabels: Record<VoiceProvider, string> = {
+  onboard: "On-device",
+  elevenlabs: "ElevenLabs",
+  whisper: "Whisper",
+};
 
 export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   id: "voice-provider",
   label: "Provider",
   storageKey: "voice.provider",
   defaultValue: "onboard",
-  values: ["onboard", "elevenlabs"],
-  formatValue: (value) => (value === "elevenlabs" ? "ElevenLabs" : "On-device"),
+  values: ["onboard", "elevenlabs", "whisper"],
+  formatValue: (value) => voiceProviderLabels[value] ?? value,
 });
 
 export const saveVoiceRecordingsSetting = new ConfigSettingBoolean({
@@ -258,6 +264,16 @@ export const elevenLabsApiKeySetting = new ConfigSettingString({
   defaultValue: "",
   editorTitle: "ElevenLabs API key",
   glassesEditTitle: "Edit ElevenLabs key",
+  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+});
+
+export const openAiApiKeySetting = new ConfigSettingString({
+  id: "openai-api-key",
+  label: "OpenAI key",
+  storageKey: "voice.openAiApiKey",
+  defaultValue: "",
+  editorTitle: "OpenAI API key",
+  glassesEditTitle: "Edit OpenAI key",
   formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
 });
 
