@@ -25,6 +25,12 @@ export type PushToTalkOptions = {
   provider: VoiceProviderKind;
   elevenLabsApiKey: string;
   saveRecording: boolean;
+  /**
+   * Watch the mic and fire onSpeechEnd when the speaker stops. For hands-free
+   * ("Hey Even") capture, which has no button release to end the utterance.
+   * Ignored when the mic is already running for another holder.
+   */
+  endpointing?: boolean;
 };
 
 /** Who currently wants the mic running. */
@@ -34,6 +40,7 @@ export class FaceclawVoiceControlBridge {
   private readonly statusListeners = new Set<(state: VoiceControlState) => void>();
   private readonly wakeWordListeners = new Set<(keyword: string) => void>();
   private readonly transcriptListeners = new Set<(event: VoiceTranscriptEvent) => void>();
+  private readonly speechEndListeners = new Set<() => void>();
   private controller: any | null = null;
   private listenerProxy: any | null = null;
   private status = "Voice control stopped.";
@@ -60,6 +67,15 @@ export class FaceclawVoiceControlBridge {
   onTranscript(listener: (event: VoiceTranscriptEvent) => void): () => void {
     this.transcriptListeners.add(listener);
     return () => this.transcriptListeners.delete(listener);
+  }
+
+  /**
+   * The speaker stopped, in a hands-free session. Only fires when the capture
+   * was started with `endpointing: true`.
+   */
+  onSpeechEnd(listener: () => void): () => void {
+    this.speechEndListeners.add(listener);
+    return () => this.speechEndListeners.delete(listener);
   }
 
   /** Begin push-to-talk capture (momentary; released with stopPushToTalk). */
@@ -93,6 +109,7 @@ export class FaceclawVoiceControlBridge {
     this.ensureController();
     this.controller?.setCommunicator(options.communicator);
     this.controller?.setSaveRecordings(options.saveRecording);
+    this.controller?.setEndpointing(Boolean(options.endpointing));
 
     if (options.provider === "elevenlabs" && options.elevenLabsApiKey.trim()) {
       this.cloudClient = new ElevenLabsSttClient({
@@ -173,6 +190,11 @@ export class FaceclawVoiceControlBridge {
       },
       onPcm: (pcm: any) => {
         this.cloudClient?.acceptPcm(toUint8Array(pcm));
+      },
+      onSpeechEnd: () => {
+        for (const listener of this.speechEndListeners) {
+          listener();
+        }
       },
     });
     this.controller.setListener(this.listenerProxy);

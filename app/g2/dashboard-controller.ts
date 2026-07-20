@@ -1,5 +1,5 @@
 import { ImageSource } from "@nativescript/core";
-import { EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName } from "./events";
+import { EvenAIStatusName, EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName } from "./events";
 import { loadDeviceAddresses } from "./device-addresses";
 import { ensureBlePermissions, ensureVoicePermissions } from "./android-permissions";
 import { FaceclawCommunicatorBridge, type FrameMetrics, type RawInputEvent } from "../native/faceclaw-communicator";
@@ -121,6 +121,18 @@ function formatTimestamp(date: Date): string {
 
 function eventName(eventType: number): string {
   return OsEventTypeName[eventType] ?? `UNKNOWN_${eventType}`;
+}
+
+/**
+ * Event-type label for logs. "even-ai" frames carry eEvenAIStatus, not an
+ * OsEventTypeList value, so naming them with the OS table would be wrong
+ * (status 1 would read as "SCROLL_TOP_EVENT").
+ */
+function eventLabel(kind: string, eventType: number): string {
+  if (kind === "even-ai") {
+    return EvenAIStatusName[eventType] ?? `EVEN_AI_UNKNOWN_${eventType}`;
+  }
+  return eventName(eventType);
 }
 
 function sourceName(eventSource: number): string {
@@ -636,8 +648,8 @@ class DashboardController {
    * push-to-talk and the Transcribe app. Android mic permission is the consent
    * gate even though the audio source is the G2 mic over BLE.
    */
-  private startVoiceCapture(): void {
-    this.beginVoiceCapture("ptt");
+  private startVoiceCapture(endpointing = false): void {
+    this.beginVoiceCapture("ptt", endpointing);
   }
 
   private stopVoiceCapture(): void {
@@ -652,7 +664,7 @@ class DashboardController {
     voiceControlBridge.stopContinuousCapture();
   }
 
-  private beginVoiceCapture(kind: "ptt" | "continuous"): void {
+  private beginVoiceCapture(kind: "ptt" | "continuous", endpointing = false): void {
     if (this.phase !== "connected" || !this.communicator) {
       return;
     }
@@ -665,6 +677,7 @@ class DashboardController {
           provider: voiceProviderSetting.get(),
           elevenLabsApiKey: elevenLabsApiKeySetting.get(),
           saveRecording: saveVoiceRecordingsSetting.get(),
+          endpointing,
         };
         if (kind === "ptt") {
           voiceControlBridge.startPushToTalk(options);
@@ -723,7 +736,7 @@ class DashboardController {
   private async handleInputEvent(event: RawInputEvent): Promise<void> {
     const frameId =
       event.frameId > 0 ? event.frameId : frameTimings.startFrame(`input:${event.kind} (untracked source)`);
-    frameTimings.logFrame(frameId, `TS input handler start: ${event.kind} ${eventName(event.eventType)}`);
+    frameTimings.logFrame(frameId, `TS input handler start: ${event.kind} ${eventLabel(event.kind, event.eventType)}`);
     let frameOwned = false;
     try {
       const inputEvent = rawInputEventToInputEvent(event);

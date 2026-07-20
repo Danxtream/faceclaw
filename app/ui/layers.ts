@@ -10,6 +10,13 @@ export type DashboardInputEvent =
   | { type: "scroll-down" }
   | { type: "long-press"; source: "ring" | "left-arm" | "right-arm" }
   | { type: "long-press-release"; source: "ring" | "left-arm" | "right-arm" }
+  /**
+   * The on-glasses "Hey Even" wakeword fired. Delivered on sid 0x07 by the
+   * stock firmware regardless of CFW; the CFW additionally suppresses the stock
+   * Even AI app so this is ours to handle. Unlike every other input event this
+   * one is honoured while the screen is off.
+   */
+  | { type: "wakeword" }
   | { type: "unknown"; kind: string; eventSource: number; eventType: number };
 
 export type LayerActions = {
@@ -18,8 +25,12 @@ export type LayerActions = {
   disconnect: () => Promise<void> | void;
   startTextSettingEdit: (setting: ConfigSettingString) => Promise<void> | void;
   endTextSettingEdit: () => Promise<void> | void;
-  /** Start push-to-talk voice capture with the provider chosen in settings. */
-  startVoiceCapture: () => Promise<void> | void;
+  /**
+   * Start push-to-talk voice capture with the provider chosen in settings.
+   * With `endpointing`, the capture also ends itself when the speaker stops
+   * (hands-free); otherwise it runs until stopVoiceCapture.
+   */
+  startVoiceCapture: (endpointing?: boolean) => Promise<void> | void;
   /** Stop push-to-talk; for a cloud provider this also commits for a final result. */
   stopVoiceCapture: () => Promise<void> | void;
   /** Start continuous capture (Transcribe); shares the mic with push-to-talk. */

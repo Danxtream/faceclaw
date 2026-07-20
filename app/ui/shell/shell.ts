@@ -1,5 +1,5 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
-import { EventSourceType, OsEventTypeList } from "../../g2/events";
+import { EvenAIStatus, EventSourceType, OsEventTypeList } from "../../g2/events";
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
 import { DashboardInputEvent, LayerActions, LayerStack } from "../layers";
 import { MenuLayer, type MenuItem } from "../menu";
@@ -320,6 +320,20 @@ class Shell {
   async receiveInput(event: DashboardInputEvent, frameId = 0): Promise<ShellInputOutcome> {
     this.lastInputAtMs = Date.now();
 
+    // The wakeword is handled before the screen-off short-circuit: "Hey Even"
+    // is meant to work from a dark screen, which is the whole point of it.
+    // With the CFW the stock Even AI app never launches, so the firmware does
+    // not power the display for us either -- we wake it ourselves.
+    if (event.type === "wakeword") {
+      if (!this.screenOn) {
+        this.wake("sidebar");
+      }
+      if (!this.activeVoiceLayer) {
+        this.openVoiceDialog(false, true);
+      }
+      return { shell: true, window: false };
+    }
+
     if (!this.screenOn) {
       if (event.type === "double-click") {
         this.wake("sidebar");
@@ -422,7 +436,7 @@ class Shell {
     next?.requestRender();
   }
 
-  private openVoiceDialog(finishOnClick = false): void {
+  private openVoiceDialog(finishOnClick = false, handsFree = false): void {
     const layer = new VoiceInputLayer(
       this.config.actions,
       () => {
@@ -432,6 +446,7 @@ class Shell {
       },
       (text) => this.sendTextToForegroundWindow(text),
       finishOnClick,
+      handsFree,
     );
     this.activeVoiceLayer = layer;
     this.stack.push(layer);
@@ -517,6 +532,13 @@ export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputE
     } else if (event.eventType === OsEventTypeList.RING_LONG_PRESS_RELEASE_EVENT) {
       return { type: "long-press-release", source: eventSourceToString(event.eventSource) };
     }
+  } else if (event.kind === "even-ai") {
+    // sid 0x07 EvenAIDataPackage; eventType carries eEvenAIStatus. Only the
+    // wakeword interests us -- ENTER means the user manually opened the stock
+    // assistant, and EXIT is it tearing down.
+    if (event.eventType === EvenAIStatus.EVEN_AI_WAKE_UP) {
+      return { type: "wakeword" };
+    }
   } else if (event.kind === "text-click") {
     if (event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
       return { type: "scroll-down" };
@@ -557,6 +579,8 @@ export function inputEventToString(event: DashboardInputEvent): string {
       return `Long press from ${event.source}`;
     case "long-press-release":
       return `Long press release from ${event.source}`;
+    case "wakeword":
+      return `Wakeword`;
     default:
     case "unknown":
       return `Unknown event: ${event.kind} ${event.eventSource} ${event.eventType}`;

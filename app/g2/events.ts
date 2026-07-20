@@ -12,6 +12,26 @@ export const EventSourceTypeName: Record<number, string> = {
   3: "TOUCH_EVENT_FROM_GLASSES_L",
 };
 
+/**
+ * eEvenAIStatus, from EvenAIDataPackage.ctrl.status on sid 0x07
+ * (UI_FOREGROUND_EVEN_AI_ID). WAKE_UP is the on-glasses "Hey Even" wakeword
+ * firing; ENTER is a manual entry (touch/double-tap), so the two can be told
+ * apart. EXIT is the assistant tearing down.
+ */
+export const EvenAIStatus = {
+  STATUS_UNKNOWN: 0,
+  EVEN_AI_WAKE_UP: 1,
+  EVEN_AI_ENTER: 2,
+  EVEN_AI_EXIT: 3,
+} as const;
+
+export const EvenAIStatusName: Record<number, string> = {
+  0: "STATUS_UNKNOWN",
+  1: "EVEN_AI_WAKE_UP",
+  2: "EVEN_AI_ENTER",
+  3: "EVEN_AI_EXIT",
+};
+
 export const OsEventTypeList = {
   CLICK_EVENT: 0,
   SCROLL_TOP_EVENT: 1,

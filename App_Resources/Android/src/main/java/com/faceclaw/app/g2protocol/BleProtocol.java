@@ -31,6 +31,20 @@ public class BleProtocol {
     public static final int SID_APP_LAUNCH = 0x01;
     public static final int SID_EVENHUB = 0xe0;
     public static final int SID_UI_SETTING = 0x09;
+    // UI_FOREGROUND_EVEN_AI_ID: the stock "Even AI" assistant app. It is a
+    // FOREGROUND app, whereas EvenHub (and therefore faceclaw) is the
+    // BACKGROUND app -- which is why an Even AI launch draws over us.
+    // Payload is g2.even_ai.EvenAIDataPackage (see
+    // g2-kit-unofficial/ble/gen/even_ai_pb.ts).
+    public static final int SID_EVEN_AI = 0x07;
+    // eEvenAICommandId
+    public static final int EVEN_AI_CMD_CTRL = 1;
+    // eEvenAIStatus, carried in EvenAIDataPackage.ctrl.status (field 3, sub 1).
+    // WAKE_UP is the on-glasses "Hey Even" wakeword firing; ENTER is a manual
+    // entry (touch/double-tap), so the two are distinguishable.
+    public static final int EVEN_AI_STATUS_WAKE_UP = 1;
+    public static final int EVEN_AI_STATUS_ENTER = 2;
+    public static final int EVEN_AI_STATUS_EXIT = 3;
     public static final int FLAG_REQUEST = 0x20;
     public static final int FLAG_NOTIFY = 0x01;
     public static final int FLAG_NOTIFY_ALT = 0x06;

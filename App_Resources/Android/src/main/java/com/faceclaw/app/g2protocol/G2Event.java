@@ -32,6 +32,29 @@ public final class G2Event {
 
     public static G2Event decode(BleProtocol.ParsedFrame frame) {
         byte[] pb = BleProtocol.stripTrailingCrc(frame.pb);
+
+        // sid 0x07 is the stock Even AI app, not EvenHub, so it carries an
+        // EvenAIDataPackage rather than the device-event wrapper below.
+        // EvenAIDataPackage { command_id = 1, magic_random = 2, ctrl = 3 },
+        // EvenAIControl { status = 1 }. The event we care about is
+        // command_id=CTRL with status=WAKE_UP, which the firmware emits when the
+        // on-glasses "Hey Even" wakeword fires.
+        if (frame.sid == BleProtocol.SID_EVEN_AI) {
+            int commandId = BleProtocol.readVarintFieldValue(pb, 1, -1);
+            if (commandId != BleProtocol.EVEN_AI_CMD_CTRL) {
+                return null;
+            }
+            byte[] ctrl = BleProtocol.readFieldBytes(pb, 3);
+            if (ctrl == null) {
+                return null;
+            }
+            int status = BleProtocol.readVarintFieldValue(ctrl, 1, -1);
+            if (status < 0) {
+                return null;
+            }
+            return new G2Event("even-ai", "", status, 0, 0);
+        }
+
         byte[] deviceEvent = BleProtocol.readFieldBytes(pb, 13);
         if (deviceEvent == null) {
             return null;

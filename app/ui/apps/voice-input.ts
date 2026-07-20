@@ -37,6 +37,10 @@ type VoicePhase = "capturing" | "menu" | "continuing" | "refining";
  *
  * When opened from a menu instead of a held button (finishOnClick), there is
  * no release event to end the capture, so a single click stops the mic.
+ *
+ * When opened by the "Hey Even" wakeword (handsFree), there is likewise no
+ * button involved: the mic starts immediately and stops when the speaker does,
+ * via endpoint detection on the decoded PCM. A click still ends it early.
  */
 export class VoiceInputLayer implements Layer {
   private phase: VoicePhase = "capturing";
@@ -56,12 +60,14 @@ export class VoiceInputLayer implements Layer {
   private menuIndex = 0;
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeStatus: (() => void) | null = null;
+  private unsubscribeSpeechEnd: (() => void) | null = null;
 
   constructor(
     private readonly actions: LayerActions,
     private readonly onClosed: () => void,
     private readonly onSend: (text: string) => void,
     private readonly finishOnClick = false,
+    private readonly handsFree = false,
   ) {}
 
   startCapture(): void {
@@ -73,12 +79,31 @@ export class VoiceInputLayer implements Layer {
       this.status = state.status;
       this.actions.requestRender();
     });
+    if (this.handsFree) {
+      // No button is held, so the mic has to stop itself. endCapture() is
+      // idempotent, and a click still ends the utterance early.
+      this.unsubscribeSpeechEnd = voiceControlBridge.onSpeechEnd(() => {
+        if (this.phase === "capturing") {
+          this.endCapture();
+        }
+      });
+    }
     this.capturing = true;
-    void this.actions.startVoiceCapture();
+    void this.actions.startVoiceCapture(this.handsFree);
     this.actions.requestRender();
   }
 
-  /** Button released (or click in finishOnClick mode): stop the mic. */
+  /**
+   * Whether a single click ends the utterance. True when there is no held
+   * button to release: opened from the overlay menu (finishOnClick), or
+   * hands-free from the wakeword — where it also lets the user cut the
+   * silence-detection wait short.
+   */
+  private get clickEndsCapture(): boolean {
+    return this.finishOnClick || this.handsFree;
+  }
+
+  /** Button released (or click when clickEndsCapture): stop the mic. */
   endCapture(): void {
     if (!this.capturing) return;
     if (this.phase === "continuing") {
@@ -150,7 +175,7 @@ export class VoiceInputLayer implements Layer {
       case "capturing":
         if (event.type === "double-click") {
           ctx.stack.pop();
-        } else if (this.finishOnClick && event.type === "click") {
+        } else if (this.clickEndsCapture && event.type === "click") {
           this.endCapture();
         }
         return;
@@ -292,6 +317,8 @@ export class VoiceInputLayer implements Layer {
     this.unsubscribeTranscript = null;
     this.unsubscribeStatus?.();
     this.unsubscribeStatus = null;
+    this.unsubscribeSpeechEnd?.();
+    this.unsubscribeSpeechEnd = null;
     if (this.followupFinalizeTimer !== null) {
       clearTimeout(this.followupFinalizeTimer);
       this.followupFinalizeTimer = null;
@@ -327,7 +354,7 @@ export class VoiceInputLayer implements Layer {
   private hintText(): string {
     switch (this.phase) {
       case "capturing":
-        return this.finishOnClick
+        return this.clickEndsCapture
           ? gestureHints([[GESTURE_CLICK, "done"], [GESTURE_DOUBLE_CLICK, "close"]])
           : `${GESTURE_DOUBLE_CLICK} close`;
       case "continuing":

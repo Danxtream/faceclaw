@@ -75,6 +75,19 @@ export type RawInputEvent =
       eventSource: number;
       systemExitReasonCode: number;
       frameId: number;
+    }
+  | {
+      /**
+       * Stock Even AI app (sid 0x07), not EvenHub. `eventType` carries
+       * eEvenAIStatus -- see EvenAIStatus in app/g2/events.ts. The only one we
+       * act on is EVEN_AI_WAKE_UP, i.e. the "Hey Even" wakeword.
+       */
+      kind: "even-ai";
+      containerName: string;
+      eventType: number;
+      eventSource: number;
+      systemExitReasonCode: number;
+      frameId: number;
     };
 
 function nonNegativeNumber(value: number): number {

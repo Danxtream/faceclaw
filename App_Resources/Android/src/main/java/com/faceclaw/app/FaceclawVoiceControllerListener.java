@@ -17,4 +17,11 @@ public interface FaceclawVoiceControllerListener {
      * little-endian PCM. Empty/absent in onboard mode.
      */
     void onPcm(byte[] pcm16le);
+
+    /**
+     * The speaker stopped, in a hands-free session that has no button release
+     * to end it. Only fires when endpointing was enabled for the session; see
+     * FaceclawVoiceController.setEndpointing.
+     */
+    void onSpeechEnd();
 }
