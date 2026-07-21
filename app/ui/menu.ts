@@ -67,6 +67,26 @@ export function drawSelectionHighlight(
   image.drawRoundedRect(x, y, width, height, MENU_HIGHLIGHT_SELECTED_BORDER_STROKE, radius);
 }
 
+/**
+ * Draw a ">" submenu indicator inset at the right edge of a row's selection
+ * highlight box, vertically centered within it. Pass the same rect as the
+ * row's drawSelectionHighlight call (the row need not actually be selected).
+ */
+export function drawSubmenuIndicator(
+  image: GrayImage,
+  font: BdfFont,
+  highlightX: number,
+  highlightY: number,
+  highlightWidth: number,
+  highlightHeight: number,
+  value: number,
+): void {
+  const arrow = ">";
+  const x = highlightX + highlightWidth - font.measureText(arrow) - 4;
+  const y = highlightY + (((highlightHeight - font.lineHeight) / 2) | 0);
+  image.drawText(font, x, y, arrow, value);
+}
+
 export function drawToggleMenuItem(
   image: GrayImage,
   font: BdfFont,

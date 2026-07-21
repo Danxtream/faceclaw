@@ -9,7 +9,7 @@ import {
   GESTURE_SCROLL_DOWN,
   GESTURE_SCROLL_UP,
 } from "../gestures";
-import { drawSelectionHighlight } from "../menu";
+import { drawSelectionHighlight, drawSubmenuIndicator } from "../menu";
 import {
   mediaControllerBridge,
   type MediaControllerState,
@@ -37,7 +37,7 @@ const ACTION_WIDTH = 154;
 const COLUMN_DIVIDER_X = 190;
 const QUEUE_X = 204;
 const FOOTER_HEIGHT = 20;
-const PLAYLIST_ACTION_INDEX = 4;
+const PLAYLIST_ACTION_INDEX = 1;
 
 type MusicAction =
   | { kind: "play-pause"; label: string; enabled: boolean }
@@ -121,13 +121,17 @@ class MusicAppLayer implements Layer {
       const action = actions[index]!;
       const y = LIST_TOP + index * ROW_HEIGHT;
       const selected = index === this.selectedActionIndex;
+      const highlightX = ACTION_X - 6;
+      const highlightY = y - 1;
+      const highlightWidth = ACTION_WIDTH + 8;
+      const highlightHeight = ROW_HEIGHT - 1;
       if (selected) {
         drawSelectionHighlight(
           image,
-          ACTION_X - 6,
-          y - 1,
-          ACTION_WIDTH + 8,
-          ROW_HEIGHT - 1,
+          highlightX,
+          highlightY,
+          highlightWidth,
+          highlightHeight,
           ctx.stack.isFocused() && this.focusColumn === "actions",
           4,
         );
@@ -135,7 +139,7 @@ class MusicAppLayer implements Layer {
       const value = !action.enabled ? (selected ? 130 : 90) : selected ? 255 : 200;
       image.drawText(font, ACTION_X, y + 1, truncate(font, action.label, ACTION_WIDTH - 16), value);
       if (action.kind === "playlist" && action.enabled) {
-        image.drawText(font, ACTION_X + ACTION_WIDTH - 16, y + 1, ">", value);
+        drawSubmenuIndicator(image, font, highlightX, highlightY, highlightWidth, highlightHeight, value);
       }
     }
 
@@ -208,20 +212,25 @@ class MusicAppLayer implements Layer {
         if (this.focusColumn === "playlist") {
           this.selectedQueueIndex = Math.max(0, this.selectedQueueIndex - 1);
         } else {
-          this.selectedActionIndex = Math.max(0, this.selectedActionIndex - 1);
+          this.selectedActionIndex = (this.selectedActionIndex + actions.length - 1) % actions.length;
         }
         return;
       case "scroll-down":
         if (this.focusColumn === "playlist") {
           this.selectedQueueIndex = Math.min(Math.max(0, queue.length - 1), this.selectedQueueIndex + 1);
         } else {
-          this.selectedActionIndex = Math.min(actions.length - 1, this.selectedActionIndex + 1);
+          this.selectedActionIndex = (this.selectedActionIndex + 1) % actions.length;
         }
         return;
       case "click": {
         if (this.focusColumn === "playlist") {
           const item = queue[this.selectedQueueIndex];
-          if (item) await mediaControllerBridge.skipToQueueItem(item.id);
+          if (item) {
+            await mediaControllerBridge.skipToQueueItem(item.id);
+            // The player rebuilds the queue with the chosen track at index 0.
+            this.selectedQueueIndex = 0;
+            this.queueScrollRow = 0;
+          }
           return;
         }
         const action = actions[this.selectedActionIndex];
@@ -251,10 +260,10 @@ class MusicAppLayer implements Layer {
         label: media.playbackState === "playing" ? "Pause" : "Play",
         enabled: media.canPlayPause,
       },
-      { kind: "previous", label: "Previous track", enabled: media.canSkipPrevious },
-      { kind: "next", label: "Next track", enabled: media.canSkipNext },
-      { kind: "volume", label: volume >= 0 ? `Volume (${volume})` : "Volume", enabled: volume >= 0 },
       { kind: "playlist", label: "Playlist", enabled: queue.length > 0 },
+      { kind: "volume", label: volume >= 0 ? `Volume (${volume})` : "Volume", enabled: volume >= 0 },
+      { kind: "next", label: "Next track", enabled: media.canSkipNext },
+      { kind: "previous", label: "Previous track", enabled: media.canSkipPrevious },
     ];
   }
 
@@ -263,7 +272,7 @@ class MusicAppLayer implements Layer {
     this.selectedQueueIndex = clamp(this.selectedQueueIndex, 0, Math.max(0, queue.length - 1));
     if (!queue.length && this.focusColumn === "playlist") {
       this.focusColumn = "actions";
-      this.selectedActionIndex = actions.length - 1;
+      this.selectedActionIndex = PLAYLIST_ACTION_INDEX;
     }
   }
 
