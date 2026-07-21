@@ -273,6 +273,13 @@ class Shell {
   applyScreenTimeout(nowMs = Date.now()): boolean {
     const timeoutMs = this.config.getScreenTimeoutMs();
     if (timeoutMs === null || !this.screenOn) return false;
+    // An open voice dialog suspends the timeout: a long dictation or refine
+    // has no button presses, but the screen must stay on for it. Sliding
+    // lastInputAtMs forward also restarts the full timeout when it closes.
+    if (this.activeVoiceLayer) {
+      this.lastInputAtMs = nowMs;
+      return false;
+    }
     if (nowMs - this.lastInputAtMs < timeoutMs) return false;
     this.sleep();
     return true;
@@ -451,6 +458,8 @@ class Shell {
       () => {
         if (this.activeVoiceLayer === layer) {
           this.activeVoiceLayer = null;
+          // The idle countdown restarts in full once voice input ends.
+          this.noteUserActivity();
         }
       },
       (text) => this.sendTextToForegroundWindow(text),

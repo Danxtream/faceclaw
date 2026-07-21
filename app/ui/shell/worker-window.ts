@@ -12,10 +12,10 @@ import { shell, type ShellWindow } from "./shell";
 export type WorkerAppMessage =
   | { type: "open-window"; windowId: string; surfaceId: string; viewport: { width: number; height: number } }
   | { type: "close-window"; windowId: string }
-  | { type: "input"; windowId: string; event: unknown; frameId: number }
+  | { type: "input"; windowId: string; event: unknown; frameId: number; focused: boolean }
   | { type: "text-input"; windowId: string; text: string }
-  | { type: "render"; windowId: string }
-  | { type: "foreground"; windowId: string; foreground: boolean }
+  | { type: "render"; windowId: string; focused: boolean }
+  | { type: "foreground"; windowId: string; foreground: boolean; focused: boolean }
   | { type: "screen"; on: boolean };
 
 export type WorkerAppReply =
@@ -153,10 +153,16 @@ export class WorkerAppHost {
       },
       drawIcon: windowIcon(spec.icon, spec.iconLetter),
       handleInput: (event, frameId) => {
-        this.post({ type: "input", windowId: spec.windowId, event, frameId });
+        this.post({
+          type: "input",
+          windowId: spec.windowId,
+          event,
+          frameId,
+          focused: shell.isWindowFocused(spec.windowId),
+        });
       },
       requestRender: () => {
-        this.post({ type: "render", windowId: spec.windowId });
+        this.post({ type: "render", windowId: spec.windowId, focused: shell.isWindowFocused(spec.windowId) });
       },
       receiveTextInput: (text) => {
         this.post({ type: "text-input", windowId: spec.windowId, text });
@@ -166,7 +172,12 @@ export class WorkerAppHost {
         if (foreground) {
           shell.setWindowAttention(spec.windowId, false);
         }
-        this.post({ type: "foreground", windowId: spec.windowId, foreground });
+        this.post({
+          type: "foreground",
+          windowId: spec.windowId,
+          foreground,
+          focused: shell.isWindowFocused(spec.windowId),
+        });
       },
       setScreenOn: (on) => {
         // Screen state is per-app, but sending per-window keeps the protocol

@@ -2,8 +2,15 @@ import { BdfFont, getDefaultLargeFont, getDefaultSmallFont } from "../../graphic
 import { GrayImage, imageFromAsciiArt } from "../../graphics/image";
 import { DashboardInputEvent, Layer, LayerContext } from "../layers";
 import { nightscoutBridge, type NightscoutState } from "../../native/nightscout-bridge";
-import { isNightscoutSettingsConfigured } from "../dashboard-settings";
+import {
+  isNightscoutSettingsConfigured,
+  nightscoutApiTokenSetting,
+  nightscoutSiteUrlSetting,
+  textSettingMenuItem,
+} from "../dashboard-settings";
 import { formatAgeShortFromTimestamp, formatTimestamp } from "~/util/date-util";
+import { MenuLayer } from "../menu";
+import { openSettingsSubMenu } from "../dashboard/settings-panel";
 
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK } from "../gestures";
 const nightscoutLargeFont = getDefaultLargeFont();
@@ -299,14 +306,15 @@ export class NightscoutLayer implements Layer {
 
     if (!isNightscoutSettingsConfigured() || nightscout.configurationMissing) {
       image.drawText(font, 22, 44, "Nightscout needs configuration.", 180);
-      image.drawText(font, 22, 62, "Use Settings > Integrations > Nightscout.", 140);
+      image.drawText(font, 22, 62, `Set the site URL and API token in ${GESTURE_CLICK} menu > Settings.`, 140);
+      image.drawText(font, 22, footerY, `${GESTURE_CLICK} menu   ${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
 
     if (!nightscout.available || !nightscout.latest) {
       image.drawText(font, 22, 44, "No Nightscout data available.", 180);
       image.drawText(font, 22, 58, truncateLine(nightscout.status, 60), 140);
-      image.drawText(font, 22, footerY, `${GESTURE_CLICK} refresh   ${GESTURE_DOUBLE_CLICK} back`, 110);
+      image.drawText(font, 22, footerY, `${GESTURE_CLICK} menu   ${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
 
@@ -340,14 +348,14 @@ export class NightscoutLayer implements Layer {
     const graphHeight = Math.max(40, height - 128 - 48);
     drawNightscoutGraph(image, { x: 22, y: 128, width: width - 44, height: graphHeight }, nightscout, nowMs, font);
     image.drawText(font, 22, height - 42, "2-hour glucose history with basal / carbs / boluses", 130);
-    image.drawText(font, 22, footerY, `${GESTURE_CLICK} refresh   ${GESTURE_DOUBLE_CLICK} back`, 110);
+    image.drawText(font, 22, footerY, `${GESTURE_CLICK} menu   ${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 
   async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
     switch (event.type) {
       case "click":
-        await nightscoutBridge.refreshNow();
+        ctx.stack.push(createNightscoutMenu());
         return;
       case "double-click":
         ctx.stack.pop();
@@ -356,6 +364,35 @@ export class NightscoutLayer implements Layer {
         return;
     }
   }
+}
+
+/** The app menu (opened with a click); MenuLayer self-closes on double-click. */
+function createNightscoutMenu(): MenuLayer {
+  return new MenuLayer(
+    "Nightscout",
+    [
+      {
+        label: "Refresh",
+        onSelect: async (ctx) => {
+          ctx.stack.pop();
+          await nightscoutBridge.refreshNow();
+        },
+      },
+      {
+        label: "Settings",
+        onSelect: (ctx) => {
+          // Pop the menu first so closing the settings modal lands back on
+          // the glucose view, not this menu.
+          ctx.stack.pop();
+          openSettingsSubMenu(ctx, "Nightscout settings", [
+            textSettingMenuItem(nightscoutSiteUrlSetting),
+            textSettingMenuItem(nightscoutApiTokenSetting),
+          ]);
+        },
+      },
+    ],
+    { x: 8, y: 8, width: 200, minHeight: 0 },
+  );
 }
 
 function isNightscoutPointStale(point: NightscoutState["latest"], nowMs: number): boolean {

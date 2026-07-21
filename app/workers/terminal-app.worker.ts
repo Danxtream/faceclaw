@@ -50,6 +50,12 @@ type BaseWindow = {
   windowId: string;
   surfaceId: string;
   foreground: boolean;
+  /**
+   * Whether this window is the shell's input target (vs. the sidebar having
+   * focus). Pushed by the shell on every input/render/foreground message;
+   * every focus transition triggers one of those, so it never goes stale.
+   */
+  focused: boolean;
   renderScheduled: boolean;
   lastSubmittedFingerprint: string;
 };
@@ -119,6 +125,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         frameTimings.finishFrame(message.frameId, "discarded: unknown terminal window");
         break;
       }
+      window.focused = message.focused;
       handleInput(window, message.event as DashboardInputEvent, message.frameId);
       break;
     }
@@ -134,13 +141,16 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
     }
     case "render": {
       const window = windows.get(message.windowId);
-      if (window) renderAndSubmit(window, 0);
+      if (!window) break;
+      window.focused = message.focused;
+      renderAndSubmit(window, 0);
       break;
     }
     case "foreground": {
       const window = windows.get(message.windowId);
       if (!window) break;
       window.foreground = message.foreground;
+      window.focused = message.focused;
       if (window.foreground) renderAndSubmit(window, 0);
       break;
     }
@@ -182,6 +192,7 @@ function openWindow(windowId: string, surfaceId: string, viewport: { width: numb
     windowId,
     surfaceId,
     foreground: false,
+    focused: false,
     renderScheduled: false,
     lastSubmittedFingerprint: "",
     selectedIndex: 0,
@@ -270,6 +281,7 @@ function createViewWindow(windowId: string, surfaceId: string, socket: string, l
     windowId,
     surfaceId,
     foreground: false,
+    focused: false,
     renderScheduled: false,
     lastSubmittedFingerprint: "",
     socket,
@@ -504,7 +516,11 @@ function paintHub(window: HubWindow): GrayImage {
     if (y + HUB_ROW_HEIGHT > viewportHeight - 30) break;
     const selected = index === window.selectedIndex;
     if (selected) {
-      image.fillRoundedRect(20, y - 2, viewportWidth - 40, HUB_ROW_HEIGHT - 1, 15);
+      // Match the shell convention: fill only when this window has focus, so
+      // an outline-only selection signals the sidebar owns input.
+      if (window.focused) {
+        image.fillRoundedRect(20, y - 2, viewportWidth - 40, HUB_ROW_HEIGHT - 1, 15);
+      }
       image.drawRoundedRect(20, y - 2, viewportWidth - 40, HUB_ROW_HEIGHT - 1, 45);
     }
     image.drawText(terminalFont, 32, y + 2, items[index]!.label, selected ? 255 : 200);

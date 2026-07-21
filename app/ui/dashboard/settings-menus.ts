@@ -18,12 +18,10 @@ import {
   toggleSettingMenuItem,
   uiFontSetting,
   voiceProviderSetting,
-  nightscoutSiteUrlSetting,
-  nightscoutApiTokenSetting,
   screenTimeoutSetting,
   wakeWordActionSetting,
 } from "../dashboard-settings";
-import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
+import { SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 
 /** The Settings app's master-detail panel (sections on the left, contents on the right). */
 export function createSettingsPanelLayer(): SettingsPanelLayer {
@@ -61,20 +59,6 @@ function settingsSections(): SettingsSection[] {
         textSettingMenuItem(elevenLabsApiKeySetting),
         textSettingMenuItem(openAiApiKeySetting),
         textSettingMenuItem(anthropicApiKeySetting),
-      ],
-    },
-    {
-      label: "Integrations",
-      items: [
-        {
-          label: "Nightscout",
-          onSelect: (ctx) => {
-            openSettingsSubMenu(ctx, "Nightscout", [
-              textSettingMenuItem(nightscoutSiteUrlSetting),
-              textSettingMenuItem(nightscoutApiTokenSetting),
-            ]);
-          },
-        },
       ],
     },
     {
