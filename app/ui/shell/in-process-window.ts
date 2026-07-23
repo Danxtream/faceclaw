@@ -1,6 +1,9 @@
 import { GrayImage } from "../../graphics/image";
+import * as frameTimings from "../../native/frame-timings";
 import { beginRenderPass, endRenderPass } from "../../util/render-freshness";
 import { DashboardInputEvent, Layer, LayerActions, LayerContext, LayerStack, PaintBelow } from "../layers";
+import { type MenuItem } from "../menu";
+import { WindowMenuLayer } from "../window-menu";
 import { windowIcon } from "./chrome-layer";
 import { type IconName } from "../../graphics/icons";
 import { APP_VIEWPORT } from "./geometry";
@@ -21,6 +24,12 @@ export type InProcessWindowOptions = {
   /** Lucide icon name for the sidebar indicator; falls back to iconLetter. */
   icon?: IconName;
   closeable: boolean;
+  /**
+   * App-specific entries for the window's long-press menu, listed ahead of
+   * the default Voice input / Close window entries. Called at open time, so
+   * the items can reflect current app state.
+   */
+  menuItems?: () => MenuItem[];
   /** Shared actions; requestRender is rebound to this window's render. */
   actions: LayerActions;
   baseLayer: Layer;
@@ -62,8 +71,15 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
   // to keep the paint fast; when they do, schedule one follow-up render that
   // requires fresh data (same contract as the dashboard render loop).
   let nextRenderWantsFreshData = false;
+  let closed = false;
 
   async function render(frameId: number): Promise<void> {
+    if (closed) {
+      // The surface is gone (e.g. Close window picked from this window's own
+      // menu); dropping the frame beats submitting to a removed surface.
+      frameTimings.finishFrame(frameId, "discarded: window closed");
+      return;
+    }
     const wantFreshData = nextRenderWantsFreshData;
     nextRenderWantsFreshData = false;
     beginRenderPass(!wantFreshData);
@@ -77,6 +93,31 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     }
   }
 
+  // The window's long-press menu: app-specific items, then the defaults every
+  // window shares. In-process apps run on the main thread, so the default
+  // items act on the shell directly (workers post messages instead).
+  const openWindowMenu = () => {
+    if (stack.topMatches((layer) => layer instanceof WindowMenuLayer)) return;
+    const items: MenuItem[] = [...(options.menuItems?.() ?? [])];
+    items.push({
+      label: "Voice input",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        shell.startVoiceInput();
+      },
+    });
+    if (options.closeable) {
+      items.push({
+        label: "Close window",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          shell.closeWindow(options.windowId);
+        },
+      });
+    }
+    stack.push(new WindowMenuLayer(items));
+  };
+
   const window: ShellWindow = {
     appId: options.appId,
     windowId: options.windowId,
@@ -84,6 +125,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     surfaceId: `window:${options.windowId}`,
     closeable: options.closeable,
     close: () => {
+      closed = true;
       // Fire onRemoved for any pushed layers so they release resources (e.g. a
       // demo that enabled a hardware stream) even when closed from within.
       stack.clearToBase();
@@ -92,6 +134,13 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     },
     drawIcon: windowIcon(options.icon, options.iconLetter),
     handleInput: async (event, frameId) => {
+      // The default long-press response: the window menu. Handled here (not
+      // per-layer) so it works over submenus and app content alike.
+      if (event.type === "long-press") {
+        openWindowMenu();
+        await render(frameId);
+        return;
+      }
       await stack.handleInput(event);
       await render(frameId);
     },

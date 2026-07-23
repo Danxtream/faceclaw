@@ -50,6 +50,15 @@ export class SettingsPanelLayer implements Layer {
     return this.sections[clamp(this.leftIndex, 0, this.sections.length - 1)]!;
   }
 
+  /** Select a left-column section by label (deep link, e.g. from an app's menu). */
+  focusSection(label: string): void {
+    const index = this.sections.findIndex((section) => section.label === label);
+    if (index < 0) return;
+    this.leftIndex = index;
+    this.focus = "left";
+    this.resetRight();
+  }
+
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
     const { width, height } = ctx.stack.getBaseSize();

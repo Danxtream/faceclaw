@@ -13,6 +13,7 @@ import {
   scheduleTimerNotification,
 } from "../native/timer-notifications";
 import type { DashboardInputEvent } from "../ui/layers";
+import { defaultWindowMenuItems, WindowMenu } from "../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../ui/shell/worker-window";
 import {
   GESTURE_CLICK,
@@ -40,6 +41,10 @@ type TimerWindow = {
   viewportWidth: number;
   viewportHeight: number;
   foreground: boolean;
+  /** Whether this window is the shell's input target (pushed with each message). */
+  focused: boolean;
+  /** Long-press window menu; created on first open. */
+  menu: WindowMenu | null;
   view: TimerView;
   stopwatchAction: number;
   timerSelection: number;
@@ -81,6 +86,8 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
         foreground: false,
+        focused: false,
+        menu: null,
         view: "stopwatch",
         stopwatchAction: 0,
         timerSelection: 0,
@@ -106,18 +113,22 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         frameTimings.finishFrame(message.frameId, "discarded: unknown timer window");
         break;
       }
+      window.focused = message.focused;
       handleInput(window, message.event as DashboardInputEvent, message.frameId);
       break;
     }
     case "render": {
       const window = windows.get(message.windowId);
-      if (window) renderAndSubmit(window, 0);
+      if (!window) break;
+      window.focused = message.focused;
+      renderAndSubmit(window, 0);
       break;
     }
     case "foreground": {
       const window = windows.get(message.windowId);
       if (!window) break;
       window.foreground = message.foreground;
+      window.focused = message.focused;
       updateRenderTimer(window);
       if (window.foreground) renderAndSubmit(window, 0);
       break;
@@ -129,7 +140,32 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
   }
 };
 
+/** The window's long-press menu (default entries only), created lazily. */
+function windowMenu(window: TimerWindow): WindowMenu {
+  if (!window.menu) {
+    window.menu = new WindowMenu({
+      size: { width: window.viewportWidth, height: window.viewportHeight },
+      paintBase: () => paintContent(window),
+      isFocused: () => window.focused,
+    });
+  }
+  return window.menu;
+}
+
 function handleInput(window: TimerWindow, event: DashboardInputEvent, frameId: number): void {
+  // An open window menu owns all input (it closes itself via pop).
+  if (window.menu?.isOpen()) {
+    window.menu
+      .handleInput(event)
+      .catch((error) => console.error(`timer menu input failed: ${error}`))
+      .then(() => renderAndSubmit(window, frameId));
+    return;
+  }
+  if (event.type === "long-press") {
+    windowMenu(window).open(defaultWindowMenuItems(window.windowId, post));
+    renderAndSubmit(window, frameId);
+    return;
+  }
   if (event.type === "double-click") {
     if (window.view === "editor") {
       window.view = "timers";
@@ -322,6 +358,13 @@ function updateRenderTimer(window: TimerWindow): void {
 }
 
 function paint(window: TimerWindow): GrayImage {
+  if (window.menu?.isOpen()) {
+    return window.menu.paint();
+  }
+  return paintContent(window);
+}
+
+function paintContent(window: TimerWindow): GrayImage {
   syncExpiredTimers();
   const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
   if (window.view === "stopwatch") {

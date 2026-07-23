@@ -836,9 +836,10 @@ class DashboardController {
     }
   }
 
-  /** Launch or focus the (in-process, singleton) Settings app. */
-  private async launchSettingsApp(): Promise<void> {
+  /** Launch or focus the (in-process, singleton) Settings app, optionally on a section. */
+  private async launchSettingsApp(section?: string): Promise<void> {
     if (this.settingsApp) {
+      if (section) this.settingsApp.focusSection(section);
       shell.focusWindow(SETTINGS_WINDOW_ID);
       this.requestShellRender();
       return;
@@ -859,6 +860,7 @@ class DashboardController {
       },
     });
     this.settingsApp = settingsApp;
+    if (section) settingsApp.focusSection(section);
     shell.registerWindow(settingsApp.window);
     // Configure the surface before foregrounding so the first frame has
     // somewhere to land.
@@ -921,6 +923,11 @@ class DashboardController {
       setSurfaceVisible: (surfaceId, visible) => this.setWindowSurfaceVisible(surfaceId, visible),
       removeSurface: (surfaceId) => this.removeWindowSurface(surfaceId),
       requestShellRender: () => this.requestShellRender(),
+      openSettings: (section) => {
+        void this.launchSettingsApp(section).catch((error) => {
+          this.appendLog(`settings launch failed: ${this.formatError(error)}`);
+        });
+      },
     });
     this.appHosts.set(appId, host);
     return host;

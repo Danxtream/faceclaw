@@ -1,7 +1,7 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { EvenAIStatus, EventSourceType, OsEventTypeList } from "../../g2/events";
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
-import { DashboardInputEvent, LayerActions, LayerStack } from "../layers";
+import { DashboardInputEvent, LayerActions, LayerStack, noopLayerActions } from "../layers";
 import { MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer } from "../apps/voice-input";
 import { SingleNotificationLayer } from "../notifications";
@@ -17,15 +17,17 @@ import { SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
 
 /**
  * The shell: owns the window registry, focus, screen on/off, and the shell
- * surface (sidebar + top bar + shell overlays such as the long-press menu and
- * the push-to-talk dialog). Runs on the main thread; windows will later live
- * in worker threads, today the only window is the in-process dashboard.
+ * surface (sidebar + top bar + shell overlays such as the escape menu and
+ * the voice dialog). Runs on the main thread; windows are hosted in-process
+ * or in per-app worker threads.
  *
- * Input flow: every event enters via receiveInput. The shell consumes its
- * reserved gestures (long-press, and everything while the sidebar or a shell
- * overlay has focus) and forwards the rest to the focused window. Windows
- * never see events the shell consumed, and the shell keeps working when a
- * window's handler hangs (the long-press menu is the escape hatch).
+ * Input flow: every event enters via receiveInput. The shell consumes
+ * everything while the sidebar or a shell overlay has focus and forwards the
+ * rest to the focused window. Long-press goes to the foreground window (from
+ * the sidebar it focuses the window first); by convention apps answer it with
+ * a window menu that ends in Voice input / Close window. Holding the press
+ * past the escape threshold opens the shell's own escape menu, so the shell
+ * keeps working when a window's handler hangs.
  */
 
 export type ShellWindow = {
@@ -34,7 +36,7 @@ export type ShellWindow = {
   title: string;
   /** Compositor surface this window renders to; configured at connect / launch. */
   surfaceId: string;
-  /** Whether the shell's long-press menu offers Close Window (launcher and dashboard are pinned). */
+  /** Whether close menu entries (app menu default, shell escape menu) apply (the launcher is pinned). */
   closeable: boolean;
   /** App-side cleanup when the shell closes the window (worker notification, surface removal). */
   close?: () => void;
@@ -72,19 +74,16 @@ export type ShellInputOutcome = { shell: boolean; window: boolean };
 
 type FocusKind = "sidebar" | "window";
 
-const noopActions: LayerActions = {
-  requestRender: () => {},
-  disconnect: () => {},
-  startTextSettingEdit: () => {},
-  endTextSettingEdit: () => {},
-  startVoiceCapture: () => {},
-  stopVoiceCapture: () => {},
-  startContinuousVoiceCapture: () => {},
-  stopContinuousVoiceCapture: () => {},
-  playBuzzerSequence: () => {},
-};
+const noopActions: LayerActions = noopLayerActions;
 
-/** Long-press overlay menu; closing it returns focus to the sidebar. */
+/**
+ * Hold a long-press this much past the long-press event (which the firmware
+ * itself only fires after a shorter hold) and the shell opens its own escape
+ * menu — the recovery path when an app ignores or mishandles the gesture.
+ */
+const LONG_PRESS_ESCAPE_MENU_MS = 4000;
+
+/** Shell-surface overlay menu (the escape menu); closing it returns focus to the sidebar. */
 class ShellOverlayMenuLayer extends MenuLayer {
   constructor(items: MenuItem[], private readonly onClosed: () => void) {
     super(null, items, {
@@ -112,6 +111,7 @@ class Shell {
   // notification icons and the battery indicators.
   private readonly trayIcons = new Map<string, GrayImage>();
   private activeVoiceLayer: VoiceInputLayer | null = null;
+  private escapeMenuTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly actions: LayerActions = { ...noopActions };
   private config: ShellConfig = {
     actions: noopActions,
@@ -186,9 +186,9 @@ class Shell {
     this.config.requestShellRender();
   }
 
-  /** Close the foreground window via the shell (long-press menu action). */
-  closeForegroundWindow(): void {
-    const window = this.foregroundWindow();
+  /** Close a window by id, if it is closeable (menu actions route here). */
+  closeWindow(windowId: string): void {
+    const window = this.windows.find((w) => w.windowId === windowId);
     if (!window || !window.closeable) return;
     try {
       window.close?.();
@@ -196,6 +196,12 @@ class Shell {
       console.warn(`window ${window.windowId} close failed`, error);
     }
     this.removeWindow(window.windowId);
+  }
+
+  /** Close the foreground window via the shell (escape menu action). */
+  closeForegroundWindow(): void {
+    const window = this.foregroundWindow();
+    if (window) this.closeWindow(window.windowId);
   }
 
   getWindows(): readonly ShellWindow[] {
@@ -253,6 +259,7 @@ class Shell {
   /** Turn the screen off, closing any shell overlays. Sidebar selection is kept. */
   sleep(): void {
     if (!this.screenOn) return;
+    this.cancelEscapeMenuTimer();
     this.screenOn = false;
     this.stack.clearToBase();
     for (const window of this.windows) {
@@ -350,6 +357,12 @@ class Shell {
 
     this.lastInputAtMs = Date.now();
 
+    // Anything but the long-press itself means the press ended (or the event
+    // stream moved on), so the escape countdown stops.
+    if (event.type !== "long-press") {
+      this.cancelEscapeMenuTimer();
+    }
+
     if (!this.screenOn) {
       if (event.type === "double-click") {
         this.wake("sidebar");
@@ -358,21 +371,37 @@ class Shell {
       return { shell: false, window: false };
     }
 
-    // Long-press is reserved by the shell: PTT from the sidebar, the overlay
-    // menu from inside a window. Windows never see it.
+    // Long-press goes to the foreground window (from the sidebar it focuses
+    // the window first); apps conventionally answer it with their window
+    // menu. The escape timer runs regardless of what the app does with it:
+    // holding the press long enough opens the shell's own menu.
     if (event.type === "long-press") {
-      if (!this.activeVoiceLayer && this.stack.isAtBase()) {
-        if (this.focus === "sidebar") {
-          this.openVoiceDialog();
-        } else {
-          this.openOverlayMenu();
-        }
+      this.startEscapeMenuTimer();
+      if (this.activeVoiceLayer || !this.stack.isAtBase()) {
+        return { shell: true, window: false };
       }
-      return { shell: true, window: false };
+      const window = this.foregroundWindow();
+      if (!window) {
+        return { shell: true, window: false };
+      }
+      if (this.focus === "sidebar") {
+        this.focus = "window";
+      }
+      // The window owns frameId from here (render or explicit finish).
+      await window.handleInput(event, frameId);
+      return { shell: true, window: true };
     }
     if (event.type === "long-press-release") {
       this.activeVoiceLayer?.endCapture();
-      return { shell: true, window: false };
+      if (this.activeVoiceLayer || !this.stack.isAtBase() || this.focus !== "window") {
+        return { shell: true, window: false };
+      }
+      const window = this.foregroundWindow();
+      if (!window) {
+        return { shell: true, window: false };
+      }
+      await window.handleInput(event, frameId);
+      return { shell: false, window: true };
     }
 
     if (!this.stack.isAtBase()) {
@@ -476,24 +505,46 @@ class Shell {
     this.foregroundWindow()?.receiveTextInput?.(text);
   }
 
-  private openOverlayMenu(): void {
+  /**
+   * Open the voice dialog aimed at the foreground window. Called when the
+   * user picks Voice input from a window's menu (in-process directly, worker
+   * apps via a start-voice-input message). The menu click already ended the
+   * press, so the dialog finishes on click instead of long-press-release.
+   */
+  startVoiceInput(): void {
+    if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
+    // The transcript is aimed at the window whose menu requested it.
+    this.focus = "window";
+    this.openVoiceDialog(true);
+    this.config.requestShellRender();
+  }
+
+  private startEscapeMenuTimer(): void {
+    this.cancelEscapeMenuTimer();
+    this.escapeMenuTimer = setTimeout(() => {
+      this.escapeMenuTimer = null;
+      this.openEscapeMenu();
+    }, LONG_PRESS_ESCAPE_MENU_MS);
+  }
+
+  private cancelEscapeMenuTimer(): void {
+    if (this.escapeMenuTimer !== null) {
+      clearTimeout(this.escapeMenuTimer);
+      this.escapeMenuTimer = null;
+    }
+  }
+
+  /**
+   * The held-long-press safeguard menu. Shell-owned and shell-drawn (never
+   * the app's), so an unresponsive app can always be closed. It opens over
+   * whatever the app did with the long-press, including its own menu.
+   */
+  private openEscapeMenu(): void {
+    if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
     const foreground = this.foregroundWindow();
+    if (!foreground?.closeable) return;
     const items: MenuItem[] = [
       {
-        label: "Voice input",
-        onSelect: (ctx) => {
-          // Pop the menu first (its onRemoved yields focus to the sidebar),
-          // then take focus back: the transcript is aimed at the window the
-          // menu was opened over. The button is no longer held here, so the
-          // dialog finishes on click instead of long-press-release.
-          ctx.stack.pop();
-          this.focus = "window";
-          this.openVoiceDialog(true);
-        },
-      },
-    ];
-    if (foreground?.closeable) {
-      items.push({
         label: "Close window",
         onSelect: (ctx) => {
           // Pop the menu first (its onRemoved returns focus to the sidebar),
@@ -501,9 +552,10 @@ class Shell {
           ctx.stack.pop();
           this.closeForegroundWindow();
         },
-      });
-    }
+      },
+    ];
     this.stack.push(new ShellOverlayMenuLayer(items, () => this.yieldFocusToSidebar()));
+    this.config.requestShellRender();
   }
 
   private chromeState(): ShellChromeState {

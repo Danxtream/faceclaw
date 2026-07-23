@@ -31,6 +31,8 @@ import {
 } from "../ui/dashboard-settings";
 import { TerminalEmulator } from "../ui/apps/terminal-emulator";
 import type { DashboardInputEvent } from "../ui/layers";
+import type { MenuItem } from "../ui/menu";
+import { defaultWindowMenuItems, WindowMenu } from "../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../ui/shell/worker-window";
 
 declare const global: any;
@@ -58,6 +60,8 @@ type BaseWindow = {
   focused: boolean;
   renderScheduled: boolean;
   lastSubmittedFingerprint: string;
+  /** Long-press window menu; created on first open. */
+  menu: WindowMenu | null;
 };
 
 type HubWindow = BaseWindow & {
@@ -195,6 +199,7 @@ function openWindow(windowId: string, surfaceId: string, viewport: { width: numb
     focused: false,
     renderScheduled: false,
     lastSubmittedFingerprint: "",
+    menu: null,
     selectedIndex: 0,
   });
   if (!controlClient) {
@@ -284,6 +289,7 @@ function createViewWindow(windowId: string, surfaceId: string, socket: string, l
     focused: false,
     renderScheduled: false,
     lastSubmittedFingerprint: "",
+    menu: null,
     socket,
     label,
     client,
@@ -344,7 +350,76 @@ function createViewWindow(windowId: string, surfaceId: string, socket: string, l
   return window;
 }
 
+/** The window's long-press menu, created lazily so window literals stay simple. */
+function windowMenu(window: TerminalWindow): WindowMenu {
+  if (!window.menu) {
+    window.menu = new WindowMenu({
+      size: { width: viewportWidth, height: viewportHeight },
+      paintBase: () => paintContent(window),
+      isFocused: () => window.focused,
+    });
+  }
+  return window.menu;
+}
+
+function windowMenuItems(window: TerminalWindow): MenuItem[] {
+  const items: MenuItem[] = [
+    {
+      label: "Settings",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        post({ type: "open-settings", section: "Terminal" });
+      },
+    },
+  ];
+  if (window.kind === "hub") {
+    const phase = controlState?.phase;
+    if (phase === "connected" || phase === "attached") {
+      items.push({
+        label: "Disconnect",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          stopControlClient();
+          renderHubWindows();
+        },
+      });
+    }
+  } else {
+    items.push(
+      {
+        label: "Send <Enter>",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          window.client.sendInput("\r");
+        },
+      },
+      {
+        label: "Send <Esc>",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          window.client.sendInput("\u001b");
+        },
+      },
+    );
+  }
+  items.push(...defaultWindowMenuItems(window.windowId, post));
+  return items;
+}
+
 function handleInput(window: TerminalWindow, event: DashboardInputEvent, frameId: number): void {
+  // An open window menu owns all input (it closes itself via pop).
+  if (window.menu?.isOpen()) {
+    window.menu
+      .handleInput(event)
+      .catch((error) => console.error(`terminal menu input failed: ${error}`))
+      .then(() => renderAndSubmit(window, frameId));
+    return;
+  }
+  if (event.type === "long-press") {
+    windowMenu(window).open(windowMenuItems(window));
+    renderAndSubmit(window, frameId);
+    return;
+  }
   if (event.type === "double-click") {
     frameTimings.finishFrame(frameId, "discarded: terminal yielded focus");
     post({ type: "yield-focus", windowId: window.windowId });
@@ -493,6 +568,13 @@ function openViewWindowFor(session: G2MirrorSession): void {
 }
 
 function paint(window: TerminalWindow): GrayImage {
+  if (window.menu?.isOpen()) {
+    return window.menu.paint();
+  }
+  return paintContent(window);
+}
+
+function paintContent(window: TerminalWindow): GrayImage {
   return window.kind === "hub" ? paintHub(window) : paintView(window);
 }
 

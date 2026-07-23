@@ -40,6 +40,19 @@ export type LayerActions = {
   playBuzzerSequence: (payload: Uint8Array) => Promise<void> | void;
 };
 
+/** Do-nothing actions, for stacks whose layers never use them (or as a base to spread over). */
+export const noopLayerActions: LayerActions = {
+  requestRender: () => {},
+  disconnect: () => {},
+  startTextSettingEdit: () => {},
+  endTextSettingEdit: () => {},
+  startVoiceCapture: () => {},
+  stopVoiceCapture: () => {},
+  startContinuousVoiceCapture: () => {},
+  stopContinuousVoiceCapture: () => {},
+  playBuzzerSequence: () => {},
+};
+
 export type PaintBelow = () => GrayImage;
 
 function notifyRemoved(layer: Layer | undefined): void {

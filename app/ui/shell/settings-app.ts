@@ -19,6 +19,8 @@ export type SettingsAppOptions = {
 export type SettingsAppWindow = {
   window: ShellWindow;
   requestRender: () => void;
+  /** Select a section in the left column by label (e.g. "Terminal"). */
+  focusSection: (label: string) => void;
   /** Whether the glasses-side text-setting editor is the top layer. */
   isTextEditorOnTop: () => boolean;
   /** Pop the text-setting editor if it is on top; returns whether it was. */
@@ -32,6 +34,7 @@ export type SettingsAppWindow = {
  * controller, which lives on the main thread.
  */
 export function createSettingsAppWindow(options: SettingsAppOptions): SettingsAppWindow {
+  const panel = createSettingsPanelLayer();
   const { window, stack, requestRender } = createInProcessWindow({
     appId: "settings",
     windowId: SETTINGS_WINDOW_ID,
@@ -42,7 +45,7 @@ export function createSettingsAppWindow(options: SettingsAppOptions): SettingsAp
     actions: options.actions,
     // Not wrapped in YieldAtRootLayer: the panel routes double-click itself
     // (right column -> left column, then left column -> sidebar).
-    baseLayer: createSettingsPanelLayer(),
+    baseLayer: panel,
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,
@@ -51,6 +54,10 @@ export function createSettingsAppWindow(options: SettingsAppOptions): SettingsAp
   return {
     window,
     requestRender,
+    focusSection: (label) => {
+      panel.focusSection(label);
+      requestRender();
+    },
     isTextEditorOnTop: () => stack.topMatches((layer) => layer instanceof EditTextSettingLayer),
     closeTextEditor: () => stack.popIfTop((layer) => layer instanceof EditTextSettingLayer),
   };

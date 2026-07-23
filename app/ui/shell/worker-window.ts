@@ -37,6 +37,21 @@ export type WorkerAppReply =
   | { type: "set-title"; windowId: string; title: string }
   | { type: "set-attention"; windowId: string; attention: boolean }
   | {
+      /** Window-menu pick: open the shell's voice dialog aimed at this window. */
+      type: "start-voice-input";
+      windowId: string;
+    }
+  | {
+      /** Window-menu pick: close this window (the shell owns the close path). */
+      type: "close-window-request";
+      windowId: string;
+    }
+  | {
+      /** Open or focus the Settings app, optionally jumping to a section. */
+      type: "open-settings";
+      section?: string;
+    }
+  | {
       /**
        * Set or clear the app's top-bar tray icon. Pixels ride the JSON
        * postMessage roundtrip — acceptable because tray icons are small and
@@ -66,6 +81,8 @@ export type WorkerAppHostOptions = {
   setSurfaceVisible: (surfaceId: string, visible: boolean) => void;
   removeSurface: (surfaceId: string) => void;
   requestShellRender: () => void;
+  /** Open or focus the Settings app, optionally selecting a section. */
+  openSettings: (section?: string) => void;
 };
 
 /**
@@ -106,6 +123,22 @@ export class WorkerAppHost {
           break;
         case "set-attention":
           shell.setWindowAttention(message.windowId, message.attention);
+          break;
+        case "start-voice-input":
+          // Menus only open on the focused window, but re-check foreground:
+          // the reply crosses a thread boundary and focus may have moved.
+          if (shell.foregroundWindow()?.windowId === message.windowId) {
+            shell.startVoiceInput();
+          }
+          break;
+        case "close-window-request":
+          if (this.openWindows.has(message.windowId)) {
+            shell.closeWindow(message.windowId);
+            this.options.requestShellRender();
+          }
+          break;
+        case "open-settings":
+          this.options.openSettings(message.section);
           break;
         case "set-tray-icon": {
           let icon: GrayImage | null = null;
