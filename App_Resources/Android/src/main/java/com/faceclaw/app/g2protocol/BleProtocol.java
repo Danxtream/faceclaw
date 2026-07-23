@@ -271,6 +271,28 @@ public class BleProtocol {
         return wrapEvenHub(CMD_OPEN_IMU, magic, 22, concat(inner));
     }
 
+    /**
+     * Set the lens brightness: G2SettingPackage{commandId=1 (DeviceReceiveInfo),
+     * deviceReceiveInfoFromApp(3){deviceReceiveBrightness(1){autoAdjust(1),
+     * brightnessLevel(2)}}} on sid 0x09. brightnessLevel is 0-100 (nonlinear;
+     * 0 is dim-but-visible, not off). When autoAdjust is set the ambient-light
+     * sensor drives brightness, so the level field is omitted; otherwise the
+     * level is always encoded (explicit zero included) so brightnessLevel=0
+     * reaches the wire.
+     */
+    public static byte[] buildSetBrightness(int magic, boolean autoAdjust, int brightnessLevel) {
+        List<byte[]> brightness = new ArrayList<>();
+        brightness.add(encodeVarintField(1, autoAdjust ? 1 : 0));
+        if (!autoAdjust) {
+            brightness.add(encodeVarintField(2, brightnessLevel));
+        }
+        return concat(CollectionUtils.listOf(
+            encodeVarintField(1, 1),
+            encodeVarintField(2, magic),
+            encodeMessageField(3, encodeMessageField(1, concat(brightness)))
+        ));
+    }
+
     public static byte[] buildSettingsQuery(int magic) {
         byte[] request = encodeVarintField(1, 1);
         return concat(CollectionUtils.listOf(

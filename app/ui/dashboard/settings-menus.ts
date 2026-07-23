@@ -4,6 +4,7 @@ import { shell } from "../shell/shell";
 import {
   anthropicApiKeySetting,
   batteryDisplayModeSetting,
+  brightnessSetting,
   elevenLabsApiKeySetting,
   openAiApiKeySetting,
   enumSettingMenuItem,
@@ -33,6 +34,9 @@ function settingsSections(): SettingsSection[] {
     {
       label: "Display",
       items: [
+        // Auto (ambient sensor) or an exact level; pushed to the glasses by
+        // the dashboard controller when changed and on each connect.
+        enumSettingMenuItem(brightnessSetting, { style: "submenu" }),
         enumSettingMenuItem(screenTimeoutSetting, {
           onChange: () => {
             shell.noteUserActivity();

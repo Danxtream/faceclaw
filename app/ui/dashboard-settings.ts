@@ -24,6 +24,11 @@ export type NightscoutSettings = {
 export type BatteryDisplayMode = "icon" | "percentage";
 export type TimeFormat = "24h" | "12h";
 export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "never";
+// "auto" lets the glasses' ambient-light sensor drive brightness; the numeric
+// values are exact levels on the firmware's 0-100 scale (nonlinear: ~30 is
+// dim-but-readable indoors, ~60 is bright outdoors).
+export const BRIGHTNESS_VALUES = ["auto", "0", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100"] as const;
+export type BrightnessSetting = (typeof BRIGHTNESS_VALUES)[number];
 export type WakeWordAction = "voice-input" | "off" | "turn-screen-on";
 
 type ConfigSettingOptions<TValue, TId extends string> = {
@@ -204,6 +209,15 @@ export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
   formatValue: timeFormatLabel,
 });
 
+export const brightnessSetting = new ConfigSettingEnum<BrightnessSetting>({
+  id: "brightness",
+  label: "Brightness",
+  storageKey: "display.brightness",
+  defaultValue: "auto",
+  values: BRIGHTNESS_VALUES,
+  formatValue: brightnessLabel,
+});
+
 export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>({
   id: "screen-timeout",
   label: "Screen timeout",
@@ -366,6 +380,15 @@ export function screenTimeoutSettingToMs(value: ScreenTimeoutSetting): number | 
   }
 }
 
+export function brightnessLabel(value: BrightnessSetting): string {
+  return value === "auto" ? "Auto" : value;
+}
+
+/** The exact level for the wire, or null when the ambient sensor drives it. */
+export function brightnessSettingToLevel(value: BrightnessSetting): number | null {
+  return value === "auto" ? null : Number(value);
+}
+
 export function screenTimeoutLabel(value: ScreenTimeoutSetting): string {
   return value === "never" ? "Never" : value;
 }
@@ -437,15 +460,16 @@ export function enumSettingMenuItem<TValue extends string, TId extends string = 
           opts?.onChange?.(ctx, newValue, oldValue);
         } else {
           const submenu = new MenuLayer(setting.label, setting.values.map((value) => ({
-            label: value,
+            label: setting.displayValue(value),
             onSelect: () => {
+              const oldValue = setting.get();
               setting.set(value);
-              opts?.onChange?.(ctx, value, setting.get());
+              opts?.onChange?.(ctx, value, oldValue);
               ctx.stack.pop();
             },
             render: ({ image, x, y }) => {
               const selected = setting.get() === value ? " *" : "";
-              image.drawText(getDefaultSmallFont(), x, y + 3, `${value}${selected}`, 200);
+              image.drawText(getDefaultSmallFont(), x, y + 3, `${setting.displayValue(value)}${selected}`, 200);
             }
           })));
           ctx.stack.push(submenu);

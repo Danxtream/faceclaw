@@ -288,6 +288,28 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         interruptibleSleep.interrupt();
     }
 
+    /**
+     * Set the lens brightness. Fire-and-forget, like the IMU control: the
+     * message is queued ahead of other traffic and any not-yet-sent brightness
+     * message is superseded. When autoAdjust is true the ambient-light sensor
+     * drives brightness and brightnessLevel is ignored; otherwise
+     * brightnessLevel (0-100) is applied directly.
+     */
+    public void setBrightness(boolean autoAdjust, int brightnessLevel) {
+        synchronized (lock) {
+            if (!running || !sessionReady) {
+                logLine("skip brightness set; session not ready");
+                return;
+            }
+            clearMessagesOfKindLocked("brightness-control");
+            OutboundMessage message = messageBuilder.setBrightness(autoAdjust, brightnessLevel);
+            message.onTimeout = () -> logLine("brightness control ack timeout");
+            pendingMessages.addFirst(message);
+            logLine("queue brightness " + (autoAdjust ? "auto" : "level=" + brightnessLevel));
+        }
+        interruptibleSleep.interrupt();
+    }
+
     public void addImuListener(FaceclawImuListener listener) {
         if (listener != null) {
             imuListeners.add(listener);

@@ -359,6 +359,11 @@ export class FaceclawCommunicatorBridge {
     await this.enqueueJavaCall(() => this.communicator.setFirmwareDebugFlags(Boolean(enabled)));
   }
 
+  /** Set lens brightness: auto (ambient sensor) or an explicit 0-100 level. */
+  async setBrightness(autoAdjust: boolean, level: number): Promise<void> {
+    await this.enqueueJavaCall(() => this.communicator.setBrightness(Boolean(autoAdjust), Math.round(level)));
+  }
+
   /** Set the compositor's output frame size. Call before configuring surfaces. */
   async configureCompositorScreen(width: number, height: number): Promise<void> {
     await this.enqueueJavaCall(() => {

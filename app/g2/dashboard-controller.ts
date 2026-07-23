@@ -67,6 +67,8 @@ import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-p
 import { APP_VIEWPORT } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
 import {
+  brightnessSetting,
+  brightnessSettingToLevel,
   elevenLabsApiKeySetting,
   openAiApiKeySetting,
   nightscoutApiTokenSetting,
@@ -164,6 +166,8 @@ class DashboardController {
   private batteryOptimizationWarningVisible = false;
   private displayPreview: ImageSource | null = createInitialDisplayPreview();
   private silentMode = false;
+  // Brightness value last pushed to the glasses; see pushBrightness.
+  private lastPushedBrightness: string | null = null;
   // Last battery level the glasses reported, kept across disconnects so a
   // drop-off right after a low reading can be explained as a flat battery.
   private lastHeadsetBattery: number | null = null;
@@ -278,6 +282,7 @@ class DashboardController {
       this.emit();
       // Apply a firmware-debug-flags toggle live while connected (Java dedups).
       this.pushFirmwareDebugFlags();
+      this.pushBrightness();
     });
   }
 
@@ -286,6 +291,21 @@ class DashboardController {
     void this.communicator
       .setFirmwareDebugFlags(firmwareDebugFlagsSetting.get())
       .catch(() => {});
+  }
+
+  /**
+   * Push the brightness setting to the glasses. Deduped TS-side (the change
+   * listener fires for every setting, and each push queues a real BLE
+   * message); `force` skips the dedup so a fresh connection always gets the
+   * configured value regardless of what the firmware restored.
+   */
+  private pushBrightness(force = false): void {
+    if (!this.communicator) return;
+    const value = brightnessSetting.get();
+    if (!force && value === this.lastPushedBrightness) return;
+    this.lastPushedBrightness = value;
+    const level = brightnessSettingToLevel(value);
+    void this.communicator.setBrightness(level === null, level ?? 0).catch(() => {});
   }
 
   /**
@@ -470,6 +490,7 @@ class DashboardController {
           // Push the CFW firmware-debug-flags overlay preference; Java emits the
           // mode-7 control message once the dashboard container is warmed up.
           this.pushFirmwareDebugFlags();
+          this.pushBrightness(true);
         }
         this.setPhase(mappedPhase);
         this.setStatus(state.status);

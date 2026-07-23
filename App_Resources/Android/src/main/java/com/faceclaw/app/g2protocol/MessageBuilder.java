@@ -122,6 +122,21 @@ public class MessageBuilder {
         );
     }
 
+    public OutboundMessage setBrightness(boolean autoAdjust, int brightnessLevel) {
+        int magic = magicPool.allocate();
+        return new OutboundMessage(
+            "brightness-control",
+            autoAdjust ? "brightness auto" : "brightness level=" + brightnessLevel,
+            BleProtocol.SID_UI_SETTING,
+            BleProtocol.FLAG_REQUEST,
+            magic,
+            BleProtocol.buildSetBrightness(magic, autoAdjust, brightnessLevel),
+            ACK_TIMEOUT_MS,
+            -1,
+            false
+        );
+    }
+
     public OutboundMessage createLayout(BleProtocol.ImageTileOptions... tiles) {
         int magic = magicPool.allocate();
         return new OutboundMessage(
