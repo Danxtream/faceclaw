@@ -35,6 +35,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         new BleProtocol.ImageTileOptions("img00", 10, 0, 0, 576, 288);
 
     private static final String G2_SCREEN_WAKE_LOCK_TAG = "Faceclaw:G2Screen";
+    private static final long FACECLAW_WAKE_LEASE_RENEW_MS = 45_000;
+    private static final long FACECLAW_WAKE_CONTROL_WAIT_MS = 1_500;
 
     private final Context appContext;
     private final PowerManager powerManager;
@@ -70,6 +72,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private volatile boolean firmwareDebugFlagsEnabled;
     private int firmwareDebugFlagsLastSent = -1;
     private boolean startupProbePending;
+    // Desired ownership of CFW's fail-open idle-wake lease. This survives a
+    // transport reconnect; the lease itself is volatile firmware state and is
+    // re-acquired once both arms are ready.
+    private boolean faceclawWakeLeaseEnabled;
+    private long lastFaceclawWakeLeaseQueuedAtMs;
+    private int faceclawWakeControlGeneration;
+    private int faceclawWakeControlSentCount;
+    private int faceclawWakePendingNonce = -1;
 
     private long reconnectAfterMs;
     private long ringReconnectAfterMs;
@@ -228,8 +238,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         int magic;
         synchronized (lock) {
-            if (!running || !sessionReady) {
-                logLine("skip G2 mic enable; session not ready");
+            if (!running || !sessionReady || shutdownRequested || !fixedLayoutCreated || !warmedUp) {
+                logLine("skip G2 mic enable; EvenHub display path not ready");
                 return false;
             }
             audioPacketListener = listener;
@@ -265,6 +275,81 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         synchronized (lock) {
             return running && sessionReady;
         }
+    }
+
+    /**
+     * Acquire/renew or release CFW's volatile wake-takeover lease on both
+     * arms. Delivery (not a protocol ACK) is awaited so a caller can ensure
+     * the fail-open firmware policy is installed before suspending EvenHub.
+     */
+    public boolean setFaceclawWakeLeaseEnabled(boolean enabled) {
+        int generation;
+        synchronized (lock) {
+            faceclawWakeLeaseEnabled = enabled;
+            if (!running || !sessionReady) {
+                return !enabled;
+            }
+            generation = enqueueFaceclawWakeControlLocked(
+                enabled ? BleProtocol.FACECLAW_WAKE_OP_ACQUIRE : BleProtocol.FACECLAW_WAKE_OP_RELEASE,
+                0,
+                true
+            );
+            if (!enabled) {
+                faceclawWakePendingNonce = -1;
+            }
+        }
+        interruptibleSleep.interrupt();
+        return waitForFaceclawWakeControlDelivery(generation, FACECLAW_WAKE_CONTROL_WAIT_MS);
+    }
+
+    /**
+     * Wait until the recreated layout, warmup, and retained compositor frame
+     * have all landed. If this wake came from CFW's deferred double tap, READY
+     * is then sent to both arms to cancel their stock-dashboard fallback.
+     */
+    public boolean awaitEvenHubSessionReady(int timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + Math.max(0, timeoutMs);
+        int readyGeneration = 0;
+        synchronized (lock) {
+            while (running && sessionReady) {
+                boolean frameReady = false;
+                synchronized (desiredTilesLock) {
+                    frameReady = !desiredFingerprint.isEmpty()
+                        && desiredFingerprint.equals(displayedFingerprint);
+                }
+                if (!shutdownRequested && fixedLayoutCreated && warmedUp && frameReady) {
+                    if (faceclawWakePendingNonce >= 0) {
+                        readyGeneration = enqueueFaceclawWakeControlLocked(
+                            BleProtocol.FACECLAW_WAKE_OP_READY,
+                            faceclawWakePendingNonce,
+                            true
+                        );
+                        faceclawWakePendingNonce = -1;
+                    }
+                    break;
+                }
+                long remaining = deadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) {
+                    return false;
+                }
+                try {
+                    lock.wait(Math.min(remaining, 100));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+            if (!running || !sessionReady) {
+                return false;
+            }
+        }
+        if (readyGeneration != 0) {
+            interruptibleSleep.interrupt();
+            if (!waitForFaceclawWakeControlDelivery(readyGeneration, FACECLAW_WAKE_CONTROL_WAIT_MS)) {
+                logLine("wake READY delivery not confirmed before fallback deadline");
+            }
+        }
+        return true;
     }
 
     /**
@@ -527,6 +612,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * desiredBmp.
      */
     public boolean resumeEvenHubSession() {
+        int claimGeneration = 0;
         synchronized (lock) {
             if (!running || !sessionReady || chargingMode) {
                 logLine("skip EvenHub resume; transport not ready");
@@ -535,13 +621,24 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (!shutdownRequested) {
                 return true;
             }
+            if (faceclawWakePendingNonce >= 0
+                    && hasPendingOrInflightKindLocked("wake-lease-control")) {
+                claimGeneration = faceclawWakeControlGeneration;
+            }
             logLine("replaying session prelude for EvenHub resume");
+        }
+
+        // A custom double-tap wake has only a short unclaimed fail-open
+        // deadline. Let the worker put CLAIM on both arms before the direct
+        // prelude write begins.
+        if (claimGeneration != 0) {
+            waitForFaceclawWakeControlDelivery(claimGeneration, 500);
         }
 
         try {
             // Empty-name Cmd=9 tears down the whole plugin task, not just its
             // image container. Re-run the launch prelude before Cmd=0 CREATE.
-            sendPrelude();
+            sendPrelude(true);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             handleTransportFailure("EvenHub resume prelude interrupted");
@@ -561,7 +658,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             warmedUp = false;
             startupProbePending = false;
             audioCaptureActive = false;
-            clearAllMessagesLocked("EvenHub resume");
+            clearAllMessagesPreservingWakeLeaseLocked("EvenHub resume");
             displayedFingerprint = "";
             displayedBmp = new byte[0];
             imageRetryAfterMs = 0;
@@ -733,7 +830,33 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         G2Event event = null;
         synchronized (lock) {
             lastIncomingAtMs = SystemClock.elapsedRealtime();
+            boolean faceclawWakeNotification = false;
             if (shutdownRequested
+                    && frame.ok
+                    && frame.sid == BleProtocol.SID_UI_SETTING
+                    && address.equalsIgnoreCase(rightAddress)) {
+                int wakeNonce = BleProtocol.parseFaceclawWakeEvent(frame.pb);
+                if (wakeNonce >= 0) {
+                    faceclawWakePendingNonce = wakeNonce;
+                    enqueueFaceclawWakeControlLocked(
+                        BleProtocol.FACECLAW_WAKE_OP_CLAIM,
+                        wakeNonce,
+                        true
+                    );
+                    faceclawWakeNotification = true;
+                    lastConnectionOrInputAtMs = lastIncomingAtMs;
+                    event = new G2Event(
+                        "display-wake",
+                        "",
+                        BleProtocol.EVENT_DOUBLE_CLICK,
+                        0,
+                        0
+                    );
+                    logLine("claimed deferred dashboard wake nonce=" + wakeNonce);
+                }
+            }
+            if (!faceclawWakeNotification
+                    && shutdownRequested
                     && address.equalsIgnoreCase(rightAddress)
                     && BleProtocol.isDisplayWakeStateChange(frame)) {
                 // With no EvenHub page, ring/arm double-taps are handled by the
@@ -748,7 +871,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     0
                 );
             }
-            if (frame.ok && frame.sid == BleProtocol.SID_UI_SETTING) {
+            if (!faceclawWakeNotification
+                    && frame.ok
+                    && frame.sid == BleProtocol.SID_UI_SETTING) {
                 // Device-initiated settings push. It carries a magic the glasses
                 // chose, so it would otherwise fall through to resolveAckLocked,
                 // match nothing, and be logged as an unexpected ack.
@@ -758,11 +883,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     return;
                 }
             }
-            if (frame.ok && frame.msgSeq >= 0 && frame.flag != BleProtocol.FLAG_NOTIFY && frame.flag != BleProtocol.FLAG_NOTIFY_ALT) {
+            if (!faceclawWakeNotification
+                    && frame.ok
+                    && frame.msgSeq >= 0
+                    && frame.flag != BleProtocol.FLAG_NOTIFY
+                    && frame.flag != BleProtocol.FLAG_NOTIFY_ALT) {
                 lastAckAtMs = lastIncomingAtMs;
                 resolveAckLocked(frame.sid, frame.msgSeq, frame.pb);
             }
-            if (event == null
+            if (!faceclawWakeNotification
+                    && event == null
                     && frame.ok
                     && address.equalsIgnoreCase(rightAddress)
                     && (frame.flag == BleProtocol.FLAG_NOTIFY || frame.flag == BleProtocol.FLAG_NOTIFY_ALT)) {
@@ -928,6 +1058,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 consecutiveAckTimeouts = 0;
                 lastAudioControlAckMagic = 0;
                 audioCaptureActive = false;
+                faceclawWakePendingNonce = -1;
+                lastFaceclawWakeLeaseQueuedAtMs = 0;
+                if (faceclawWakeLeaseEnabled) {
+                    enqueueFaceclawWakeControlLocked(
+                        BleProtocol.FACECLAW_WAKE_OP_ACQUIRE,
+                        0,
+                        true
+                    );
+                }
             }
             setStateDisplay("connected", "Connected.");
             logLine("session ready");
@@ -1066,8 +1205,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void sendPrelude() throws InterruptedException {
+        sendPrelude(false);
+    }
+
+    private void sendPrelude(boolean preserveWakeLeaseControls) throws InterruptedException {
         synchronized (lock) {
-            clearAllMessagesLocked("prelude");
+            if (preserveWakeLeaseControls) {
+                clearAllMessagesPreservingWakeLeaseLocked("prelude");
+            } else {
+                clearAllMessagesLocked("prelude");
+            }
         }
         long now = SystemClock.elapsedRealtime();
         OutboundMessage prelude = messageBuilder.prelude();
@@ -1110,6 +1257,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             maybeFinishNoChangeDesiredFrame();
 
             synchronized (lock) {
+                if (faceclawWakeLeaseEnabled
+                        && sessionReady
+                        && now - lastFaceclawWakeLeaseQueuedAtMs >= FACECLAW_WAKE_LEASE_RENEW_MS
+                        && !hasPendingOrInflightKindLocked("wake-lease-control")) {
+                    enqueueFaceclawWakeControlLocked(
+                        BleProtocol.FACECLAW_WAKE_OP_ACQUIRE,
+                        0,
+                        false
+                    );
+                }
                 if (!inFlightMessages.isEmpty()) {
                     OutboundMessage oldest = inFlightMessages.peekFirst();
                     if (oldest != null && oldest.ackDeadlineAtMs <= now) {
@@ -1373,6 +1530,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             message.sentAtMs = sentAtMs;
             message.ackDeadlineAtMs = sentAtMs + message.ackTimeoutMs;
             logImageUpdateSendLandmarkLocked(message);
+            if (result && message.onSent != null) {
+                message.onSent.run();
+                lock.notifyAll();
+            }
         }
 
         return result;
@@ -1942,6 +2103,61 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
+    /**
+     * Replace any stale lease control with one right-arm and one left-arm
+     * fire-and-forget write. With priority=true the right arm is sent first so
+     * CLAIM reaches the lens that originated the deferred wake immediately.
+     */
+    private int enqueueFaceclawWakeControlLocked(int operation, int nonce, boolean priority) {
+        clearMessagesOfKindLocked("wake-lease-control");
+        final int generation = ++faceclawWakeControlGeneration;
+        faceclawWakeControlSentCount = 0;
+        if (operation == BleProtocol.FACECLAW_WAKE_OP_ACQUIRE) {
+            lastFaceclawWakeLeaseQueuedAtMs = SystemClock.elapsedRealtime();
+        }
+        Runnable onSent = () -> {
+            if (faceclawWakeControlGeneration == generation) {
+                faceclawWakeControlSentCount += 1;
+            }
+        };
+        OutboundMessage right = messageBuilder.faceclawWakeControl(operation, nonce, false);
+        OutboundMessage left = messageBuilder.faceclawWakeControl(operation, nonce, true);
+        right.onSent = onSent;
+        left.onSent = onSent;
+        if (priority) {
+            pendingMessages.addFirst(left);
+            pendingMessages.addFirst(right);
+        } else {
+            pendingMessages.addLast(right);
+            pendingMessages.addLast(left);
+        }
+        logLine("queue " + right.label + " + L");
+        return generation;
+    }
+
+    private boolean waitForFaceclawWakeControlDelivery(int generation, long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + Math.max(0, timeoutMs);
+        synchronized (lock) {
+            while (running
+                    && sessionReady
+                    && faceclawWakeControlGeneration == generation
+                    && faceclawWakeControlSentCount < 2) {
+                long remaining = deadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) {
+                    break;
+                }
+                try {
+                    lock.wait(Math.min(remaining, 100));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            return faceclawWakeControlGeneration == generation
+                && faceclawWakeControlSentCount >= 2;
+        }
+    }
+
     private void clearMessagesOfKindLocked(String kind) {
         Iterator<OutboundMessage> pendingIterator = pendingMessages.iterator();
         while (pendingIterator.hasNext()) {
@@ -1979,6 +2195,36 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         clearInFlightMessagesLocked(reason);
         // The image pipeline is gone: drop the pipelined delta base so the next
         // image is a full keyframe rather than a delta onto a stale base.
+        lastEnqueuedImageBmp = new byte[0];
+        lastEnqueuedFingerprint = "";
+    }
+
+    /**
+     * A custom wake queues CLAIM before NativeScript asks for a resume. Keep
+     * that private control while flushing stale EvenHub traffic around the
+     * direct prelude write.
+     */
+    private void clearAllMessagesPreservingWakeLeaseLocked(String reason) {
+        Iterator<OutboundMessage> pendingIterator = pendingMessages.iterator();
+        while (pendingIterator.hasNext()) {
+            OutboundMessage message = pendingIterator.next();
+            if ("wake-lease-control".equals(message.kind)) {
+                continue;
+            }
+            pendingIterator.remove();
+            discardPrewriteIfMatchesLocked(message);
+            discardImageUpdateStatsLocked(
+                message.imageUpdateId,
+                "pending messages cleared: " + reason
+            );
+            magicPool.release(
+                message.sid,
+                message.magic,
+                message.label,
+                "cleared pending: " + reason
+            );
+        }
+        clearInFlightMessagesLocked(reason);
         lastEnqueuedImageBmp = new byte[0];
         lastEnqueuedFingerprint = "";
     }
@@ -2058,6 +2304,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             imageRetryAfterMs = 0;
             displayedFingerprint = "";
             displayedBmp = new byte[0];
+            faceclawWakePendingNonce = -1;
+            lastFaceclawWakeLeaseQueuedAtMs = 0;
+            faceclawWakeControlSentCount = 0;
             clearAllMessagesLocked("transport failure: " + reason);
             reconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RECONNECT_DELAY_MS;
             bleManager.disconnect(rightAddress);
@@ -2089,6 +2338,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         lastAudioControlAckMagic = 0;
         audioCaptureActive = false;
         audioPacketListener = null;
+        faceclawWakePendingNonce = -1;
+        lastFaceclawWakeLeaseQueuedAtMs = 0;
+        faceclawWakeControlSentCount = 0;
         displayedFingerprint = "";
         displayedBmp = new byte[0];
         // Deliberately not clearing silentMode: it is a property of the glasses,

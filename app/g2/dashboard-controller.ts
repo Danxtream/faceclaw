@@ -1,5 +1,12 @@
 import { ImageSource } from "@nativescript/core";
-import { EvenAIStatusName, EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName } from "./events";
+import {
+  EvenAIStatus,
+  EvenAIStatusName,
+  EventSourceType,
+  EventSourceTypeName,
+  OsEventTypeList,
+  OsEventTypeName,
+} from "./events";
 import { loadDeviceAddresses } from "./device-addresses";
 import { ensureBlePermissions, ensureVoicePermissions } from "./android-permissions";
 import { FaceclawCommunicatorBridge, type FrameMetrics, type RawInputEvent } from "../native/faceclaw-communicator";
@@ -82,6 +89,7 @@ import {
   suspendEvenHubWhenScreenOffSetting,
   systemCardNameSetting,
   voiceProviderSetting,
+  wakeWordActionSetting,
   type ConfigSettingString,
 } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
@@ -121,6 +129,7 @@ const SHELL_REFRESH_INTERVAL_MS = 60_000;
 const PREVIEW_INTERVAL_MS = 1_000;
 const SCREEN_TIMEOUT_CHECK_MS = 1_000;
 const EVENHUB_SCREEN_OFF_SUSPEND_DELAY_MS = 5_000;
+const EVENHUB_WAKE_READY_TIMEOUT_MS = 4_500;
 const FOREGROUND_NOTIFICATION_MIN_UPDATE_MS = 30_000;
 const FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS = 6_000;
 const CONNECTED_PREVIEW_MIN_UPDATE_MS = 1_000;
@@ -184,6 +193,9 @@ class DashboardController {
   private screenTimeoutTimer: ReturnType<typeof setInterval> | null = null;
   private evenHubSuspendTimer: ReturnType<typeof setTimeout> | null = null;
   private evenHubSessionSuspended = false;
+  private evenHubResumePromise: Promise<boolean> | null = null;
+  private faceclawWakeLeaseSupported = false;
+  private faceclawWakeLeaseState: boolean | null = null;
   private offState: (() => void) | null = null;
   private offLog: (() => void) | null = null;
   private offRing: (() => void) | null = null;
@@ -283,28 +295,16 @@ class DashboardController {
   }
 
   private handleScreenStateChanged(on: boolean): void {
-    const communicator = this.communicator;
-    if (!communicator) return;
-
     if (on) {
       this.cancelEvenHubSuspendTimer();
-      const shouldResumeEvenHub = this.evenHubSessionSuspended;
-      this.evenHubSessionSuspended = false;
-      void (async () => {
-        await communicator.setG2ScreenOn(true);
-        // Restore the retained frame before allowing Java's session driver to
-        // recreate the layout, so its first real image is the current screen
-        // rather than the black sleep frame.
-        await communicator.setScreenBlanked(false);
-        if (shouldResumeEvenHub) {
-          await communicator.resumeEvenHubSession();
-        }
-      })().catch((error) => {
+      void this.ensureEvenHubSessionActive().catch((error) => {
         this.appendLog(`screen wake failed: ${this.formatError(error)}`);
       });
       return;
     }
 
+    const communicator = this.communicator;
+    if (!communicator) return;
     // Blanking is a compositor-level flag so worker-window surfaces go dark
     // too; retained state survives while the EvenHub page is absent.
     void (async () => {
@@ -316,7 +316,65 @@ class DashboardController {
     this.scheduleEvenHubSuspend();
   }
 
+  /**
+   * The single wake barrier for every source: restore the EvenHub lifecycle,
+   * unblank the retained compositor, and resolve only after that frame is
+   * visible. Concurrent display-wake, shell, and wakeword callbacks share the
+   * same operation.
+   */
+  private ensureEvenHubSessionActive(): Promise<boolean> {
+    if (this.evenHubResumePromise) return this.evenHubResumePromise;
+    const communicator = this.communicator;
+    if (!communicator || this.phase === "charging" || this.phase === "disconnected") {
+      return Promise.resolve(false);
+    }
+
+    const operation = (async () => {
+      await communicator.setG2ScreenOn(true);
+      if (!(await communicator.resumeEvenHubSession())) {
+        return false;
+      }
+      // Resume first: setScreenBlanked(false) then recomposites retained state
+      // as the desired first frame for the fresh layout.
+      await communicator.setScreenBlanked(false);
+      const ready = await communicator.awaitEvenHubSessionReady(EVENHUB_WAKE_READY_TIMEOUT_MS);
+      if (ready && this.communicator === communicator) {
+        this.evenHubSessionSuspended = false;
+      }
+      return ready;
+    })();
+    this.evenHubResumePromise = operation;
+    const clearOperation = () => {
+      if (this.evenHubResumePromise === operation) {
+        this.evenHubResumePromise = null;
+      }
+    };
+    void operation.then(clearOperation, clearOperation);
+    return operation;
+  }
+
+  private desiredFaceclawWakeLeaseState(): boolean {
+    return suspendEvenHubWhenScreenOffSetting.get() && this.faceclawWakeLeaseSupported;
+  }
+
+  private async syncFaceclawWakeLease(
+    communicator = this.communicator,
+    force = false,
+  ): Promise<boolean> {
+    if (!communicator || communicator !== this.communicator) return false;
+    const enabled = this.desiredFaceclawWakeLeaseState();
+    if (!force && this.faceclawWakeLeaseState === enabled) return true;
+    const applied = await communicator.setFaceclawWakeLeaseEnabled(enabled);
+    if (this.communicator === communicator) {
+      this.faceclawWakeLeaseState = applied || !enabled ? enabled : null;
+    }
+    return applied;
+  }
+
   private syncEvenHubScreenOffSetting(): void {
+    void this.syncFaceclawWakeLease().catch((error) => {
+      this.appendLog(`wake takeover lease sync failed: ${this.formatError(error)}`);
+    });
     if (suspendEvenHubWhenScreenOffSetting.get() && !shell.isScreenOn()) {
       this.scheduleEvenHubSuspend();
       return;
@@ -328,11 +386,17 @@ class DashboardController {
     // Turning the experiment off restores the legacy all-black page even if
     // the screen remains asleep.
     const communicator = this.communicator;
-    this.evenHubSessionSuspended = false;
     if (!communicator) return;
-    void communicator.resumeEvenHubSession().catch((error) => {
-      this.appendLog(`EvenHub resume failed: ${this.formatError(error)}`);
-    });
+    void communicator
+      .resumeEvenHubSession()
+      .then((resumed) => {
+        if (resumed && this.communicator === communicator) {
+          this.evenHubSessionSuspended = false;
+        }
+      })
+      .catch((error) => {
+        this.appendLog(`EvenHub resume failed: ${this.formatError(error)}`);
+      });
   }
 
   private scheduleEvenHubSuspend(): void {
@@ -359,10 +423,30 @@ class DashboardController {
         return;
       }
 
-      this.evenHubSessionSuspended = true;
-      void communicator
-        .suspendEvenHubSession()
+      void (async () => {
+        if (this.faceclawWakeLeaseSupported) {
+          // Refresh immediately before teardown so the first suspended wake
+          // cannot race an old lease's expiry.
+          const leaseReady = await this.syncFaceclawWakeLease(communicator, true);
+          if (!leaseReady) {
+            this.appendLog("EvenHub suspend deferred; wake takeover lease was not delivered");
+            this.scheduleEvenHubSuspend();
+            return;
+          }
+        }
+        if (
+          !suspendEvenHubWhenScreenOffSetting.get() ||
+          shell.isScreenOn() ||
+          this.phase !== "connected" ||
+          this.communicator !== communicator
+        ) {
+          return;
+        }
+        this.evenHubSessionSuspended = true;
+        return communicator.suspendEvenHubSession();
+      })()
         .then((suspended) => {
+          if (suspended === undefined) return;
           if (suspended) {
             this.appendLog("EvenHub session suspended while screen is off");
             return;
@@ -558,6 +642,9 @@ class DashboardController {
     );
 
     let communicator: FaceclawCommunicatorBridge | null = null;
+    this.faceclawWakeLeaseSupported = false;
+    this.faceclawWakeLeaseState = null;
+    this.evenHubResumePromise = null;
 
     try {
       await ensureBlePermissions();
@@ -655,6 +742,17 @@ class DashboardController {
             (info.capabilities ? ` caps="${info.capabilities}"` : " (no CFW capability string)"),
         );
         const warning = firmwareIncompatibilityMessage(info) ?? "";
+        const wakeLeaseSupported = info.capabilities
+          .trim()
+          .split(/\s+/)
+          .includes("wakelease");
+        if (wakeLeaseSupported !== this.faceclawWakeLeaseSupported) {
+          this.faceclawWakeLeaseSupported = wakeLeaseSupported;
+          this.faceclawWakeLeaseState = null;
+          void this.syncFaceclawWakeLease().catch((error) => {
+            this.appendLog(`wake takeover lease sync failed: ${this.formatError(error)}`);
+          });
+        }
         if (warning !== this.firmwareWarningMessage) {
           this.firmwareWarningMessage = warning;
           if (warning) {
@@ -735,9 +833,13 @@ class DashboardController {
       await nightscoutBridge.stop().catch(() => {});
       voiceControlBridge.stop();
       if (communicator) {
+        await communicator.setFaceclawWakeLeaseEnabled(false).catch(() => false);
         await communicator.close().catch(() => {});
       }
       this.communicator = null;
+      this.faceclawWakeLeaseSupported = false;
+      this.faceclawWakeLeaseState = null;
+      this.evenHubResumePromise = null;
       this.clearDashboardTimer();
       stopForegroundNotification();
       this.setPhase("disconnected");
@@ -777,8 +879,16 @@ class DashboardController {
     const communicator = this.communicator;
     this.communicator = null;
     this.evenHubSessionSuspended = false;
+    this.evenHubResumePromise = null;
 
     try {
+      const leaseReleased = await communicator?.setFaceclawWakeLeaseEnabled(false).catch((error) => {
+        this.appendLog(`wake takeover lease release failed: ${this.formatError(error)}`);
+        return false;
+      });
+      if (leaseReleased === true) {
+        this.faceclawWakeLeaseState = false;
+      }
       const shutdownAcked = await communicator?.sendShutdown(0).catch((error) => {
         this.appendLog(`shutdown command failed: ${this.formatError(error)}`);
         return false;
@@ -794,6 +904,8 @@ class DashboardController {
       await communicator?.close().catch(() => {});
     } finally {
       stopForegroundNotification();
+      this.faceclawWakeLeaseSupported = false;
+      this.faceclawWakeLeaseState = null;
       this.setPhase("disconnected");
       this.setStatus("Disconnected.");
       this.appendLog("Disconnected from the glasses.");
@@ -927,6 +1039,23 @@ class DashboardController {
     let frameOwned = false;
     try {
       const inputEvent = rawInputEventToInputEvent(event);
+      const wakewordShouldWake =
+        event.kind === "even-ai" &&
+        event.eventType === EvenAIStatus.EVEN_AI_WAKE_UP &&
+        wakeWordActionSetting.get() !== "off";
+      const displayShouldWake = event.kind === "display-wake";
+      let shellPreWoke = false;
+      if (wakewordShouldWake || displayShouldWake) {
+        if (!shell.isScreenOn()) {
+          shellPreWoke = shell.wake("sidebar");
+        }
+        if (shellPreWoke || this.evenHubSessionSuspended || this.evenHubResumePromise) {
+          const ready = await this.ensureEvenHubSessionActive();
+          if (!ready) {
+            this.appendLog(`EvenHub wake barrier timed out for ${event.kind}`);
+          }
+        }
+      }
       frameTimings.spanStart(frameId, "handle-input");
       let outcome: ShellInputOutcome;
       try {
@@ -935,6 +1064,9 @@ class DashboardController {
         outcome = await shell.receiveInput(inputEvent, frameId);
       } finally {
         frameTimings.spanEnd(frameId, "handle-input");
+      }
+      if (shellPreWoke && !outcome.shell) {
+        outcome = { ...outcome, shell: true };
       }
 
       if (event.kind === "sys-event") {
@@ -1269,7 +1401,12 @@ class DashboardController {
     const normalized = keyword.trim();
     if (normalized.length === 0) return;
     this.appendLog(`wake-word detected: ${normalized}`);
-    if (shell.wake("sidebar")) {
+    const woke = shell.wake("sidebar");
+    if (woke) {
+      const ready = await this.ensureEvenHubSessionActive();
+      if (!ready) {
+        this.appendLog("EvenHub wake barrier timed out for phone wakeword");
+      }
       this.requestShellRender();
     }
   }

@@ -34,6 +34,16 @@ public class BleProtocol {
     public static final int SID_STATE_CHANGE = 0x0d;
     /** G2SettingPackage.commandId for device-initiated pushes (vs. 2 = app read). */
     public static final int SETTINGS_CMD_DEVICE_SEND_TO_APP = 3;
+    // Private Faceclaw/CFW wake-takeover protocol. Both payloads are unknown
+    // protobuf fields to stock implementations, so they are safely ignored.
+    public static final int FACECLAW_WAKE_CONTROL_FIELD = 101;
+    public static final int FACECLAW_WAKE_EVENT_FIELD = 102;
+    public static final int FACECLAW_WAKE_OP_ACQUIRE = 1;
+    public static final int FACECLAW_WAKE_OP_RELEASE = 2;
+    public static final int FACECLAW_WAKE_OP_CLAIM = 3;
+    public static final int FACECLAW_WAKE_OP_READY = 4;
+    private static final int FACECLAW_WAKE_EVENT = 1;
+    private static final int FACECLAW_WAKE_PROTOCOL_VERSION = 1;
     // UI_FOREGROUND_EVEN_AI_ID: the stock "Even AI" assistant app. It is a
     // FOREGROUND app, whereas EvenHub (and therefore faceclaw) is the
     // BACKGROUND app -- which is why an Even AI launch draws over us.
@@ -301,6 +311,47 @@ public class BleProtocol {
             encodeVarintField(2, magic),
             encodeMessageField(4, request)
         ));
+    }
+
+    /**
+     * Build the CFW-only wake lease control package. Magic zero deliberately
+     * makes this fire-and-forget: the firmware consumes field 101 before its
+     * stock nanopb decoder discards the unknown field.
+     */
+    public static byte[] buildFaceclawWakeControl(int operation, int nonce) {
+        byte[] control = new byte[] {
+            'F',
+            'C',
+            (byte) FACECLAW_WAKE_PROTOCOL_VERSION,
+            (byte) operation,
+            (byte) (nonce & 0xff),
+            (byte) ((nonce >>> 8) & 0xff)
+        };
+        return concat(CollectionUtils.listOf(
+            encodeVarintField(1, 1),
+            encodeVarintField(2, 0),
+            encodeBytesField(FACECLAW_WAKE_CONTROL_FIELD, control)
+        ));
+    }
+
+    /**
+     * Return the uint16 wake nonce from a CFW field-102 notification, or -1
+     * when this is an ordinary settings frame.
+     */
+    public static int parseFaceclawWakeEvent(byte[] pb) {
+        if (pb == null) {
+            return -1;
+        }
+        byte[] event = readFieldBytes(stripTrailingCrc(pb), FACECLAW_WAKE_EVENT_FIELD);
+        if (event == null
+                || event.length != 6
+                || event[0] != 'F'
+                || event[1] != 'C'
+                || (event[2] & 0xff) != FACECLAW_WAKE_PROTOCOL_VERSION
+                || (event[3] & 0xff) != FACECLAW_WAKE_EVENT) {
+            return -1;
+        }
+        return (event[4] & 0xff) | ((event[5] & 0xff) << 8);
     }
 
     public static BatterySnapshot parseSettingsBattery(byte[] pb) {

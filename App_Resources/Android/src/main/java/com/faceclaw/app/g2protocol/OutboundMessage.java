@@ -19,6 +19,7 @@ public final class OutboundMessage {
     long writeStartedAtMs;
     long ackDeadlineAtMs;
     byte[] ackPayload = new byte[0];
+    Runnable onSent;
     Runnable onAck;
     Runnable onTimeout;
 

@@ -196,4 +196,18 @@ public class MessageBuilder {
             false
         );
     }
+
+    public OutboundMessage faceclawWakeControl(int operation, int nonce, boolean leftArm) {
+        return new OutboundMessage(
+            "wake-lease-control",
+            "wake lease op=" + operation + " nonce=" + nonce + (leftArm ? " L" : " R"),
+            BleProtocol.SID_UI_SETTING,
+            BleProtocol.FLAG_REQUEST,
+            0,
+            BleProtocol.buildFaceclawWakeControl(operation, nonce),
+            ACK_TIMEOUT_MS,
+            -1,
+            leftArm
+        );
+    }
 }

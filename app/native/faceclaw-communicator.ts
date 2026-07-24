@@ -495,6 +495,26 @@ export class FaceclawCommunicatorBridge {
     return this.enqueueJavaCall(() => Boolean(this.communicator.resumeEvenHubSession()));
   }
 
+  /**
+   * Own CFW's fail-open idle-wake policy while the experimental screen-off
+   * suspension mode is enabled. Returns after both arm writes complete.
+   */
+  async setFaceclawWakeLeaseEnabled(enabled: boolean): Promise<boolean> {
+    return this.enqueueJavaCall(() =>
+      Boolean(this.communicator.setFaceclawWakeLeaseEnabled(enabled)),
+    );
+  }
+
+  /**
+   * Resolve only once the recreated layout, image warmup, and retained frame
+   * are visible. CFW's deferred-dashboard READY is emitted from this barrier.
+   */
+  async awaitEvenHubSessionReady(timeoutMs: number): Promise<boolean> {
+    return this.enqueueJavaCall(() =>
+      Boolean(this.communicator.awaitEvenHubSessionReady(Math.round(nonNegativeNumber(timeoutMs)))),
+    );
+  }
+
   /** Play a CFW mode-5 kind-4 tone sequence (complete wire payload). */
   async playBuzzerSequence(payload: Uint8Array): Promise<void> {
     const snapshot = new Uint8Array(payload);
