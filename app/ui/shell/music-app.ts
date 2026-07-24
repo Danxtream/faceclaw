@@ -9,12 +9,14 @@ import {
   GESTURE_SCROLL_DOWN,
   GESTURE_SCROLL_UP,
 } from "../gestures";
-import { drawSelectionHighlight, drawSubmenuIndicator } from "../menu";
+import { MenuLayer, drawSelectionHighlight, drawSubmenuIndicator } from "../menu";
 import {
   mediaControllerBridge,
   type MediaControllerState,
   type MediaQueueItem,
 } from "../../native/media-controller";
+import { mediaBrowserBridge, type MediaBrowserApp } from "../../native/media-browser";
+import { MediaBrowseLayer } from "../apps/media-browse";
 import { Layer, type DashboardInputEvent, type LayerContext, type PaintBelow } from "../layers";
 import {
   createInProcessWindow,
@@ -44,7 +46,8 @@ type MusicAction =
   | { kind: "previous"; label: string; enabled: boolean }
   | { kind: "next"; label: string; enabled: boolean }
   | { kind: "volume"; label: string; enabled: boolean }
-  | { kind: "playlist"; label: string; enabled: boolean };
+  | { kind: "playlist"; label: string; enabled: boolean }
+  | { kind: "browse"; label: string; enabled: boolean };
 
 type FocusColumn = "actions" | "playlist";
 
@@ -86,8 +89,14 @@ class MusicAppLayer implements Layer {
 
     if (!media.available) {
       image.drawText(font, 24, 16, "No active media session.", 180);
-      image.drawText(font, 24, 34, "Start playback in another app on the phone.", 150);
-      image.drawText(font, 20, height - 16, `${GESTURE_DOUBLE_CLICK} back`, 110);
+      if (mediaBrowserBridge.listBrowsableApps().length) {
+        image.drawText(font, 24, 34, "Click to browse a music app's library,", 150);
+        image.drawText(font, 24, 48, "or start playback on the phone.", 150);
+        image.drawText(font, 20, height - 16, `${GESTURE_CLICK} browse   ${GESTURE_DOUBLE_CLICK} back`, 110);
+      } else {
+        image.drawText(font, 24, 34, "Start playback in another app on the phone.", 150);
+        image.drawText(font, 20, height - 16, `${GESTURE_DOUBLE_CLICK} back`, 110);
+      }
       return image;
     }
 
@@ -138,7 +147,7 @@ class MusicAppLayer implements Layer {
       }
       const value = !action.enabled ? (selected ? 130 : 90) : selected ? 255 : 200;
       image.drawText(font, ACTION_X, y + 1, truncate(font, action.label, ACTION_WIDTH - 16), value);
-      if (action.kind === "playlist" && action.enabled) {
+      if ((action.kind === "playlist" || action.kind === "browse") && action.enabled) {
         drawSubmenuIndicator(image, font, highlightX, highlightY, highlightWidth, highlightHeight, value);
       }
     }
@@ -204,6 +213,12 @@ class MusicAppLayer implements Layer {
       }
       return;
     }
+    if (!media.available) {
+      if (event.type === "click") {
+        this.openBrowse(ctx);
+      }
+      return;
+    }
     const queue = mediaControllerBridge.getQueue();
     const actions = this.buildActions(media, queue);
     this.reconcileSelection(actions, queue);
@@ -238,6 +253,7 @@ class MusicAppLayer implements Layer {
         if (action.kind === "play-pause") await mediaControllerBridge.playPause();
         else if (action.kind === "previous") await mediaControllerBridge.skipPrevious();
         else if (action.kind === "next") await mediaControllerBridge.skipNext();
+        else if (action.kind === "browse") this.openBrowse(ctx);
         else if (action.kind === "volume") {
           ctx.stack.push(new VolumeModalLayer(mediaControllerBridge.getMediaVolumePercent()));
         } else if (action.kind === "playlist") {
@@ -252,6 +268,41 @@ class MusicAppLayer implements Layer {
     }
   }
 
+  /**
+   * Open the media-library browser (the Android Auto MediaBrowserService
+   * path): with one browsable player installed go straight to its library,
+   * otherwise offer a picker first.
+   */
+  private openBrowse(ctx: LayerContext): void {
+    const apps = mediaBrowserBridge.listBrowsableApps(true);
+    if (!apps.length) return;
+    const pushBrowser = (target: LayerContext, app: MediaBrowserApp) => {
+      target.stack.push(
+        new MediaBrowseLayer({
+          app,
+          onPlayed: (browseCtx) => browseCtx.stack.pop(),
+          onLeave: (browseCtx) => browseCtx.stack.pop(),
+        }),
+      );
+    };
+    if (apps.length === 1) {
+      pushBrowser(ctx, apps[0]!);
+      return;
+    }
+    ctx.stack.push(
+      new MenuLayer(
+        "Browse library",
+        apps.map((app) => ({
+          label: app.appName,
+          onSelect: (menuCtx: LayerContext) => {
+            menuCtx.stack.pop();
+            pushBrowser(menuCtx, app);
+          },
+        })),
+      ),
+    );
+  }
+
   private buildActions(media: MediaControllerState, queue: MediaQueueItem[]): MusicAction[] {
     const volume = mediaControllerBridge.getMediaVolumePercent();
     return [
@@ -261,6 +312,7 @@ class MusicAppLayer implements Layer {
         enabled: media.canPlayPause,
       },
       { kind: "playlist", label: "Playlist", enabled: queue.length > 0 },
+      { kind: "browse", label: "Browse library", enabled: mediaBrowserBridge.listBrowsableApps().length > 0 },
       { kind: "volume", label: volume >= 0 ? `Volume (${volume})` : "Volume", enabled: volume >= 0 },
       { kind: "next", label: "Next track", enabled: media.canSkipNext },
       { kind: "previous", label: "Previous track", enabled: media.canSkipPrevious },
