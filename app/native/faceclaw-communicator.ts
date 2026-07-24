@@ -88,6 +88,18 @@ export type RawInputEvent =
       eventSource: number;
       systemExitReasonCode: number;
       frameId: number;
+    }
+  | {
+      /**
+       * Stock display-lifecycle wake observed after a ring or arm double tap
+       * while Faceclaw's EvenHub page is suspended.
+       */
+      kind: "display-wake";
+      containerName: string;
+      eventType: number;
+      eventSource: number;
+      systemExitReasonCode: number;
+      frameId: number;
     };
 
 function nonNegativeNumber(value: number): number {
@@ -465,6 +477,22 @@ export class FaceclawCommunicatorBridge {
 
   async sendShutdown(exitMode = 0): Promise<boolean> {
     return this.enqueueJavaCall(() => Boolean(this.communicator.sendShutdown(exitMode)));
+  }
+
+  /**
+   * End only the EvenHub page/session, leaving both arm BLE connections and
+   * their async notification subscriptions alive.
+   */
+  async suspendEvenHubSession(): Promise<boolean> {
+    return this.enqueueJavaCall(() => Boolean(this.communicator.suspendEvenHubSession()));
+  }
+
+  /**
+   * Re-enable the EvenHub page lifecycle. The retained compositor frame is
+   * sent after the layout and image path have been recreated.
+   */
+  async resumeEvenHubSession(): Promise<boolean> {
+    return this.enqueueJavaCall(() => Boolean(this.communicator.resumeEvenHubSession()));
   }
 
   /** Play a CFW mode-5 kind-4 tone sequence (complete wire payload). */

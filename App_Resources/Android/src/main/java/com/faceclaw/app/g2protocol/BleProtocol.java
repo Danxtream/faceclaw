@@ -31,6 +31,7 @@ public class BleProtocol {
     public static final int SID_APP_LAUNCH = 0x01;
     public static final int SID_EVENHUB = 0xe0;
     public static final int SID_UI_SETTING = 0x09;
+    public static final int SID_STATE_CHANGE = 0x0d;
     /** G2SettingPackage.commandId for device-initiated pushes (vs. 2 = app read). */
     public static final int SETTINGS_CMD_DEVICE_SEND_TO_APP = 3;
     // UI_FOREGROUND_EVEN_AI_ID: the stock "Even AI" assistant app. It is a
@@ -512,6 +513,33 @@ public class BleProtocol {
             return pb == null ? new byte[0] : pb;
         }
         return Arrays.copyOf(pb, pb.length - 2);
+    }
+
+    /**
+     * Display wake notification observed after a ring or right-arm double tap
+     * while no EvenHub page is running:
+     *
+     *   sid=0x0d, flag=notify, payload f1=1, f3={f1=1}
+     *
+     * Other state-change shapes (wear, charging, head-up, etc.) are deliberately
+     * excluded. The caller additionally gates this on an intentional EvenHub
+     * suspension, so normal state traffic cannot become application input.
+     */
+    public static boolean isDisplayWakeStateChange(ParsedFrame frame) {
+        if (frame == null
+                || !frame.ok
+                || frame.sid != SID_STATE_CHANGE
+                || (frame.flag != FLAG_NOTIFY && frame.flag != FLAG_NOTIFY_ALT)) {
+            return false;
+        }
+        byte[] root = stripTrailingCrc(frame.pb);
+        if (readVarintFieldValue(root, 1, -1) != 1) {
+            return false;
+        }
+        byte[] state = readFieldBytes(root, 3);
+        return state != null
+                && state.length == 2
+                && readVarintFieldValue(state, 1, -1) == 1;
     }
 
     public static byte[] readFieldBytes(byte[] pb, int fieldNumber) {

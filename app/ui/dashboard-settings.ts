@@ -248,6 +248,13 @@ export const firmwareDebugFlagsSetting = new ConfigSettingBoolean({
   defaultValue: false,
 });
 
+export const suspendEvenHubWhenScreenOffSetting = new ConfigSettingBoolean({
+  id: "suspend-evenhub-screen-off",
+  label: "Suspend EvenHub when screen off",
+  storageKey: "developer.suspendEvenHubWhenScreenOff",
+  defaultValue: false,
+});
+
 export type VoiceProvider = "onboard" | "elevenlabs" | "whisper";
 
 const voiceProviderLabels: Record<VoiceProvider, string> = {

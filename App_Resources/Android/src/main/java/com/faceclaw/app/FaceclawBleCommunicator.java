@@ -501,6 +501,79 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     public boolean sendShutdown(int exitMode) {
+        return sendShutdownInternal(exitMode, true);
+    }
+
+    /**
+     * End the EvenHub page while retaining both arm GATT connections and all
+     * notification subscriptions. A missed ACK is intentionally non-fatal:
+     * reconnecting Bluetooth here would defeat the power-saving mode.
+     */
+    public boolean suspendEvenHubSession() {
+        if (sendShutdownInternal(0, false)) {
+            return true;
+        }
+        synchronized (lock) {
+            // A shutdown ACK can be lost even though the command took effect.
+            // If the transport remains intentionally quiesced, callers still
+            // need to remember to run the resume path on the next wake.
+            return running && sessionReady && shutdownRequested;
+        }
+    }
+
+    /**
+     * Start a fresh EvenHub plugin task on the existing BLE transport, then let
+     * the session driver create the layout, warm up the image path, and send
+     * desiredBmp.
+     */
+    public boolean resumeEvenHubSession() {
+        synchronized (lock) {
+            if (!running || !sessionReady || chargingMode) {
+                logLine("skip EvenHub resume; transport not ready");
+                return false;
+            }
+            if (!shutdownRequested) {
+                return true;
+            }
+            logLine("replaying session prelude for EvenHub resume");
+        }
+
+        try {
+            // Empty-name Cmd=9 tears down the whole plugin task, not just its
+            // image container. Re-run the launch prelude before Cmd=0 CREATE.
+            sendPrelude();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            handleTransportFailure("EvenHub resume prelude interrupted");
+            return false;
+        } catch (Throwable t) {
+            logLine("EvenHub resume prelude failed: " + safeMessage(t));
+            handleTransportFailure("EvenHub resume prelude failed");
+            return false;
+        }
+
+        synchronized (lock) {
+            if (!running || !sessionReady || chargingMode) {
+                return false;
+            }
+            shutdownRequested = false;
+            fixedLayoutCreated = false;
+            warmedUp = false;
+            startupProbePending = false;
+            audioCaptureActive = false;
+            clearAllMessagesLocked("EvenHub resume");
+            displayedFingerprint = "";
+            displayedBmp = new byte[0];
+            imageRetryAfterMs = 0;
+            lastHeartbeatSentAtMs = 0;
+            lastHeartbeatAckedAtMs = 0;
+            logLine("EvenHub session resume requested");
+        }
+        interruptibleSleep.interrupt();
+        return true;
+    }
+
+    private boolean sendShutdownInternal(int exitMode, boolean reconnectOnTimeout) {
         int magic;
         long startedAtMs = SystemClock.elapsedRealtime();
         synchronized (lock) {
@@ -508,7 +581,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 logLine("skip shutdown; session not ready");
                 return false;
             }
+            if (shutdownRequested) {
+                return true;
+            }
             shutdownRequested = true;
+            // Magic values wrap, so an ACK from a much older suspend must not
+            // satisfy this request after enough sleep/wake cycles.
+            lastShutdownAckMagic = 0;
             clearPendingMessagesLocked("shutdown requested");
             OutboundMessage message = messageBuilder.shutdown(exitMode);
             magic = message.magic;
@@ -520,7 +599,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 displayedBmp = new byte[0];
             };
             message.onTimeout = () -> {
-                handleTransportFailure("shutdown ack timeout");
+                if (reconnectOnTimeout) {
+                    handleTransportFailure("shutdown ack timeout");
+                } else {
+                    logLine("EvenHub shutdown ack timeout; keeping BLE connected");
+                }
             };
             pendingMessages.addFirst(message);
             logLine("queue shutdown");
@@ -650,6 +733,21 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         G2Event event = null;
         synchronized (lock) {
             lastIncomingAtMs = SystemClock.elapsedRealtime();
+            if (shutdownRequested
+                    && address.equalsIgnoreCase(rightAddress)
+                    && BleProtocol.isDisplayWakeStateChange(frame)) {
+                // With no EvenHub page, ring/arm double-taps are handled by the
+                // stock display lifecycle and surface only as this state ping.
+                // Translate it back into an input event so TS can wake the shell
+                // and recreate the page.
+                event = new G2Event(
+                    "display-wake",
+                    "",
+                    BleProtocol.EVENT_DOUBLE_CLICK,
+                    0,
+                    0
+                );
+            }
             if (frame.ok && frame.sid == BleProtocol.SID_UI_SETTING) {
                 // Device-initiated settings push. It carries a magic the glasses
                 // chose, so it would otherwise fall through to resolveAckLocked,
@@ -664,7 +762,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 lastAckAtMs = lastIncomingAtMs;
                 resolveAckLocked(frame.sid, frame.msgSeq, frame.pb);
             }
-            if (frame.ok && address.equalsIgnoreCase(rightAddress) && (frame.flag == BleProtocol.FLAG_NOTIFY || frame.flag == BleProtocol.FLAG_NOTIFY_ALT)) {
+            if (event == null
+                    && frame.ok
+                    && address.equalsIgnoreCase(rightAddress)
+                    && (frame.flag == BleProtocol.FLAG_NOTIFY || frame.flag == BleProtocol.FLAG_NOTIFY_ALT)) {
                 event = G2Event.decode(frame);
                 if (event != null) {
                     // Pure IMU samples arrive continuously; don't let them count
@@ -807,6 +908,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
             synchronized (lock) {
                 sessionReady = true;
+                // A fresh transport prelude always starts an active EvenHub
+                // lifecycle, even if the previous connection dropped while
+                // its page was intentionally suspended.
+                shutdownRequested = false;
                 fixedLayoutCreated = false;
                 warmedUp = false;
                 clearAllMessagesLocked("session ready");
@@ -1966,6 +2071,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void resetSessionStateLocked() {
         sessionReady = false;
+        shutdownRequested = false;
         fixedLayoutCreated = false;
         warmedUp = false;
         chargingMode = false;

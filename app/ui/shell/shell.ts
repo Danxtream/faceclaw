@@ -337,6 +337,14 @@ class Shell {
   }
 
   async receiveInput(event: DashboardInputEvent, frameId = 0): Promise<ShellInputOutcome> {
+    // The stock lifecycle has already interpreted the physical double tap as
+    // "wake". Keep that directionality if delivery is delayed or duplicated.
+    if (event.type === "display-wake") {
+      this.lastInputAtMs = Date.now();
+      const wokeScreen = !this.screenOn && this.wake("sidebar");
+      return { shell: wokeScreen, window: false };
+    }
+
     // The wakeword is handled before the screen-off short-circuit so its
     // configured action can work from a dark screen. With the CFW the stock
     // Even AI app never launches, so the firmware does not power the display
@@ -609,6 +617,10 @@ export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputE
     if (event.eventType === EvenAIStatus.EVEN_AI_WAKE_UP) {
       return { type: "wakeword" };
     }
+  } else if (event.kind === "display-wake") {
+    // Outside an EvenHub page the firmware consumes the physical double tap
+    // itself and reports only that the stock display lifecycle woke.
+    return { type: "display-wake" };
   } else if (event.kind === "text-click") {
     if (event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
       return { type: "scroll-down" };
@@ -649,6 +661,8 @@ export function inputEventToString(event: DashboardInputEvent): string {
       return `Long press from ${event.source}`;
     case "long-press-release":
       return `Long press release from ${event.source}`;
+    case "display-wake":
+      return `Display wake`;
     case "wakeword":
       return `Wakeword`;
     default:

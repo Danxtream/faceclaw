@@ -11,6 +11,11 @@ export type DashboardInputEvent =
   | { type: "long-press"; source: "ring" | "left-arm" | "right-arm" }
   | { type: "long-press-release"; source: "ring" | "left-arm" | "right-arm" }
   /**
+   * The stock display lifecycle woke while no EvenHub page was running. This
+   * is wake-only, unlike a normal double-click (which turns an on screen off).
+   */
+  | { type: "display-wake" }
+  /**
    * The on-glasses "Hey Even" wakeword fired. Delivered on sid 0x07 by the
    * stock firmware regardless of CFW; the CFW additionally suppresses the stock
    * Even AI app so this is ours to handle. Its configured action may be applied

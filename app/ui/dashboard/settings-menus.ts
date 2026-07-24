@@ -11,6 +11,7 @@ import {
   firmwareDebugFlagsSetting,
   rawScreenshotsEnabledSetting,
   saveVoiceRecordingsSetting,
+  suspendEvenHubWhenScreenOffSetting,
   terminalAuthTokenSetting,
   terminalHostSetting,
   terminalPortSetting,
@@ -79,6 +80,7 @@ function settingsSections(): SettingsSection[] {
         toggleSettingMenuItem(rawScreenshotsEnabledSetting),
         toggleSettingMenuItem(saveVoiceRecordingsSetting),
         toggleSettingMenuItem(firmwareDebugFlagsSetting),
+        toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
       ],
     },
     {

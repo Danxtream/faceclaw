@@ -79,6 +79,7 @@ import {
   saveVoiceRecordingsSetting,
   screenTimeoutSetting,
   screenTimeoutSettingToMs,
+  suspendEvenHubWhenScreenOffSetting,
   systemCardNameSetting,
   voiceProviderSetting,
   type ConfigSettingString,
@@ -119,6 +120,7 @@ const SHELL_SURFACE_ID = "shell";
 const SHELL_REFRESH_INTERVAL_MS = 60_000;
 const PREVIEW_INTERVAL_MS = 1_000;
 const SCREEN_TIMEOUT_CHECK_MS = 1_000;
+const EVENHUB_SCREEN_OFF_SUSPEND_DELAY_MS = 5_000;
 const FOREGROUND_NOTIFICATION_MIN_UPDATE_MS = 30_000;
 const FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS = 6_000;
 const CONNECTED_PREVIEW_MIN_UPDATE_MS = 1_000;
@@ -180,6 +182,8 @@ class DashboardController {
   private shellRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private previewTimer: ReturnType<typeof setInterval> | null = null;
   private screenTimeoutTimer: ReturnType<typeof setInterval> | null = null;
+  private evenHubSuspendTimer: ReturnType<typeof setTimeout> | null = null;
+  private evenHubSessionSuspended = false;
   private offState: (() => void) | null = null;
   private offLog: (() => void) | null = null;
   private offRing: (() => void) | null = null;
@@ -230,16 +234,7 @@ class DashboardController {
       getScreenTimeoutMs: () => screenTimeoutSettingToMs(screenTimeoutSetting.get()),
       requestShellRender: () => this.requestShellRender(),
       onScreenStateChanged: (on) => {
-        const communicator = this.communicator;
-        if (!communicator) return;
-        void (async () => {
-          // Blanking is a compositor-level flag so worker-window surfaces go
-          // dark too; retained state survives for instant wake.
-          await communicator.setScreenBlanked(!on);
-          await communicator.setG2ScreenOn(on);
-        })().catch((error) => {
-          this.appendLog(`screen state change failed: ${this.formatError(error)}`);
-        });
+        this.handleScreenStateChanged(on);
         if (on) this.requestShellRender();
       },
     });
@@ -283,7 +278,113 @@ class DashboardController {
       // Apply a firmware-debug-flags toggle live while connected (Java dedups).
       this.pushFirmwareDebugFlags();
       this.pushBrightness();
+      this.syncEvenHubScreenOffSetting();
     });
+  }
+
+  private handleScreenStateChanged(on: boolean): void {
+    const communicator = this.communicator;
+    if (!communicator) return;
+
+    if (on) {
+      this.cancelEvenHubSuspendTimer();
+      const shouldResumeEvenHub = this.evenHubSessionSuspended;
+      this.evenHubSessionSuspended = false;
+      void (async () => {
+        await communicator.setG2ScreenOn(true);
+        // Restore the retained frame before allowing Java's session driver to
+        // recreate the layout, so its first real image is the current screen
+        // rather than the black sleep frame.
+        await communicator.setScreenBlanked(false);
+        if (shouldResumeEvenHub) {
+          await communicator.resumeEvenHubSession();
+        }
+      })().catch((error) => {
+        this.appendLog(`screen wake failed: ${this.formatError(error)}`);
+      });
+      return;
+    }
+
+    // Blanking is a compositor-level flag so worker-window surfaces go dark
+    // too; retained state survives while the EvenHub page is absent.
+    void (async () => {
+      await communicator.setScreenBlanked(true);
+      await communicator.setG2ScreenOn(false);
+    })().catch((error) => {
+      this.appendLog(`screen sleep failed: ${this.formatError(error)}`);
+    });
+    this.scheduleEvenHubSuspend();
+  }
+
+  private syncEvenHubScreenOffSetting(): void {
+    if (suspendEvenHubWhenScreenOffSetting.get() && !shell.isScreenOn()) {
+      this.scheduleEvenHubSuspend();
+      return;
+    }
+
+    this.cancelEvenHubSuspendTimer();
+    if (!this.evenHubSessionSuspended) return;
+
+    // Turning the experiment off restores the legacy all-black page even if
+    // the screen remains asleep.
+    const communicator = this.communicator;
+    this.evenHubSessionSuspended = false;
+    if (!communicator) return;
+    void communicator.resumeEvenHubSession().catch((error) => {
+      this.appendLog(`EvenHub resume failed: ${this.formatError(error)}`);
+    });
+  }
+
+  private scheduleEvenHubSuspend(): void {
+    this.cancelEvenHubSuspendTimer();
+    if (
+      !suspendEvenHubWhenScreenOffSetting.get() ||
+      shell.isScreenOn() ||
+      this.phase !== "connected" ||
+      !this.communicator ||
+      this.evenHubSessionSuspended
+    ) {
+      return;
+    }
+
+    const communicator = this.communicator;
+    this.evenHubSuspendTimer = setTimeout(() => {
+      this.evenHubSuspendTimer = null;
+      if (
+        !suspendEvenHubWhenScreenOffSetting.get() ||
+        shell.isScreenOn() ||
+        this.phase !== "connected" ||
+        this.communicator !== communicator
+      ) {
+        return;
+      }
+
+      this.evenHubSessionSuspended = true;
+      void communicator
+        .suspendEvenHubSession()
+        .then((suspended) => {
+          if (suspended) {
+            this.appendLog("EvenHub session suspended while screen is off");
+            return;
+          }
+          if (this.communicator !== communicator || shell.isScreenOn()) return;
+          this.evenHubSessionSuspended = false;
+          this.scheduleEvenHubSuspend();
+        })
+        .catch((error) => {
+          if (this.communicator === communicator) {
+            this.evenHubSessionSuspended = false;
+            this.appendLog(`EvenHub suspend failed: ${this.formatError(error)}`);
+            this.scheduleEvenHubSuspend();
+          }
+        });
+    }, EVENHUB_SCREEN_OFF_SUSPEND_DELAY_MS);
+  }
+
+  private cancelEvenHubSuspendTimer(): void {
+    if (this.evenHubSuspendTimer === null) return;
+    clearTimeout(this.evenHubSuspendTimer);
+    this.evenHubSuspendTimer = null;
   }
 
   private pushFirmwareDebugFlags(): void {
@@ -487,6 +588,9 @@ class DashboardController {
           void this.communicator?.setG2ScreenOn(false).catch(() => {});
         }
         if (mappedPhase === "connected" && this.phase !== "connected") {
+          // A transport reconnect starts with a live EvenHub lifecycle again;
+          // if the shell is asleep, begin a fresh five-second grace period.
+          this.evenHubSessionSuspended = false;
           // Push the CFW firmware-debug-flags overlay preference; Java emits the
           // mode-7 control message once the dashboard container is warmed up.
           this.pushFirmwareDebugFlags();
@@ -494,6 +598,12 @@ class DashboardController {
         }
         this.setPhase(mappedPhase);
         this.setStatus(state.status);
+        if (mappedPhase === "connected") {
+          this.syncEvenHubScreenOffSetting();
+        } else if (mappedPhase !== "charging") {
+          this.cancelEvenHubSuspendTimer();
+          this.evenHubSessionSuspended = false;
+        }
       });
       this.offRing = communicator.onRingEvent((event) => {
         void this.handleInputEvent(event).catch((error) => {
@@ -582,6 +692,7 @@ class DashboardController {
         await this.configureWindowSurface(window.surfaceId, window.windowId === foregroundWindowId);
       }
       await communicator.start();
+      this.syncEvenHubScreenOffSetting();
       shell.foregroundWindow()?.requestRender();
       this.requestShellRender();
       // Refresh the top-bar clock and the phone-side preview once a minute,
@@ -665,6 +776,7 @@ class DashboardController {
 
     const communicator = this.communicator;
     this.communicator = null;
+    this.evenHubSessionSuspended = false;
 
     try {
       const shutdownAcked = await communicator?.sendShutdown(0).catch((error) => {
@@ -1203,6 +1315,7 @@ class DashboardController {
   }
 
   private clearDashboardTimer(): void {
+    this.cancelEvenHubSuspendTimer();
     if (this.shellRefreshTimer) {
       clearInterval(this.shellRefreshTimer);
       this.shellRefreshTimer = null;
