@@ -5,7 +5,7 @@ import { clamp } from "../../util/numeric-util";
 import { type ForecastPeriod, type WeatherState } from "../../native/weather";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../gestures";
 import { type DashboardInputEvent, type Layer, type LayerContext } from "../layers";
-import { drawSelectionHighlight } from "../menu";
+import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../menu";
 
 const PAGE_X = 18;
 const HEADER_Y = 8;
@@ -134,12 +134,7 @@ export class WeatherLayer implements Layer {
     }
     this.selectedIndex = clamp(this.selectedIndex, 0, forecast.length - 1);
     const visibleRows = Math.max(1, Math.floor((height - FOOTER_HEIGHT - FORECAST_TOP) / FORECAST_ROW_HEIGHT));
-    if (this.selectedIndex < this.scrollRow) {
-      this.scrollRow = this.selectedIndex;
-    } else if (this.selectedIndex >= this.scrollRow + visibleRows) {
-      this.scrollRow = this.selectedIndex - visibleRows + 1;
-    }
-    this.scrollRow = clamp(this.scrollRow, 0, Math.max(0, forecast.length - visibleRows));
+    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedIndex, visibleRows, forecast.length);
 
     image.drawText(font, PAGE_X, FORECAST_HEADER_Y, "Upcoming", 150);
     image.drawText(font, FORECAST_TEMP_X, FORECAST_HEADER_Y, "Temp", 105);

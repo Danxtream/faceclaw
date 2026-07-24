@@ -31,7 +31,12 @@ import {
 } from "../ui/dashboard-settings";
 import { TerminalEmulator } from "../ui/apps/terminal-emulator";
 import type { DashboardInputEvent } from "../ui/layers";
-import type { MenuItem } from "../ui/menu";
+import {
+  drawListScrollbar,
+  drawSelectionHighlight,
+  scrollToKeepSelectionVisible,
+  type MenuItem,
+} from "../ui/menu";
 import { defaultWindowMenuItems, WindowMenu } from "../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../ui/shell/worker-window";
 
@@ -67,6 +72,7 @@ type BaseWindow = {
 type HubWindow = BaseWindow & {
   kind: "hub";
   selectedIndex: number;
+  scrollRow: number;
 };
 
 type ViewWindow = BaseWindow & {
@@ -201,6 +207,7 @@ function openWindow(windowId: string, surfaceId: string, viewport: { width: numb
     lastSubmittedFingerprint: "",
     menu: null,
     selectedIndex: 0,
+    scrollRow: 0,
   });
   if (!controlClient) {
     startControlClient();
@@ -593,19 +600,29 @@ function paintHub(window: HubWindow): GrayImage {
 
   const items = hubItems();
   window.selectedIndex = Math.max(0, Math.min(window.selectedIndex, items.length - 1));
-  for (let index = 0; index < items.length; index++) {
-    const y = listTop + index * HUB_ROW_HEIGHT;
-    if (y + HUB_ROW_HEIGHT > viewportHeight - 30) break;
+  const visibleRowCount = Math.max(1, ((viewportHeight - 30 - listTop) / HUB_ROW_HEIGHT) | 0);
+  window.scrollRow = scrollToKeepSelectionVisible(window.scrollRow, window.selectedIndex, visibleRowCount, items.length);
+  const lastVisibleRow = Math.min(items.length, window.scrollRow + visibleRowCount);
+  for (let index = window.scrollRow; index < lastVisibleRow; index++) {
+    const y = listTop + (index - window.scrollRow) * HUB_ROW_HEIGHT;
     const selected = index === window.selectedIndex;
     if (selected) {
       // Match the shell convention: fill only when this window has focus, so
       // an outline-only selection signals the sidebar owns input.
-      if (window.focused) {
-        image.fillRoundedRect(20, y - 2, viewportWidth - 40, HUB_ROW_HEIGHT - 1, 15);
-      }
-      image.drawRoundedRect(20, y - 2, viewportWidth - 40, HUB_ROW_HEIGHT - 1, 45);
+      drawSelectionHighlight(image, 20, y - 2, viewportWidth - 40, HUB_ROW_HEIGHT - 1, window.focused, 8);
     }
     image.drawText(terminalFont, 32, y + 2, items[index]!.label, selected ? 255 : 200);
+  }
+  if (items.length > visibleRowCount) {
+    drawListScrollbar(
+      image,
+      viewportWidth - 10,
+      listTop,
+      visibleRowCount * HUB_ROW_HEIGHT - 4,
+      window.scrollRow,
+      visibleRowCount,
+      items.length,
+    );
   }
 
   image.drawText(terminalFont, 24, viewportHeight - 24, `${GESTURE_DOUBLE_CLICK} back`, 110);

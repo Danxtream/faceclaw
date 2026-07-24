@@ -68,6 +68,46 @@ export function drawSelectionHighlight(
 }
 
 /**
+ * Move a list's scroll position the minimum distance needed to keep the
+ * selected row inside the visible window, clamped to the list bounds.
+ * Returns the new scroll row (the index of the first visible item).
+ */
+export function scrollToKeepSelectionVisible(
+  scrollRow: number,
+  selectedIndex: number,
+  visibleRowCount: number,
+  itemCount: number,
+): number {
+  if (selectedIndex < scrollRow) {
+    scrollRow = selectedIndex;
+  } else if (selectedIndex >= scrollRow + visibleRowCount) {
+    scrollRow = selectedIndex - visibleRowCount + 1;
+  }
+  return clamp(scrollRow, 0, Math.max(0, itemCount - visibleRowCount));
+}
+
+/**
+ * Draw a vertical scrollbar beside a row-scrolled list: a dim track with a
+ * proportional thumb positioned by scroll fraction. Only call when the list
+ * actually overflows (itemCount > visibleRowCount).
+ */
+export function drawListScrollbar(
+  image: GrayImage,
+  trackX: number,
+  trackY: number,
+  trackHeight: number,
+  scrollRow: number,
+  visibleRowCount: number,
+  itemCount: number,
+): void {
+  image.fillRect(trackX, trackY, 3, trackHeight, 30);
+  const thumbHeight = Math.max(8, (trackHeight * visibleRowCount / itemCount) | 0);
+  const maxScrollRow = Math.max(1, itemCount - visibleRowCount);
+  const thumbY = trackY + (((trackHeight - thumbHeight) * clamp(scrollRow, 0, maxScrollRow) / maxScrollRow) | 0);
+  image.fillRect(trackX, thumbY, 3, thumbHeight, 120);
+}
+
+/**
  * Draw a ">" submenu indicator inset at the right edge of a row's selection
  * highlight box, vertically centered within it. Pass the same rect as the
  * row's drawSelectionHighlight call (the row need not actually be selected).
@@ -151,7 +191,12 @@ export class MenuLayer implements Layer {
     const contentHeight = chromeTop + this.items.length * MENU_ROW_HEIGHT + MENU_BODY_PADDING;
     const height = clamp(contentHeight, Math.min(minHeight, maxHeight), maxHeight);
     const visibleRowCount = Math.max(1, ((height - chromeTop - MENU_BODY_PADDING) / MENU_ROW_HEIGHT) | 0);
-    this.clampScrollToSelection(visibleRowCount);
+    this.scrollRow = scrollToKeepSelectionVisible(
+      this.scrollRow,
+      this.selectedIndex,
+      visibleRowCount,
+      this.items.length,
+    );
 
     const image = paintBelow();
     // Fill 1, not 0: identical after 4bpp quantization, but 0 is the
@@ -197,28 +242,18 @@ export class MenuLayer implements Layer {
     }
 
     if (this.items.length > visibleRowCount) {
-      this.drawScrollbar(image, x + width - 7, bodyY, visibleRowCount);
+      drawListScrollbar(
+        image,
+        x + width - 7,
+        bodyY,
+        visibleRowCount * MENU_ROW_HEIGHT - 4,
+        this.scrollRow,
+        visibleRowCount,
+        this.items.length,
+      );
     }
 
     return image;
-  }
-
-  private clampScrollToSelection(visibleRowCount: number): void {
-    if (this.selectedIndex < this.scrollRow) {
-      this.scrollRow = this.selectedIndex;
-    } else if (this.selectedIndex >= this.scrollRow + visibleRowCount) {
-      this.scrollRow = this.selectedIndex - visibleRowCount + 1;
-    }
-    this.scrollRow = clamp(this.scrollRow, 0, Math.max(0, this.items.length - visibleRowCount));
-  }
-
-  private drawScrollbar(image: GrayImage, trackX: number, trackY: number, visibleRowCount: number): void {
-    const trackHeight = visibleRowCount * MENU_ROW_HEIGHT - 4;
-    image.fillRect(trackX, trackY, 3, trackHeight, 30);
-    const thumbHeight = Math.max(8, (trackHeight * visibleRowCount / this.items.length) | 0);
-    const maxScrollRow = this.items.length - visibleRowCount;
-    const thumbY = trackY + (((trackHeight - thumbHeight) * this.scrollRow / maxScrollRow) | 0);
-    image.fillRect(trackX, thumbY, 3, thumbHeight, 120);
   }
 
   async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {

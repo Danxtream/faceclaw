@@ -3,7 +3,7 @@ import { GrayImage } from "../../graphics/image";
 import { clamp } from "../../util/numeric-util";
 import { Layer, type DashboardInputEvent, type LayerActions, type LayerContext } from "../layers";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../gestures";
-import { drawSelectionHighlight } from "../menu";
+import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../menu";
 import {
   buildSoundSequencePayload,
   CFW_SEQ_MAX,
@@ -43,12 +43,7 @@ export class BuzzerDemoLayer implements Layer {
 
     const listHeight = height - HEADER_HEIGHT - FOOTER_HEIGHT;
     const visibleRows = Math.max(1, (listHeight / ROW_HEIGHT) | 0);
-    if (this.selectedIndex < this.scrollRow) {
-      this.scrollRow = this.selectedIndex;
-    } else if (this.selectedIndex >= this.scrollRow + visibleRows) {
-      this.scrollRow = this.selectedIndex - visibleRows + 1;
-    }
-    this.scrollRow = clamp(this.scrollRow, 0, Math.max(0, SOUND_EFFECTS.length - visibleRows));
+    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedIndex, visibleRows, SOUND_EFFECTS.length);
 
     const lastVisible = Math.min(SOUND_EFFECTS.length, this.scrollRow + visibleRows);
     for (let index = this.scrollRow; index < lastVisible; index++) {

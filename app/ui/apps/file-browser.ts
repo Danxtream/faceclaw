@@ -2,7 +2,7 @@ import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
 import { GrayImage } from "../../graphics/image";
 import { clamp } from "../../util/numeric-util";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK } from "../gestures";
-import { drawSelectionHighlight } from "../menu";
+import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../menu";
 import {
   hasAllFilesAccess,
   listDirectory,
@@ -59,12 +59,7 @@ export class FileBrowserLayer implements Layer {
 
     const listHeight = height - HEADER_HEIGHT - FOOTER_HEIGHT;
     const visibleRows = Math.max(1, (listHeight / ROW_HEIGHT) | 0);
-    if (this.selectedIndex < this.scrollRow) {
-      this.scrollRow = this.selectedIndex;
-    } else if (this.selectedIndex >= this.scrollRow + visibleRows) {
-      this.scrollRow = this.selectedIndex - visibleRows + 1;
-    }
-    this.scrollRow = clamp(this.scrollRow, 0, Math.max(0, rows.length - visibleRows));
+    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedIndex, visibleRows, rows.length);
 
     const lastVisible = Math.min(rows.length, this.scrollRow + visibleRows);
     for (let index = this.scrollRow; index < lastVisible; index++) {

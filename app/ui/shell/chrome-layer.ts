@@ -4,10 +4,10 @@ import { BATTERY_ICON_WIDTH, drawBattery } from "../../graphics/battery";
 import { readActiveNotificationIcons } from "../../native/notification-icons";
 import { readPhoneBatteryState } from "../../native/phone-battery";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../../util/render-freshness";
-import { clamp } from "../../util/numeric-util";
 import { renderIcon, type IconName } from "../../graphics/icons";
 import { batteryDisplayModeSetting, timeFormatSetting } from "../dashboard-settings";
 import { Layer } from "../layers";
+import { scrollToKeepSelectionVisible } from "../menu";
 import { SHELL_OPAQUE_BLACK, SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
 
 const ICON_SIZE = 32;
@@ -112,12 +112,7 @@ export class ShellChromeLayer implements Layer {
     const listHeight = G2_LENS_HEIGHT - listTop - 10;
     const visibleCount = Math.max(1, ((listHeight + ICON_SPACING) / itemStride) | 0);
     const count = state.windows.length;
-    if (state.selectedIndex < this.scrollRow) {
-      this.scrollRow = state.selectedIndex;
-    } else if (state.selectedIndex >= this.scrollRow + visibleCount) {
-      this.scrollRow = state.selectedIndex - visibleCount + 1;
-    }
-    this.scrollRow = clamp(this.scrollRow, 0, Math.max(0, count - visibleCount));
+    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, state.selectedIndex, visibleCount, count);
     const lastVisible = Math.min(count, this.scrollRow + visibleCount);
 
     // The selection is a "diversion" of the sidebar/main separator line: the

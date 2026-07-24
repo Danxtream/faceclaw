@@ -8,7 +8,7 @@ import {
   GESTURE_SCROLL,
 } from "../gestures";
 import { DashboardInputEvent, Layer, LayerActions, LayerContext } from "../layers";
-import { drawSelectionHighlight } from "../menu";
+import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../menu";
 import { createInProcessWindow } from "./in-process-window";
 import { shell, type ShellWindow } from "./shell";
 
@@ -89,12 +89,7 @@ class LauncherGridLayer implements Layer {
     const colW = width / COLS;
 
     // Scroll to keep the selected row among the fully-visible rows.
-    if (this.selectedRow < this.scrollRow) {
-      this.scrollRow = this.selectedRow;
-    } else if (this.selectedRow > this.scrollRow + FULL_ROWS - 1) {
-      this.scrollRow = this.selectedRow - (FULL_ROWS - 1);
-    }
-    this.scrollRow = clamp(this.scrollRow, 0, Math.max(0, rows - FULL_ROWS));
+    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedRow, FULL_ROWS, rows);
 
     const rowY = (row: number) => GRID_TOP + (row - this.scrollRow) * rowH;
 
