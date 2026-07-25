@@ -25,6 +25,7 @@ import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
+import { registerSystemTools } from "../assistant/system-tools";
 import { WorkerAppHost } from "../ui/shell/worker-window";
 import { createLauncherWindow, LAUNCHER_SURFACE_ID } from "../ui/shell/launcher-app";
 import {
@@ -236,6 +237,9 @@ class DashboardController {
       playBuzzerSequence: (payload: Uint8Array) => this.playBuzzerSequence(payload),
     };
     this.sharedActions = sharedActions;
+    // The always-available assistant tools (calendar, media, notifications,
+    // glasses state) register once at startup, independent of any connection.
+    registerSystemTools();
     shell.configure({
       actions: {
         ...sharedActions,

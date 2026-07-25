@@ -294,6 +294,13 @@ export const saveVoiceRecordingsSetting = new ConfigSettingBoolean({
   defaultValue: false,
 });
 
+export const assistantSkipConfirmationSetting = new ConfigSettingBoolean({
+  id: "assistant-skip-confirmation",
+  label: "Send to assistant without confirming",
+  storageKey: "assistant.skipConfirmationAfterWakeword",
+  defaultValue: false,
+});
+
 export const elevenLabsApiKeySetting = new ConfigSettingString({
   id: "elevenlabs-api-key",
   label: "ElevenLabs key",

@@ -13,14 +13,34 @@ const ANTHROPIC_VERSION = "2023-06-01";
 /** Default model for voice continuations (and a sensible general default). */
 export const DEFAULT_LLM_MODEL = "claude-sonnet-5";
 
+/**
+ * A content block in an Anthropic message. Text-only flows (dictation refine)
+ * still pass a plain string for content; the assistant tool loop uses the
+ * block array to carry tool_use / tool_result alongside text.
+ */
+export type AnthropicContentBlock =
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: any }
+  | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean };
+
 export type AnthropicMessage = {
   role: "user" | "assistant";
-  content: string;
+  content: string | AnthropicContentBlock[];
+};
+
+/** An Anthropic tool definition (input_schema is snake_case as the API wants). */
+export type AnthropicToolDefinition = {
+  name: string;
+  description: string;
+  input_schema: object;
 };
 
 export type AnthropicStreamResult = {
+  /** Concatenated text of all text blocks. */
   text: string;
-  /** e.g. "end_turn", "max_tokens", "refusal"; null if the stream never said. */
+  /** The assembled assistant content blocks (text + any tool_use). */
+  content: AnthropicContentBlock[];
+  /** e.g. "end_turn", "tool_use", "max_tokens", "refusal"; null if never said. */
   stopReason: string | null;
 };
 
@@ -29,6 +49,7 @@ export type AnthropicStreamOptions = {
   model?: string;
   system?: string;
   messages: AnthropicMessage[];
+  tools?: AnthropicToolDefinition[];
   maxTokens?: number;
   /** Thinking/latency tradeoff; voice flows want "low". Default: model default. */
   effort?: "low" | "medium" | "high";
@@ -38,6 +59,11 @@ export type AnthropicStreamOptions = {
   /** Called at most once, instead of onDone, with a user-displayable message. */
   onError: (message: string) => void;
 };
+
+/** Accumulator for one streamed content block before it is finalized. */
+type StreamingBlock =
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; inputJson: string };
 
 export type AnthropicStreamHandle = {
   cancel(): void;
@@ -49,6 +75,8 @@ export function streamAnthropicMessage(options: AnthropicStreamOptions): Anthrop
   let settled = false;
   let text = "";
   let stopReason: string | null = null;
+  // Content blocks, keyed by their SSE `index`, assembled as deltas arrive.
+  const blocks = new Map<number, StreamingBlock>();
 
   const fail = (message: string) => {
     if (settled) return;
@@ -58,7 +86,7 @@ export function streamAnthropicMessage(options: AnthropicStreamOptions): Anthrop
   const done = () => {
     if (settled) return;
     settled = true;
-    options.onDone({ text, stopReason });
+    options.onDone({ text, content: finalizeBlocks(blocks), stopReason });
   };
 
   if (!global.isAndroid) {
@@ -78,6 +106,7 @@ export function streamAnthropicMessage(options: AnthropicStreamOptions): Anthrop
     messages: options.messages,
   };
   if (options.system) body.system = options.system;
+  if (options.tools?.length) body.tools = options.tools;
   if (options.effort) body.output_config = { effort: options.effort };
 
   const listener = new com.faceclaw.app.FaceclawSseListener({
@@ -86,13 +115,41 @@ export function streamAnthropicMessage(options: AnthropicStreamOptions): Anthrop
       const event = parseSseDataLine(String(line));
       if (!event) return;
       switch (event.type) {
-        case "content_block_delta":
+        case "content_block_start": {
+          const index = Number(event.index);
+          const block = event.content_block;
+          if (block?.type === "tool_use") {
+            blocks.set(index, {
+              type: "tool_use",
+              id: String(block.id ?? ""),
+              name: String(block.name ?? ""),
+              inputJson: "",
+            });
+          } else if (block?.type === "text") {
+            blocks.set(index, { type: "text", text: String(block.text ?? "") });
+          }
+          return;
+        }
+        case "content_block_delta": {
+          const index = Number(event.index);
           if (event.delta?.type === "text_delta") {
             const delta = String(event.delta.text ?? "");
             text += delta;
+            const existing = blocks.get(index);
+            if (existing?.type === "text") {
+              existing.text += delta;
+            } else {
+              blocks.set(index, { type: "text", text: delta });
+            }
             options.onTextDelta?.(delta, text);
+          } else if (event.delta?.type === "input_json_delta") {
+            const existing = blocks.get(index);
+            if (existing?.type === "tool_use") {
+              existing.inputJson += String(event.delta.partial_json ?? "");
+            }
           }
           return;
+        }
         case "message_delta":
           if (event.delta?.stop_reason) {
             stopReason = String(event.delta.stop_reason);
@@ -105,7 +162,7 @@ export function streamAnthropicMessage(options: AnthropicStreamOptions): Anthrop
           fail(`Anthropic: ${String(event.error?.message ?? event.error?.type ?? "stream error")}`);
           return;
         default:
-          // message_start, content_block_start/stop, ping — nothing to do.
+          // message_start, content_block_stop, ping — nothing to do.
           return;
       }
     },
@@ -144,6 +201,30 @@ export function streamAnthropicMessage(options: AnthropicStreamOptions): Anthrop
       }
     },
   };
+}
+
+/** Assemble the streamed blocks (in index order) into final content blocks. */
+function finalizeBlocks(blocks: Map<number, StreamingBlock>): AnthropicContentBlock[] {
+  const content: AnthropicContentBlock[] = [];
+  for (const index of Array.from(blocks.keys()).sort((a, b) => a - b)) {
+    const block = blocks.get(index)!;
+    if (block.type === "text") {
+      content.push({ type: "text", text: block.text });
+    } else {
+      let input: any = {};
+      const trimmed = block.inputJson.trim();
+      if (trimmed) {
+        try {
+          input = JSON.parse(trimmed);
+        } catch {
+          // A tool_use whose JSON never completed (e.g. truncated stream); pass
+          // empty args and let the tool handler report what's missing.
+        }
+      }
+      content.push({ type: "tool_use", id: block.id, name: block.name, input });
+    }
+  }
+  return content;
 }
 
 /** Parse one SSE line; returns the JSON payload of a data: line, else null. */

@@ -3,6 +3,7 @@ import { getDashboardLogo } from "../../graphics/logo";
 import { shell } from "../shell/shell";
 import {
   anthropicApiKeySetting,
+  assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
   brightnessSetting,
   elevenLabsApiKeySetting,
@@ -56,6 +57,9 @@ function settingsSections(): SettingsSection[] {
       items: [
         enumSettingMenuItem(wakeWordActionSetting),
         enumSettingMenuItem(voiceProviderSetting),
+        // When on, a wakeword utterance goes straight to the assistant with no
+        // Send/Type menu step.
+        toggleSettingMenuItem(assistantSkipConfirmationSetting),
       ],
     },
     {

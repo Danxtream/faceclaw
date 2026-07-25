@@ -13,18 +13,46 @@ const DIALOG_W = G2_LENS_WIDTH - 80;
 const DIALOG_H = G2_LENS_HEIGHT - 80;
 const TEXT_MAX_WIDTH = DIALOG_W - 32;
 const MENU_ROW_H = 20;
-const MENU_ROWS = 3;
 // After the mic stops, the provider's final transcript can trail in (cloud
 // commit round-trip); wait this long for it before refining with what we have.
 const FOLLOWUP_FINALIZE_TIMEOUT_MS = 1200;
 
 /**
  * The dialog's lifecycle. "capturing" is the first utterance (push-to-talk or
- * click-to-finish); "menu" is the Send / Continue / Discard menu; "continuing"
+ * click-to-finish); "menu" is the send / Continue / Discard menu; "continuing"
  * records a follow-up utterance (always click-to-finish); "refining" streams
  * the LLM-merged text, then returns to "menu".
  */
 type VoicePhase = "capturing" | "menu" | "continuing" | "refining";
+
+/**
+ * A destination the captured text can be sent to. The shell supplies these per
+ * entry point: "Send to Assistant" (hand off to the voice assistant) and/or
+ * "Type Into App" (deliver to the foreground window's text input).
+ */
+export type VoiceSendTarget = {
+  id: string;
+  label: string;
+  onSend: (text: string) => void;
+};
+
+export type VoiceInputLayerOptions = {
+  actions: LayerActions;
+  /** Post-removal cleanup (also fires when the screen turns off). */
+  onClosed: () => void;
+  /** Pop this layer off the shell stack. */
+  dismiss: () => void;
+  /** Ordered send destinations shown as the first menu rows. */
+  sendTargets: VoiceSendTarget[];
+  /** Which send target is highlighted by default (entry-point dependent). */
+  defaultTargetIndex?: number;
+  /** A single click ends the utterance (opened from a menu, no held button). */
+  finishOnClick?: boolean;
+  /** Wakeword flow: mic starts immediately and ends on detected silence. */
+  handsFree?: boolean;
+  /** Skip the menu: on capture end, send straight to the default target. */
+  autoSend?: boolean;
+};
 
 /**
  * Push-to-talk voice dialog, drawn on top of whatever is already on screen.
@@ -58,17 +86,34 @@ export class VoiceInputLayer implements Layer {
   private followupFinalizeTimer: ReturnType<typeof setTimeout> | null = null;
   private refineHandle: AnthropicStreamHandle | null = null;
   private menuIndex = 0;
+  /** Auto-send (wakeword skip-confirmation) is waiting to fire. */
+  private pendingAutoSend = false;
+  private autoSendTimer: ReturnType<typeof setTimeout> | null = null;
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribeStatus: (() => void) | null = null;
   private unsubscribeSpeechEnd: (() => void) | null = null;
 
-  constructor(
-    private readonly actions: LayerActions,
-    private readonly onClosed: () => void,
-    private readonly onSend: (text: string) => void,
-    private readonly finishOnClick = false,
-    private readonly handsFree = false,
-  ) {}
+  private readonly actions: LayerActions;
+  private readonly onClosed: () => void;
+  private readonly dismiss: () => void;
+  private readonly sendTargets: VoiceSendTarget[];
+  private readonly defaultTargetIndex: number;
+  private readonly finishOnClick: boolean;
+  private readonly handsFree: boolean;
+  private readonly autoSend: boolean;
+
+  constructor(options: VoiceInputLayerOptions) {
+    this.actions = options.actions;
+    this.onClosed = options.onClosed;
+    this.dismiss = options.dismiss;
+    this.sendTargets = options.sendTargets;
+    this.finishOnClick = options.finishOnClick ?? false;
+    this.handsFree = options.handsFree ?? false;
+    this.autoSend = options.autoSend ?? false;
+    const defaultIndex = options.defaultTargetIndex ?? 0;
+    this.defaultTargetIndex = Math.min(Math.max(0, defaultIndex), Math.max(0, this.sendTargets.length - 1));
+    this.menuIndex = this.defaultTargetIndex;
+  }
 
   startCapture(): void {
     if (this.capturing) return;
@@ -113,13 +158,66 @@ export class VoiceInputLayer implements Layer {
     this.capturing = false;
     this.phase = "menu";
     void this.actions.stopVoiceCapture();
-    if (this.status.startsWith("Listening")) {
+    if (this.autoSend && this.sendTargets.length) {
+      // Skip-confirmation (wakeword): send to the default target as soon as the
+      // transcript finalizes, or after a short wait for the trailing final.
+      this.pendingAutoSend = true;
+      this.status = "Sending...";
+      this.autoSendTimer = setTimeout(() => this.performAutoSend(), FOLLOWUP_FINALIZE_TIMEOUT_MS);
+    } else if (this.status.startsWith("Listening")) {
       this.status = "Send, continue, or discard?";
     }
     this.actions.requestRender();
   }
 
-  paint(ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
+  /** Fire the queued skip-confirmation send (or fall back to the menu). */
+  private performAutoSend(): void {
+    if (this.autoSendTimer !== null) {
+      clearTimeout(this.autoSendTimer);
+      this.autoSendTimer = null;
+    }
+    if (!this.pendingAutoSend) return;
+    this.pendingAutoSend = false;
+    const text = this.displayText().trim();
+    const target = this.sendTargets[this.defaultTargetIndex];
+    if (text && target) {
+      this.dismiss();
+      target.onSend(text);
+    } else {
+      // Nothing heard; fall back to the menu so the user can retry or discard.
+      this.status = "Send, continue, or discard?";
+      this.actions.requestRender();
+    }
+  }
+
+  /** The menu rows: one per send target, then Continue, then Discard. */
+  private menuRows(): Array<{ label: string; dim: boolean; onSelect: () => void }> {
+    const text = this.displayText().trim();
+    const hasText = text.length > 0;
+    const hasLlmKey = anthropicApiKeySetting.get().trim().length > 0;
+    const rows: Array<{ label: string; dim: boolean; onSelect: () => void }> = [];
+    for (const target of this.sendTargets) {
+      rows.push({
+        label: target.label,
+        dim: !hasText,
+        onSelect: () => {
+          this.dismiss();
+          if (hasText) target.onSend(text);
+        },
+      });
+    }
+    rows.push({
+      label: hasLlmKey ? "Continue" : "Continue (Needs LLM API key)",
+      dim: !hasLlmKey,
+      onSelect: () => {
+        if (hasLlmKey) this.startContinuation();
+      },
+    });
+    rows.push({ label: "Discard", dim: false, onSelect: () => this.dismiss() });
+    return rows;
+  }
+
+  paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
     const font = getDefaultSmallFont();
     const image = paintBelow();
 
@@ -133,9 +231,9 @@ export class VoiceInputLayer implements Layer {
     image.drawText(font, left, DIALOG_Y + 30, truncate(font, this.status, TEXT_MAX_WIDTH), 130);
 
     const inMenu = this.phase === "menu";
-    const hasText = this.displayText().trim().length > 0;
-    // Leave room for the three-row menu when it is showing.
-    const textBottom = inMenu ? DIALOG_Y + DIALOG_H - MENU_ROWS * MENU_ROW_H - 8 : DIALOG_Y + DIALOG_H - 8;
+    const rows = inMenu ? this.menuRows() : [];
+    // Reserve space for the actual number of rows this menu has.
+    const textBottom = inMenu ? DIALOG_Y + DIALOG_H - rows.length * MENU_ROW_H - 8 : DIALOG_Y + DIALOG_H - 8;
     const textTop = DIALOG_Y + 56;
     const maxLines = Math.max(1, ((textBottom - textTop) / 16) | 0);
 
@@ -147,14 +245,7 @@ export class VoiceInputLayer implements Layer {
     }
 
     if (inMenu) {
-      const hasLlmKey = anthropicApiKeySetting.get().trim().length > 0;
-      const rows: Array<{ label: string; dim: boolean }> = [
-        // Dim "Send" when there is nothing to send.
-        { label: "Send", dim: !hasText },
-        { label: hasLlmKey ? "Continue" : "Continue (Needs LLM API key)", dim: !hasLlmKey },
-        { label: "Discard", dim: false },
-      ];
-      const menuTop = DIALOG_Y + DIALOG_H - MENU_ROWS * MENU_ROW_H - 2;
+      const menuTop = DIALOG_Y + DIALOG_H - rows.length * MENU_ROW_H - 2;
       for (let i = 0; i < rows.length; i++) {
         const rowY = menuTop + i * MENU_ROW_H;
         const selected = i === this.menuIndex;
@@ -170,11 +261,11 @@ export class VoiceInputLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: DashboardInputEvent, _ctx: LayerContext): void {
     switch (this.phase) {
       case "capturing":
         if (event.type === "double-click") {
-          ctx.stack.pop();
+          this.dismiss();
         } else if (this.clickEndsCapture && event.type === "click") {
           this.endCapture();
         }
@@ -192,37 +283,29 @@ export class VoiceInputLayer implements Layer {
         }
         return;
       case "menu":
-        this.handleMenuInput(event, ctx);
+        this.handleMenuInput(event);
         return;
     }
   }
 
-  private handleMenuInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  private handleMenuInput(event: DashboardInputEvent): void {
+    const rowCount = this.menuRows().length;
     switch (event.type) {
       case "scroll-up":
-        this.menuIndex = (this.menuIndex + MENU_ROWS - 1) % MENU_ROWS;
+        this.menuIndex = (this.menuIndex + rowCount - 1) % rowCount;
         this.actions.requestRender();
         return;
       case "scroll-down":
-        this.menuIndex = (this.menuIndex + 1) % MENU_ROWS;
+        this.menuIndex = (this.menuIndex + 1) % rowCount;
         this.actions.requestRender();
         return;
-      case "click":
-        if (this.menuIndex === 0) {
-          const text = this.displayText().trim();
-          if (text) this.onSend(text);
-          ctx.stack.pop();
-        } else if (this.menuIndex === 1) {
-          if (anthropicApiKeySetting.get().trim()) {
-            this.startContinuation();
-          }
-          // No key: the row is disabled; the click does nothing.
-        } else {
-          ctx.stack.pop();
-        }
+      case "click": {
+        const row = this.menuRows()[this.menuIndex];
+        row?.onSelect();
         return;
+      }
       case "double-click":
-        ctx.stack.pop();
+        this.dismiss();
         return;
       default:
         return;
@@ -323,6 +406,11 @@ export class VoiceInputLayer implements Layer {
       clearTimeout(this.followupFinalizeTimer);
       this.followupFinalizeTimer = null;
     }
+    if (this.autoSendTimer !== null) {
+      clearTimeout(this.autoSendTimer);
+      this.autoSendTimer = null;
+    }
+    this.pendingAutoSend = false;
     this.refineHandle?.cancel();
     this.refineHandle = null;
     if (this.capturing) {
@@ -378,6 +466,12 @@ export class VoiceInputLayer implements Layer {
       if (this.phase === "continuing" && this.followupFinalizeTimer !== null) {
         // The follow-up finalized; no need to keep waiting.
         this.beginRefine();
+        return;
+      }
+      if (this.pendingAutoSend) {
+        // The utterance finalized; skip-confirmation can fire without waiting
+        // out the fallback timer.
+        this.performAutoSend();
         return;
       }
     } else {

@@ -1,11 +1,17 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
+import { getDefaultSmallFont } from "../../graphics/bdffont";
 import { EvenAIStatus, EventSourceType, OsEventTypeList } from "../../g2/events";
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
-import { DashboardInputEvent, LayerActions, LayerStack, noopLayerActions } from "../layers";
+import { DashboardInputEvent, Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
 import { MenuLayer, type MenuItem } from "../menu";
-import { VoiceInputLayer } from "../apps/voice-input";
+import { VoiceInputLayer, type VoiceSendTarget } from "../apps/voice-input";
+import { AssistantLayer } from "../apps/assistant";
+import { AssistantSession } from "../../assistant/session";
+import type { AssistantContext } from "../../assistant/types";
 import { SingleNotificationLayer } from "../notifications";
 import {
+  anthropicApiKeySetting,
+  assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
   onAnySettingChanged,
   timeFormatSetting,
@@ -99,6 +105,64 @@ class ShellOverlayMenuLayer extends MenuLayer {
   }
 }
 
+/** How long a show_alert popup stays before auto-dismissing. */
+const ALERT_DISMISS_MS = 6000;
+const ALERT_X = 40;
+const ALERT_W = G2_LENS_WIDTH - 80;
+const ALERT_Y = 96;
+const ALERT_H = 96;
+
+/**
+ * A brief text popup on the shell surface (the assistant's show_alert tool and
+ * other short notices). Auto-dismisses after a few seconds; a click or
+ * double-click dismisses it early.
+ */
+class ShellAlertLayer implements Layer {
+  private timer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(private readonly text: string, private readonly onDismiss: () => void) {
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.onDismiss();
+    }, ALERT_DISMISS_MS);
+  }
+
+  paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
+    const image = paintBelow();
+    const font = getDefaultSmallFont();
+    image.fillRoundedRect(ALERT_X, ALERT_Y, ALERT_W, ALERT_H, 1, 10);
+    image.drawRoundedRect(ALERT_X, ALERT_Y, ALERT_W, ALERT_H, 90, 10);
+    image.drawText(font, ALERT_X + 16, ALERT_Y + 12, "Assistant", 200);
+    image.drawTextWrapped({
+      font,
+      x: ALERT_X + 16,
+      y: ALERT_Y + 34,
+      width: ALERT_W - 32,
+      text: this.text,
+      value: 235,
+    });
+    return image;
+  }
+
+  handleInput(event: DashboardInputEvent, _ctx: LayerContext): void {
+    if (event.type === "click" || event.type === "double-click") {
+      this.clearTimer();
+      this.onDismiss();
+    }
+  }
+
+  onRemoved(): void {
+    this.clearTimer();
+  }
+
+  private clearTimer(): void {
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  }
+}
+
 class Shell {
   private windows: ShellWindow[] = [];
   private selectedIndex = 0;
@@ -111,6 +175,8 @@ class Shell {
   // notification icons and the battery indicators.
   private readonly trayIcons = new Map<string, GrayImage>();
   private activeVoiceLayer: VoiceInputLayer | null = null;
+  private assistantSession: AssistantSession | null = null;
+  private assistantLayer: AssistantLayer | null = null;
   private escapeMenuTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly actions: LayerActions = { ...noopActions };
   private config: ShellConfig = {
@@ -236,6 +302,21 @@ class Shell {
     return this.screenOn;
   }
 
+  /** Current headset battery levels (for the assistant's get_state tool). */
+  getBatteryLevels(): ShellChromeState["battery"] {
+    return this.battery;
+  }
+
+  /**
+   * The foreground app, or null when only the launcher is showing. The launcher
+   * is a pinned window but counts as "no app" for the assistant's context.
+   */
+  getForegroundApp(): { appId: string; title: string } | null {
+    const window = this.foregroundWindow();
+    if (!window || window.appId === "launcher") return null;
+    return { appId: window.appId, title: window.title };
+  }
+
   noteUserActivity(nowMs = Date.now()): void {
     this.lastInputAtMs = nowMs;
   }
@@ -283,7 +364,10 @@ class Shell {
     // An open voice dialog suspends the timeout: a long dictation or refine
     // has no button presses, but the screen must stay on for it. Sliding
     // lastInputAtMs forward also restarts the full timeout when it closes.
-    if (this.activeVoiceLayer) {
+    // An in-flight assistant turn suspends it for the same reason (a tool loop
+    // can run for a while with no input); once the turn ends and the
+    // Follow-up/Done menu is showing, the normal idle timeout resumes.
+    if (this.activeVoiceLayer || this.assistantSession?.isTurnActive()) {
       this.lastInputAtMs = nowMs;
       return false;
     }
@@ -358,7 +442,13 @@ class Shell {
       this.lastInputAtMs = Date.now();
       const wokeScreen = !this.screenOn && this.wake("sidebar");
       if (action === "voice-input" && !this.activeVoiceLayer) {
-        this.openVoiceDialog(false, true);
+        if (this.assistantLayer) {
+          // The assistant overlay is up; a wakeword continues that conversation.
+          this.startAssistantFollowUp(true);
+        } else {
+          // Wakeword defaults the highlight to Send to Assistant.
+          this.openVoiceDialog({ handsFree: true, defaultTarget: "assistant" });
+        }
       }
       return { shell: wokeScreen || action === "voice-input", window: false };
     }
@@ -489,23 +579,75 @@ class Shell {
     next?.requestRender();
   }
 
-  private openVoiceDialog(finishOnClick = false, handsFree = false): void {
-    const layer = new VoiceInputLayer(
-      this.config.actions,
-      () => {
+  private openVoiceDialog(options: {
+    finishOnClick?: boolean;
+    handsFree?: boolean;
+    defaultTarget: "assistant" | "app";
+  }): void {
+    const targets = this.buildVoiceSendTargets();
+    let defaultIndex = targets.findIndex((target) => target.id === options.defaultTarget);
+    if (defaultIndex < 0) defaultIndex = 0;
+    // Skip the menu only for a hands-free (wakeword) capture aimed at the
+    // assistant, when the user has opted into it.
+    const autoSend =
+      Boolean(options.handsFree) &&
+      options.defaultTarget === "assistant" &&
+      targets[defaultIndex]?.id === "assistant" &&
+      assistantSkipConfirmationSetting.get();
+
+    const layer = new VoiceInputLayer({
+      actions: this.config.actions,
+      onClosed: () => {
         if (this.activeVoiceLayer === layer) {
           this.activeVoiceLayer = null;
           // The idle countdown restarts in full once voice input ends.
           this.noteUserActivity();
         }
       },
-      (text) => this.sendTextToForegroundWindow(text),
-      finishOnClick,
-      handsFree,
-    );
+      dismiss: () => {
+        this.stack.popIfTop((top) => top === layer);
+      },
+      sendTargets: targets,
+      defaultTargetIndex: defaultIndex,
+      finishOnClick: options.finishOnClick ?? false,
+      handsFree: options.handsFree ?? false,
+      autoSend,
+    });
     this.activeVoiceLayer = layer;
     this.stack.push(layer);
     layer.startCapture();
+  }
+
+  /**
+   * The send destinations offered by the voice dialog: the assistant (when an
+   * API key is configured) and/or typing into the foreground window (when it
+   * accepts text). Order fixes the menu row order.
+   */
+  private buildVoiceSendTargets(): VoiceSendTarget[] {
+    const targets: VoiceSendTarget[] = [];
+    if (this.isAssistantAvailable()) {
+      targets.push({
+        id: "assistant",
+        label: "Send to Assistant",
+        onSend: (text) => this.sendToAssistant(text),
+      });
+    }
+    if (this.foregroundWindow()?.receiveTextInput) {
+      targets.push({
+        id: "app",
+        label: "Type Into App",
+        onSend: (text) => this.sendTextToForegroundWindow(text),
+      });
+    }
+    // Guarantee at least one destination so the dialog is never a dead end.
+    if (targets.length === 0) {
+      targets.push({
+        id: "app",
+        label: "Type Into App",
+        onSend: (text) => this.sendTextToForegroundWindow(text),
+      });
+    }
+    return targets;
   }
 
   /** Deliver a text string to the foreground window (e.g. finalized voice input). */
@@ -521,9 +663,130 @@ class Shell {
    */
   startVoiceInput(): void {
     if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
-    // The transcript is aimed at the window whose menu requested it.
+    // The transcript is aimed at the window whose menu requested it; the menu
+    // entry point defaults the highlight to Type Into App.
     this.focus = "window";
-    this.openVoiceDialog(true);
+    this.openVoiceDialog({ finishOnClick: true, defaultTarget: "app" });
+    this.config.requestShellRender();
+  }
+
+  private isAssistantAvailable(): boolean {
+    return anthropicApiKeySetting.get().trim().length > 0;
+  }
+
+  private ensureAssistantSession(): AssistantSession | null {
+    const apiKey = anthropicApiKeySetting.get().trim();
+    if (!apiKey) return null;
+    if (!this.assistantSession || this.assistantSession.isExpired()) {
+      this.assistantSession = new AssistantSession(apiKey);
+    }
+    return this.assistantSession;
+  }
+
+  private buildAssistantContext(): AssistantContext {
+    const foreground = this.getForegroundApp();
+    return {
+      foregroundApp: foreground?.appId ?? null,
+      foregroundTitle: foreground?.title ?? null,
+      screenOn: this.screenOn,
+      localTime: formatAssistantTime(new Date()),
+      headsetBattery: this.battery.headset,
+    };
+  }
+
+  /**
+   * Start (or continue) an assistant conversation from a finalized utterance.
+   * Opens the assistant overlay if it isn't already up; a follow-up reuses the
+   * existing session and overlay.
+   */
+  sendToAssistant(text: string): void {
+    const session = this.ensureAssistantSession();
+    if (!session) {
+      this.showAlert("Set an Anthropic API key in Settings to use the assistant.");
+      return;
+    }
+    if (!this.screenOn) this.wake("sidebar");
+    let layer = this.assistantLayer;
+    if (!layer) {
+      const created = new AssistantLayer(this.config.actions, {
+        onFollowUp: () => this.startAssistantFollowUp(),
+        onCancel: () => this.assistantSession?.cancel(),
+        onClose: () => this.closeAssistantLayer(),
+        onRemoved: () => {
+          // Removed by any path (Done, or the screen sleeping mid-conversation):
+          // stop the turn and drop the reference so a later query starts clean.
+          this.assistantSession?.cancel();
+          if (this.assistantLayer === created) this.assistantLayer = null;
+        },
+      });
+      layer = created;
+      this.assistantLayer = created;
+      this.stack.push(created);
+    }
+    this.runAssistantTurn(session, layer, text);
+    this.config.requestShellRender();
+  }
+
+  private runAssistantTurn(session: AssistantSession, layer: AssistantLayer, text: string): void {
+    layer.startTurn();
+    session.sendUtterance(text, this.buildAssistantContext(), {
+      onTextDelta: (delta, textSoFar) => layer.onTextDelta(delta, textSoFar),
+      onToolActivity: (label) => layer.onToolActivity(label),
+      onTurnDone: () => layer.onTurnDone(),
+      onError: (message) => layer.onError(message),
+    });
+  }
+
+  /**
+   * Record another utterance in the current assistant conversation. handsFree
+   * (from a wakeword over the overlay) starts the mic immediately; otherwise
+   * (the Follow-up menu button) a click ends the utterance.
+   */
+  private startAssistantFollowUp(handsFree = false): void {
+    const layer = this.assistantLayer;
+    const session = this.assistantSession;
+    if (!layer || !session || this.activeVoiceLayer) return;
+    const voice = new VoiceInputLayer({
+      actions: this.config.actions,
+      onClosed: () => {
+        if (this.activeVoiceLayer === voice) {
+          this.activeVoiceLayer = null;
+          this.noteUserActivity();
+        }
+      },
+      dismiss: () => {
+        this.stack.popIfTop((top) => top === voice);
+      },
+      sendTargets: [
+        { id: "assistant", label: "Send", onSend: (text) => this.runAssistantTurn(session, layer, text) },
+      ],
+      finishOnClick: !handsFree,
+      handsFree,
+      autoSend: handsFree && assistantSkipConfirmationSetting.get(),
+    });
+    this.activeVoiceLayer = voice;
+    this.stack.push(voice);
+    voice.startCapture();
+    this.config.requestShellRender();
+  }
+
+  private closeAssistantLayer(): void {
+    // Popping fires the layer's onRemoved, which cancels the turn and clears
+    // this.assistantLayer.
+    const layer = this.assistantLayer;
+    if (layer) this.stack.popIfTop((top) => top === layer);
+    this.noteUserActivity();
+    this.config.requestShellRender();
+  }
+
+  /** Show a brief text popup on the lenses (assistant show_alert / notices). */
+  showAlert(text: string): void {
+    if (!this.screenOn) this.wake("sidebar");
+    const layer = new ShellAlertLayer(text, () => {
+      this.stack.popIfTop((top) => top === layer);
+      this.config.requestShellRender();
+    });
+    this.stack.push(layer);
     this.config.requestShellRender();
   }
 
@@ -585,6 +848,20 @@ class Shell {
 }
 
 export const shell = new Shell();
+
+const ASSISTANT_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const ASSISTANT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** Human-readable local time for the assistant's per-turn context. */
+function formatAssistantTime(date: Date): string {
+  let hours = date.getHours();
+  const minutes = date.getMinutes().toString().padStart(2, "0");
+  const meridiem = hours >= 12 ? "PM" : "AM";
+  hours = hours % 12;
+  if (hours === 0) hours = 12;
+  const day = `${ASSISTANT_WEEKDAYS[date.getDay()]} ${ASSISTANT_MONTHS[date.getMonth()]} ${date.getDate()}`;
+  return `${day}, ${hours}:${minutes} ${meridiem}`;
+}
 
 export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputEvent {
   if (event.kind === "sys-event") {
