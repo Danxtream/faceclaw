@@ -26,7 +26,12 @@ export type DirectTurnOptions = {
   system: string;
   /** Owned by the session; this loop appends assistant + tool_result messages. */
   messages: AnthropicMessage[];
-  tools: AnthropicToolDefinition[];
+  /**
+   * Build the tool list for the next request. Called once per loop iteration so
+   * the set reflects apps opening/closing and foreground changes mid-turn; it
+   * also refreshes the session's api-name map that resolveToolName reads.
+   */
+  buildTools: () => AnthropicToolDefinition[];
   registry: ToolRegistry;
   /** Map an API tool name (as the model calls it) back to its registry name. */
   resolveToolName: (apiName: string) => string;
@@ -62,7 +67,7 @@ export class DirectAnthropicBackend {
         system: options.system,
         effort: options.effort,
         messages: options.messages,
-        tools: options.tools,
+        tools: options.buildTools(),
         onTextDelta: (delta, textSoFar) => {
           if (cancelled) return;
           options.callbacks.onTextDelta(delta, textSoFar);

@@ -1,8 +1,8 @@
 # Voice Assistant Architecture
 
 Status: design draft, 2026-07-19; revised 2026-07-24 (tool availability
-ontology, misc fixes). **Phase 1 is implemented** (see the Implementation plan
-below); phases 2-4 are still design-only.
+ontology, misc fixes). **Phases 1 and 2 are implemented** (see the
+Implementation plan below); phases 3-4 are still design-only.
 
 ## Goal
 
@@ -383,13 +383,26 @@ default highlight and wakeword skip-confirmation auto-send;
 *Deliverable: speak wakeword, ask "what's on my calendar", get an answer
 on-lens.*
 
-**Phase 2 — app tools.**
-Worker protocol extension (set-tools / tool-call / tool-result),
-availability-tier filtering in the registry (`open` on window open/close,
-`foreground` on foreground change), `installed`-tier registration on launcher
-entries (shell-side handlers only; launch-on-call deferred), terminal app
-tools as the reference. *Deliverable: "run the build again" typed into the
-terminal even while it's backgrounded.*
+**Phase 2 — app tools.** ✅ Landed 2026-07-25 (builds + typechecks; not yet
+hardware-tested).
+Worker protocol extended with `set-tools` / `tool-result` (WorkerAppReply) and
+`tool-call` (WorkerAppMessage). `ToolRegistry.setAppTools`/`removeAppTools`
+key tools by windowId, prefix names `app.<appId>.`, and gate `foreground`
+tools on an `isForeground()` predicate (checked at list and dispatch time).
+`WorkerAppHost` proxies calls to its worker (callId round-trip, 15s host
+timeout backstop on top of the registry's per-tool timeout), registers a
+window's tools on `set-tools`, and withdraws them + fails in-flight calls on
+window close. Direct mode now re-lists tools each loop iteration.
+Terminal is the reference: the hub window declares `send_input` /
+`read_screen` / `list_sessions` (all `open`-tier); send_input/read_screen act
+on the active view (foregrounded → last-active → sole view). *Deliverable:
+"run the build again" typed into the terminal even while it's backgrounded.*
+
+*Not yet done from the Phase 2 design:* `installed`-tier registration on
+launcher entries (no `installed` app tool exists yet — timer stays deferred);
+in-process-window tool registration (only worker apps wired); the per-window
+same-name collision handling (the terminal sidesteps it by declaring all tools
+on the single hub window).
 
 **Phase 3 — external bridge.**
 Bridge wire protocol; ExternalAgentBackend (phone side, reusing the

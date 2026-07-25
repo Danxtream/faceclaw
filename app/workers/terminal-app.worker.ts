@@ -39,6 +39,7 @@ import {
 } from "../ui/menu";
 import { defaultWindowMenuItems, WindowMenu } from "../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../ui/shell/worker-window";
+import type { ToolResult, ToolSpec } from "../assistant/tool-registry";
 
 declare const global: any;
 declare const com: any;
@@ -102,7 +103,43 @@ type TerminalWindow = HubWindow | ViewWindow;
 
 const windows = new Map<string, TerminalWindow>();
 const pendingViews = new Map<string, { socket: string; label: string }>();
+// The view an assistant tool acts on when the terminal isn't foregrounded:
+// the last view to be foregrounded or receive input.
+let activeViewId: string | null = null;
 let nextViewSerial = 1;
+
+/**
+ * Assistant tools this app contributes, declared on the hub window (which the
+ * launcher opens and which persists for the app's life). All `open`-tier so
+ * "rerun the build" works while the terminal is backgrounded. send_input and
+ * read_screen act on the active view session (see resolveActiveView).
+ */
+const TERMINAL_TOOLS: ToolSpec[] = [
+  {
+    name: "list_sessions",
+    description: "List the live g2mirror terminal sessions the glasses can see.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    availability: "open",
+  },
+  {
+    name: "send_input",
+    description:
+      "Type a line into the active terminal session and submit it (as if typed and Enter pressed). Use to run a command in the terminal.",
+    inputSchema: {
+      type: "object",
+      properties: { text: { type: "string", description: "The line to type and run." } },
+      required: ["text"],
+      additionalProperties: false,
+    },
+    availability: "open",
+  },
+  {
+    name: "read_screen",
+    description: "Return the current visible contents of the active terminal session's screen.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    availability: "open",
+  },
+];
 let viewportWidth = 0;
 let viewportHeight = 0;
 let gridCols = 0;
@@ -161,6 +198,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (!window) break;
       window.foreground = message.foreground;
       window.focused = message.focused;
+      if (window.foreground && window.kind === "view") activeViewId = window.windowId;
       if (window.foreground) renderAndSubmit(window, 0);
       break;
     }
@@ -172,6 +210,19 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         }
       }
       break;
+    case "tool-call": {
+      const callId = message.callId;
+      Promise.resolve(handleTerminalTool(message.name, message.args))
+        .then((result) => post({ type: "tool-result", callId, result }))
+        .catch((error) =>
+          post({
+            type: "tool-result",
+            callId,
+            result: { ok: false, error: String((error as Error)?.message ?? error) },
+          }),
+        );
+      break;
+    }
   }
 };
 
@@ -209,6 +260,8 @@ function openWindow(windowId: string, surfaceId: string, viewport: { width: numb
     selectedIndex: 0,
     scrollRow: 0,
   });
+  // The hub carries the app's assistant tools; declare them once it exists.
+  post({ type: "set-tools", windowId, tools: TERMINAL_TOOLS });
   if (!controlClient) {
     startControlClient();
   }
@@ -224,6 +277,7 @@ function closeWindow(windowId: string): void {
     window.client.stop();
   }
   windows.delete(windowId);
+  if (activeViewId === windowId) activeViewId = null;
   if (window.kind === "view") {
     renderHubWindows();
   }
@@ -414,6 +468,7 @@ function windowMenuItems(window: TerminalWindow): MenuItem[] {
 }
 
 function handleInput(window: TerminalWindow, event: DashboardInputEvent, frameId: number): void {
+  if (window.kind === "view") activeViewId = window.windowId;
   // An open window menu owns all input (it closes itself via pop).
   if (window.menu?.isOpen()) {
     window.menu
@@ -742,4 +797,72 @@ function sessionLabel(session: G2MirrorSession): string {
   }
   const hint = session.cwdHint.replace(/^_+/, "").replace(/_+/g, "/");
   return hint || "session";
+}
+
+/** Dispatch an assistant tool-call (unprefixed name) to its handler. */
+function handleTerminalTool(name: string, args: any): ToolResult {
+  switch (name) {
+    case "list_sessions":
+      return toolListSessions();
+    case "send_input":
+      return toolSendInput(args);
+    case "read_screen":
+      return toolReadScreen();
+    default:
+      return { ok: false, error: `Unknown terminal tool: ${name}` };
+  }
+}
+
+function toolListSessions(): ToolResult {
+  const sessions = controlState?.sessions ?? [];
+  if (!sessions.length) {
+    return { ok: true, content: "No live terminal sessions (run g2mirror <command> on the host)." };
+  }
+  const lines = sessions.map(
+    (session) => `- ${sessionLabel(session)}${viewWindowIdForSocket(session.socket) ? " [open]" : ""}`,
+  );
+  return { ok: true, content: lines.join("\n") };
+}
+
+function toolSendInput(args: any): ToolResult {
+  const text = String(args?.text ?? "");
+  if (!text) return { ok: false, error: "send_input requires non-empty text." };
+  const view = resolveActiveView();
+  if (!view) return { ok: false, error: "No terminal session is open to send input to." };
+  view.client.submitInput(text);
+  return { ok: true, content: `Sent to ${view.label}.` };
+}
+
+function toolReadScreen(): ToolResult {
+  const view = resolveActiveView();
+  if (!view) return { ok: false, error: "No terminal session is open." };
+  const length = view.emulator.bufferLength();
+  const start = Math.max(0, length - gridRows);
+  const lines: string[] = [];
+  for (let index = start; index < length; index++) {
+    lines.push(view.emulator.lineAt(index));
+  }
+  const text = lines.join("\n").replace(/\s+$/, "");
+  return { ok: true, content: text || "(screen is empty)" };
+}
+
+/**
+ * The terminal view an `open`-tier tool acts on: a foregrounded view if any,
+ * else the last view to be active, else the sole open view. Null when no view
+ * is open (the model gets a tool error it can relay).
+ */
+function resolveActiveView(): ViewWindow | null {
+  const views: ViewWindow[] = [];
+  let foreground: ViewWindow | null = null;
+  for (const window of windows.values()) {
+    if (window.kind !== "view") continue;
+    views.push(window);
+    if (window.foreground) foreground = window;
+  }
+  if (foreground) return foreground;
+  if (activeViewId) {
+    const window = windows.get(activeViewId);
+    if (window && window.kind === "view") return window;
+  }
+  return views.length === 1 ? views[0]! : null;
 }

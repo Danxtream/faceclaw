@@ -1,6 +1,7 @@
 import { GrayImage } from "../../graphics/image";
 import { windowIcon } from "./chrome-layer";
 import { type IconName } from "../../graphics/icons";
+import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/tool-registry";
 import { shell, type ShellWindow } from "./shell";
 
 /**
@@ -16,7 +17,9 @@ export type WorkerAppMessage =
   | { type: "text-input"; windowId: string; text: string }
   | { type: "render"; windowId: string; focused: boolean }
   | { type: "foreground"; windowId: string; foreground: boolean; focused: boolean }
-  | { type: "screen"; on: boolean };
+  | { type: "screen"; on: boolean }
+  /** Assistant tool invocation aimed at a window; reply with tool-result. */
+  | { type: "tool-call"; callId: string; windowId: string; name: string; args: unknown };
 
 export type WorkerAppReply =
   | { type: "yield-focus"; windowId: string }
@@ -59,6 +62,21 @@ export type WorkerAppReply =
        */
       type: "set-tray-icon";
       icon: { width: number; height: number; pixels: number[] } | null;
+    }
+  | {
+      /**
+       * Declare (replacing the prior set) the assistant tools this window
+       * contributes. Names are unprefixed; the registry adds `app.<appId>.`.
+       */
+      type: "set-tools";
+      windowId: string;
+      tools: ToolSpec[];
+    }
+  | {
+      /** Result of a tool-call, matched to the request by callId. */
+      type: "tool-result";
+      callId: string;
+      result: ToolResult;
     };
 
 export type WorkerWindowSpec = {
@@ -92,8 +110,24 @@ export type WorkerAppHostOptions = {
  * and manages compositor surfaces for the app's windows. The worker submits
  * frames straight to the Java compositor, so no pixels cross this boundary.
  */
+/** A tool-call awaiting its worker reply; also its own leak-safety timeout. */
+type PendingToolCall = {
+  windowId: string;
+  resolve: (result: ToolResult) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+/**
+ * How long the host waits for a worker's tool-result before giving up. The
+ * registry applies its own (usually shorter) per-tool timeout; this is the
+ * backstop that also frees the pending-call entry if the worker never replies.
+ */
+const TOOL_CALL_HOST_TIMEOUT_MS = 15_000;
+
 export class WorkerAppHost {
   private readonly openWindows = new Set<string>();
+  private readonly pendingToolCalls = new Map<string, PendingToolCall>();
+  private nextCallSerial = 1;
 
   constructor(private readonly options: WorkerAppHostOptions) {
     options.worker.onmessage = (event: MessageEvent) => {
@@ -152,6 +186,27 @@ export class WorkerAppHost {
         case "set-title":
           // Titles are informational for now (sidebar shows icons only).
           break;
+        case "set-tools":
+          // Only a window we actually have open may contribute tools.
+          if (this.openWindows.has(message.windowId)) {
+            toolRegistry.setAppTools({
+              windowId: message.windowId,
+              appId: this.options.appId,
+              specs: message.tools,
+              invoke: (toolName, args) => this.callWindowTool(message.windowId, toolName, args),
+              isForeground: () => shell.foregroundWindow()?.windowId === message.windowId,
+            });
+          }
+          break;
+        case "tool-result": {
+          const pending = this.pendingToolCalls.get(message.callId);
+          if (pending) {
+            clearTimeout(pending.timer);
+            this.pendingToolCalls.delete(message.callId);
+            pending.resolve(message.result);
+          }
+          break;
+        }
       }
     };
     options.worker.onerror = (error) => {
@@ -181,6 +236,9 @@ export class WorkerAppHost {
       closeable: true,
       close: () => {
         this.openWindows.delete(spec.windowId);
+        // Withdraw this window's tools and fail any in-flight calls to it.
+        toolRegistry.removeAppTools(spec.windowId);
+        this.failPendingToolCallsFor(spec.windowId);
         this.post({ type: "close-window", windowId: spec.windowId });
         this.options.removeSurface(surfaceId);
       },
@@ -233,6 +291,32 @@ export class WorkerAppHost {
         console.error(`surface setup for ${spec.windowId} failed: ${error}`);
       });
     return window;
+  }
+
+  /**
+   * Post a tool-call to the worker and resolve when its tool-result comes back.
+   * Resolves with a tool error on timeout so a hung worker yields a tool error
+   * rather than a stuck assistant turn.
+   */
+  private callWindowTool(windowId: string, toolName: string, args: unknown): Promise<ToolResult> {
+    return new Promise<ToolResult>((resolve) => {
+      const callId = `${this.options.appId}:${this.nextCallSerial++}`;
+      const timer = setTimeout(() => {
+        this.pendingToolCalls.delete(callId);
+        resolve({ ok: false, error: `App ${this.options.appId} did not respond to ${toolName}` });
+      }, TOOL_CALL_HOST_TIMEOUT_MS);
+      this.pendingToolCalls.set(callId, { windowId, resolve, timer });
+      this.post({ type: "tool-call", callId, windowId, name: toolName, args });
+    });
+  }
+
+  private failPendingToolCallsFor(windowId: string): void {
+    for (const [callId, pending] of this.pendingToolCalls) {
+      if (pending.windowId !== windowId) continue;
+      clearTimeout(pending.timer);
+      this.pendingToolCalls.delete(callId);
+      pending.resolve({ ok: false, error: "The target window was closed" });
+    }
   }
 
   private post(message: WorkerAppMessage): void {

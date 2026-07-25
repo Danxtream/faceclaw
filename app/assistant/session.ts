@@ -60,7 +60,6 @@ export class AssistantSession {
     this.messages.push({ role: "user", content: text });
     this.trimHistory();
 
-    const tools = this.buildToolDefinitions();
     const system = `${SYSTEM_PROMPT_BASE}\n\n${describeContext(ctx)}`;
 
     const finish = () => {
@@ -74,7 +73,7 @@ export class AssistantSession {
       effort: "low",
       system,
       messages: this.messages,
-      tools,
+      buildTools: () => this.buildToolDefinitions(),
       registry: this.registry,
       resolveToolName: (apiName) => this.toolNameMap.get(apiName) ?? apiName,
       callbacks: {

@@ -70,14 +70,28 @@ export type CallToolOptions = {
 
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
 
+/** How the shell reaches a window's tool handler and gates its foreground tools. */
+export type AppToolProvider = {
+  windowId: string;
+  appId: string;
+  /** The window's declared specs, with UNPREFIXED names (registry adds the prefix). */
+  specs: ToolSpec[];
+  /** Invoke a tool on the window by its unprefixed name. */
+  invoke: (toolName: string, args: unknown) => Promise<ToolResult> | ToolResult;
+  /** Whether the window currently owns the foreground (gates `foreground` tools). */
+  isForeground: () => boolean;
+};
+
 export class ToolRegistry {
   private readonly registrations = new Map<string, ToolRegistration>();
   private readonly changeListeners = new Set<() => void>();
+  // windowId -> the canonical (prefixed) tool names it contributed, for bulk
+  // removal when the window closes or re-declares.
+  private readonly windowToolNames = new Map<string, string[]>();
 
   /** Register (or replace) a tool. Names are unique across all tiers. */
   register(registration: ToolRegistration): void {
-    const { name } = registration.spec;
-    this.registrations.set(name, registration);
+    this.addRegistration(registration);
     this.fireToolsChanged();
   }
 
@@ -93,6 +107,52 @@ export class ToolRegistry {
     if (this.registrations.delete(name)) {
       this.fireToolsChanged();
     }
+  }
+
+  /**
+   * Declare (replacing any prior set) the tools contributed by one app window.
+   * Names are prefixed `app.<appId>.` so windows can't shadow system tools or
+   * each other. `open` tools stay live while the window exists; `foreground`
+   * tools are gated on `isForeground()` at both list and call time.
+   */
+  setAppTools(provider: AppToolProvider): void {
+    this.clearWindowTools(provider.windowId, false);
+    const names: string[] = [];
+    for (const spec of provider.specs) {
+      if (spec.availability !== "open" && spec.availability !== "foreground") {
+        console.warn(`app tool ${spec.name} has non-app availability ${spec.availability}; skipping`);
+        continue;
+      }
+      const canonical = `app.${provider.appId}.${spec.name}`;
+      const toolName = spec.name;
+      this.addRegistration({
+        spec: { ...spec, name: canonical },
+        handler: (args) => provider.invoke(toolName, args),
+        isAvailable: spec.availability === "foreground" ? () => provider.isForeground() : undefined,
+      });
+      names.push(canonical);
+    }
+    this.windowToolNames.set(provider.windowId, names);
+    this.fireToolsChanged();
+  }
+
+  /** Remove all tools contributed by a window (its worker closed or the window did). */
+  removeAppTools(windowId: string): void {
+    this.clearWindowTools(windowId, true);
+  }
+
+  private clearWindowTools(windowId: string, fire: boolean): void {
+    const names = this.windowToolNames.get(windowId);
+    if (!names) return;
+    for (const name of names) {
+      this.registrations.delete(name);
+    }
+    this.windowToolNames.delete(windowId);
+    if (fire) this.fireToolsChanged();
+  }
+
+  private addRegistration(registration: ToolRegistration): void {
+    this.registrations.set(registration.spec.name, registration);
   }
 
   /** Specs for the tools callable right now, given the availability tiers. */
