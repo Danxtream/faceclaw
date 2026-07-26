@@ -13,7 +13,13 @@ import {
   type UiFontChoice,
 } from "~/graphics/bdffont";
 import { wrapText } from "~/graphics/textwrap";
-import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, MenuLayer } from "./menu";
+import {
+  ASSISTANT_MODEL_VALUES,
+  assistantModelLabel,
+  assistantModelProvider,
+  type AssistantModel,
+} from "~/assistant/models";
+import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
 import { DashboardInputEvent, Layer, type LayerContext } from "./layers";
 import { GrayImage } from "~/graphics/image";
 
@@ -109,15 +115,19 @@ export class ConfigSettingBoolean<TId extends string = string> extends ConfigSet
 type ConfigSettingEnumOptions<TValue extends string, TId extends string> = ConfigSettingOptions<TValue, TId> & {
   values: readonly TValue[];
   normalize?: (value: string | null | undefined) => TValue;
+  /** Dynamic availability check used by enum picker rows. */
+  isDisabled?: (value: TValue) => boolean;
 };
 
 export class ConfigSettingEnum<TValue extends string, TId extends string = string> extends ConfigSetting<TValue, TId> {
   readonly values: readonly TValue[];
   private readonly normalizer: (value: string | null | undefined) => TValue;
+  private readonly disabledPredicate: (value: TValue) => boolean;
 
   constructor(options: ConfigSettingEnumOptions<TValue, TId>) {
     super(options);
     this.values = options.values;
+    this.disabledPredicate = options.isDisabled ?? (() => false);
     if (options.normalize) {
       this.normalizer = (value: string | null | undefined) => {
         const normalized = options.normalize(value) as TValue|undefined;
@@ -139,9 +149,17 @@ export class ConfigSettingEnum<TValue extends string, TId extends string = strin
     return normalized;
   }
 
+  isDisabled(value: TValue): boolean {
+    return this.disabledPredicate(value);
+  }
+
   next(value = this.get()): TValue {
     const index = this.values.indexOf(value);
-    return this.values[(index + 1) % this.values.length] ?? this.defaultValue;
+    for (let offset = 1; offset <= this.values.length; offset++) {
+      const candidate = this.values[(index + offset) % this.values.length];
+      if (candidate !== undefined && !this.isDisabled(candidate)) return candidate;
+    }
+    return value;
   }
 }
 
@@ -352,6 +370,22 @@ export const anthropicApiKeySetting = new ConfigSettingString({
   description: "Anthropic API key, used when an Anthropic model is selected for the voice assistant.",
 });
 
+export const assistantModelSetting = new ConfigSettingEnum<AssistantModel>({
+  id: "assistant-model",
+  label: "Assistant model",
+  storageKey: "assistant.model",
+  defaultValue: "auto",
+  values: ASSISTANT_MODEL_VALUES,
+  formatValue: assistantModelLabel,
+  isDisabled: (value) => {
+    const provider = assistantModelProvider(value);
+    if (provider === "anthropic") return anthropicApiKeySetting.get().trim().length === 0;
+    if (provider === "openai") return openAiApiKeySetting.get().trim().length === 0;
+    return false;
+  },
+  description: "Model used by the voice assistant. Auto prefers Terra when an OpenAI key is set, then Sonnet when an Anthropic key is set.",
+});
+
 export const mapboxApiKeySetting = new ConfigSettingString({
   id: "mapbox-api-key",
   label: "Mapbox token",
@@ -494,7 +528,6 @@ function maskToken(token: string): string {
 
 
 type SettingsMenuOptions<T> = {
-  style?: "cycle"|"submenu"
   onChange?: (ctx: LayerContext, newValue: T, oldValue: T) => void
 }
 
@@ -502,36 +535,36 @@ export function enumSettingMenuItem<TValue extends string, TId extends string = 
   setting: ConfigSettingEnum<TValue, TId>,
   opts?: SettingsMenuOptions<TValue>
 ): MenuItem {
-  const style = opts?.style ?? "cycle";
   return {
     label: setting.label,
     description: setting.description,
-      onSelect: (ctx) => {
-        if (style === "cycle") {
-        const oldValue = setting.get();
-          const newValue = setting.next(oldValue);
-          setting.set(newValue);
-          opts?.onChange?.(ctx, newValue, oldValue);
-        } else {
-          const submenu = new MenuLayer(setting.label, setting.values.map((value) => ({
-            label: setting.displayValue(value),
-            onSelect: () => {
-              const oldValue = setting.get();
-              setting.set(value);
-              opts?.onChange?.(ctx, value, oldValue);
-              ctx.stack.pop();
-            },
-            render: ({ image, x, y }) => {
-              const selected = setting.get() === value ? " *" : "";
-              image.drawText(getDefaultSmallFont(), x, y + 3, `${setting.displayValue(value)}${selected}`, 200);
-            }
-          })));
-          ctx.stack.push(submenu);
-        }
-      },
-      render: ({ image, x, y, width }) => {
-        drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, setting.label, setting.displayValue(setting.get()));
-      },
+    onSelect: (ctx) => {
+      const current = setting.get();
+      const items = setting.values.map((value): MenuItem => ({
+        label: setting.displayValue(value),
+        disabled: () => setting.isDisabled(value),
+        onSelect: () => {
+          const oldValue = setting.get();
+          setting.set(value);
+          opts?.onChange?.(ctx, value, oldValue);
+          ctx.stack.pop();
+        },
+        render: ({ image, x, y, disabled }) => {
+          const selected = setting.get() === value ? " *" : "";
+          image.drawText(
+            getDefaultSmallFont(),
+            x,
+            y + 3,
+            `${setting.displayValue(value)}${selected}`,
+            disabled ? 70 : 200,
+          );
+        },
+      }));
+      openModalMenu(ctx, setting.label, items, Math.max(0, setting.values.indexOf(current)));
+    },
+    render: ({ image, x, y, width }) => {
+      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, setting.label, setting.displayValue(setting.get()));
+    },
   };
 }
 

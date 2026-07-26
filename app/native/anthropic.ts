@@ -1,4 +1,12 @@
 import { buildRefineUserMessage, REFINE_SYSTEM_PROMPT } from "../prompts";
+import type {
+  LlmContentBlock,
+  LlmMessage,
+  LlmStreamHandle,
+  LlmStreamOptions,
+  LlmStreamResult,
+  LlmToolDefinition,
+} from "../assistant/llm-protocol";
 
 declare const com: any;
 
@@ -20,56 +28,20 @@ export const DEFAULT_LLM_MODEL = "claude-sonnet-5";
  * still pass a plain string for content; the assistant tool loop uses the
  * block array to carry tool_use / tool_result alongside text.
  */
-export type AnthropicContentBlock =
-  | { type: "text"; text: string }
-  | { type: "tool_use"; id: string; name: string; input: any }
-  | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean };
-
-export type AnthropicMessage = {
-  role: "user" | "assistant";
-  content: string | AnthropicContentBlock[];
-};
+export type AnthropicContentBlock = LlmContentBlock;
+export type AnthropicMessage = LlmMessage;
 
 /** An Anthropic tool definition (input_schema is snake_case as the API wants). */
-export type AnthropicToolDefinition = {
-  name: string;
-  description: string;
-  input_schema: object;
-};
-
-export type AnthropicStreamResult = {
-  /** Concatenated text of all text blocks. */
-  text: string;
-  /** The assembled assistant content blocks (text + any tool_use). */
-  content: AnthropicContentBlock[];
-  /** e.g. "end_turn", "tool_use", "max_tokens", "refusal"; null if never said. */
-  stopReason: string | null;
-};
-
-export type AnthropicStreamOptions = {
-  apiKey: string;
-  model?: string;
-  system?: string;
-  messages: AnthropicMessage[];
-  tools?: AnthropicToolDefinition[];
-  maxTokens?: number;
-  /** Thinking/latency tradeoff; voice flows want "low". Default: model default. */
-  effort?: "low" | "medium" | "high";
-  /** Called with each incremental text delta as it streams in. */
-  onTextDelta?: (delta: string, textSoFar: string) => void;
-  onDone: (result: AnthropicStreamResult) => void;
-  /** Called at most once, instead of onDone, with a user-displayable message. */
-  onError: (message: string) => void;
-};
+export type AnthropicToolDefinition = LlmToolDefinition;
+export type AnthropicStreamResult = LlmStreamResult;
+export type AnthropicStreamOptions = Omit<LlmStreamOptions, "model"> & { model?: string };
 
 /** Accumulator for one streamed content block before it is finalized. */
 type StreamingBlock =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; inputJson: string };
 
-export type AnthropicStreamHandle = {
-  cancel(): void;
-};
+export type AnthropicStreamHandle = LlmStreamHandle;
 
 export function streamAnthropicMessage(options: AnthropicStreamOptions): AnthropicStreamHandle {
   const apiKey = options.apiKey.trim();

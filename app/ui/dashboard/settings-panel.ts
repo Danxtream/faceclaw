@@ -4,7 +4,7 @@ import { wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../gestures";
 import { DashboardInputEvent, Layer, LayerContext } from "../layers";
-import { drawSelectionHighlight, MenuItem, MenuLayer, type MenuLayout } from "../menu";
+import { drawSelectionHighlight, isMenuItemDisabled, MenuItem, MenuLayer, openModalMenu } from "../menu";
 import { shell } from "../shell/shell";
 
 /**
@@ -114,13 +114,24 @@ export class SettingsPanelLayer implements Layer {
         // A selection only appears once focus is in the right column; before
         // that the pane is a preview of what tapping would open.
         const selected = this.focus === "right" && i === this.rightIndex;
+        const disabled = isMenuItemDisabled(item);
         if (selected) {
           drawSelectionHighlight(image, rightX - 2, rowY, rightW + 2, ROW_H - 2, appFocused, 6);
         }
         if (item.render) {
-          item.render({ image, x: rightX + 8, y: rowY, width: rightW - 16, height: ROW_H - 3, selected, text: item.label, ctx });
+          item.render({
+            image,
+            x: rightX + 8,
+            y: rowY,
+            width: rightW - 16,
+            height: ROW_H - 3,
+            selected,
+            disabled,
+            text: item.label,
+            ctx,
+          });
         } else {
-          image.drawText(font, rightX + 8, rowY + 4, item.label, selected ? 255 : 200);
+          image.drawText(font, rightX + 8, rowY + 4, item.label, disabled ? 70 : selected ? 255 : 200);
         }
       }
       if (descriptionLines.length) {
@@ -174,7 +185,10 @@ export class SettingsPanelLayer implements Layer {
         if (items.length) this.rightIndex = (this.rightIndex + 1) % items.length;
         return;
       case "click":
-        if (items.length) await items[clamp(this.rightIndex, 0, items.length - 1)]!.onSelect(ctx, NO_MENU);
+        if (items.length) {
+          const item = items[clamp(this.rightIndex, 0, items.length - 1)]!;
+          if (!isMenuItemDisabled(item)) await item.onSelect(ctx, NO_MENU);
+        }
         return;
       case "double-click":
         this.focus = "left";
@@ -195,17 +209,7 @@ export class SettingsPanelLayer implements Layer {
  * MenuLayer (which draws the border and self-closes on double-click).
  */
 export function openSettingsSubMenu(ctx: LayerContext, title: string, items: MenuItem[]): void {
-  const { width, height } = ctx.stack.getBaseSize();
-  const menuW = Math.min(320, width - 40);
-  const menuH = 16 + PAD + items.length * ROW_H + PAD;
-  const layout: MenuLayout = {
-    x: ((width - menuW) / 2) | 0,
-    y: ((height - menuH) / 2) | 0,
-    width: menuW,
-    minHeight: menuH,
-    maxHeight: menuH,
-  };
-  ctx.stack.push(new MenuLayer(title, items, layout));
+  openModalMenu(ctx, title, items);
 }
 
 function clampScroll(selected: number, scroll: number, visible: number, count: number): number {

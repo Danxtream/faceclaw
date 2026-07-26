@@ -1,12 +1,13 @@
-import { DEFAULT_LLM_MODEL, type AnthropicMessage, type AnthropicToolDefinition } from "../native/anthropic";
 import { buildAssistantSystemPrompt } from "../prompts";
-import { DirectAnthropicBackend } from "./direct-backend";
+import { DirectAssistantBackend } from "./direct-backend";
+import type { LlmMessage, LlmToolDefinition } from "./llm-protocol";
+import type { ResolvedAssistantModel } from "./models";
 import { toolRegistry, type ToolRegistry } from "./tool-registry";
 import type { AssistantContext, AssistantTurnCallbacks, AssistantTurnHandle } from "./types";
 
 /**
  * One assistant conversation. Owns the message history and turn state and
- * drives a backend (direct Anthropic loop for phase 1). The UI talks only to
+ * drives a direct provider backend. The UI talks only to
  * this surface, so swapping in the external-agent backend later doesn't touch
  * AssistantLayer.
  *
@@ -21,19 +22,26 @@ const SESSION_IDLE_MS = 10 * 60 * 1000;
 const MAX_HISTORY_MESSAGES = 40;
 
 export class AssistantSession {
-  private readonly backend = new DirectAnthropicBackend();
-  private readonly messages: AnthropicMessage[] = [];
+  private readonly backend = new DirectAssistantBackend();
+  private readonly messages: LlmMessage[] = [];
   private turnHandle: AssistantTurnHandle | null = null;
   private lastActivityMs = Date.now();
-  // API-safe tool name -> canonical registry name. The Anthropic API only
-  // allows [a-zA-Z0-9_-] in tool names, so dotted registry names ("glasses.
-  // get_state") are sanitized for the request and mapped back on tool calls.
+  // API-safe tool name -> canonical registry name. Provider APIs restrict tool
+  // names, so dotted registry names are sanitized and mapped back on calls.
   private readonly toolNameMap = new Map<string, string>();
 
   constructor(
-    private readonly apiKey: string,
+    private readonly llm: ResolvedAssistantModel,
     private readonly registry: ToolRegistry = toolRegistry,
   ) {}
+
+  matchesConfiguration(llm: ResolvedAssistantModel): boolean {
+    return (
+      this.llm.provider === llm.provider &&
+      this.llm.model === llm.model &&
+      this.llm.apiKey === llm.apiKey
+    );
+  }
 
   /** Whether this session has been idle long enough to retire. */
   isExpired(nowMs = Date.now()): boolean {
@@ -62,9 +70,10 @@ export class AssistantSession {
     };
 
     this.turnHandle = this.backend.runTurn({
-      apiKey: this.apiKey,
-      model: DEFAULT_LLM_MODEL,
-      effort: "low",
+      provider: this.llm.provider,
+      apiKey: this.llm.apiKey,
+      model: this.llm.model,
+      effort: this.llm.effort,
       system,
       messages: this.messages,
       buildTools: () => this.buildToolDefinitions(),
@@ -91,7 +100,7 @@ export class AssistantSession {
     this.lastActivityMs = Date.now();
   }
 
-  private buildToolDefinitions(): AnthropicToolDefinition[] {
+  private buildToolDefinitions(): LlmToolDefinition[] {
     this.toolNameMap.clear();
     return this.registry.listTools().map((spec) => {
       const apiName = this.toApiToolName(spec.name);
@@ -100,7 +109,7 @@ export class AssistantSession {
     });
   }
 
-  /** Convert a canonical registry name to an Anthropic-legal tool name. */
+  /** Convert a canonical registry name to a provider-legal tool name. */
   private toApiToolName(name: string): string {
     let base = name.replace(/[^a-zA-Z0-9_-]/g, "_");
     // Disambiguate the rare case where two canonical names sanitize alike.
@@ -125,7 +134,7 @@ export class AssistantSession {
   }
 }
 
-function startsWithToolResult(message: AnthropicMessage): boolean {
+function startsWithToolResult(message: LlmMessage): boolean {
   return (
     Array.isArray(message.content) &&
     message.content.length > 0 &&

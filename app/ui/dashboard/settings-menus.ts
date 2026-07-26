@@ -4,6 +4,7 @@ import { getDashboardLogo } from "../../graphics/logo";
 import { shell } from "../shell/shell";
 import {
   anthropicApiKeySetting,
+  assistantModelSetting,
   assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
   brightnessSetting,
@@ -40,7 +41,7 @@ function settingsSections(): SettingsSection[] {
       items: [
         // Auto (ambient sensor) or an exact level; pushed to the glasses by
         // the dashboard controller when changed and on each connect.
-        enumSettingMenuItem(brightnessSetting, { style: "submenu" }),
+        enumSettingMenuItem(brightnessSetting),
         enumSettingMenuItem(screenTimeoutSetting, {
           onChange: () => {
             shell.noteUserActivity();
@@ -59,6 +60,7 @@ function settingsSections(): SettingsSection[] {
       items: [
         enumSettingMenuItem(wakeWordActionSetting),
         enumSettingMenuItem(voiceProviderSetting),
+        enumSettingMenuItem(assistantModelSetting),
         // When on, a wakeword utterance goes straight to the assistant with no
         // Send/Type menu step.
         toggleSettingMenuItem(assistantSkipConfirmationSetting),

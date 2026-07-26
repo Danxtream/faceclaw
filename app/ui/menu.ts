@@ -37,6 +37,7 @@ export type MenuItemRenderArgs = {
   width: number;
   height: number;
   selected: boolean;
+  disabled: boolean;
   text: string;
   ctx: LayerContext;
 };
@@ -45,6 +46,8 @@ export type MenuItem = {
   label: string;
   /** Extended description; the Settings panel shows it below the list while the item is selected. */
   description?: string;
+  /** Disabled rows stay visible but render dimly and ignore clicks. */
+  disabled?: boolean | (() => boolean);
   onSelect: (ctx: LayerContext, menu: MenuLayer) => Promise<void> | void;
   render?: (args: MenuItemRenderArgs) => void;
 };
@@ -181,6 +184,12 @@ export class MenuLayer implements Layer {
     public readonly paintOverBase = false,
   ) {}
 
+  /** Start a newly opened picker on its current value. */
+  selectItem(index: number): this {
+    this.selectedIndex = clamp(index, 0, Math.max(0, this.items.length - 1));
+    return this;
+  }
+
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
     const font = getDefaultSmallFont();
     const { x, y, width } = this.layout;
@@ -216,6 +225,7 @@ export class MenuLayer implements Layer {
       const item = this.items[index]!;
       const rowY = bodyY + (index - this.scrollRow) * MENU_ROW_HEIGHT;
       const selected = index === this.selectedIndex;
+      const disabled = isMenuItemDisabled(item);
       if (selected) {
         drawSelectionHighlight(
           image,
@@ -235,11 +245,12 @@ export class MenuLayer implements Layer {
           width: width - 44,
           height: MENU_ROW_HEIGHT - 3,
           selected,
+          disabled,
           text: item.label,
           ctx,
         });
       } else {
-        image.drawText(font, x + 22, rowY + 3, item.label, selected ? 255 : 200);
+        image.drawText(font, x + 22, rowY + 3, item.label, disabled ? 70 : selected ? 255 : 200);
       }
     }
 
@@ -276,12 +287,39 @@ export class MenuLayer implements Layer {
         ctx.stack.pop();
         return;
       case "click":
-        await this.items[this.selectedIndex]!.onSelect(ctx, this);
+        if (!isMenuItemDisabled(this.items[this.selectedIndex]!)) {
+          await this.items[this.selectedIndex]!.onSelect(ctx, this);
+        }
         return;
       default:
         return;
     }
   }
+}
+
+/** Open a centered, bordered menu over the current layer. */
+export function openModalMenu(
+  ctx: LayerContext,
+  title: string,
+  items: MenuItem[],
+  initialSelectedIndex = 0,
+): void {
+  const { width, height } = ctx.stack.getBaseSize();
+  const menuWidth = Math.min(320, width - 40);
+  const naturalHeight = MENU_TITLE_HEIGHT + 2 * MENU_BODY_PADDING + items.length * MENU_ROW_HEIGHT;
+  const menuHeight = Math.min(naturalHeight, height - 40);
+  const layout: MenuLayout = {
+    x: ((width - menuWidth) / 2) | 0,
+    y: ((height - menuHeight) / 2) | 0,
+    width: menuWidth,
+    minHeight: menuHeight,
+    maxHeight: menuHeight,
+  };
+  ctx.stack.push(new MenuLayer(title, items, layout).selectItem(initialSelectedIndex));
+}
+
+export function isMenuItemDisabled(item: MenuItem): boolean {
+  return typeof item.disabled === "function" ? item.disabled() : item.disabled === true;
 }
 
 export class TextPageLayer implements Layer {

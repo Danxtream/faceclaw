@@ -7,13 +7,16 @@ import { MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "../apps/voice-input";
 import { AssistantLayer } from "../apps/assistant";
 import { AssistantSession } from "../../assistant/session";
+import { resolveAssistantModel, type ResolvedAssistantModel } from "../../assistant/models";
 import type { AssistantContext } from "../../assistant/types";
 import { SingleNotificationLayer } from "../notifications";
 import {
   anthropicApiKeySetting,
+  assistantModelSetting,
   assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
   onAnySettingChanged,
+  openAiApiKeySetting,
   timeFormatSetting,
   wakeWordActionSetting,
 } from "../dashboard-settings";
@@ -673,16 +676,28 @@ class Shell {
   }
 
   private isAssistantAvailable(): boolean {
-    return anthropicApiKeySetting.get().trim().length > 0;
+    return this.resolveAssistantConfiguration() !== null;
   }
 
   private ensureAssistantSession(): AssistantSession | null {
-    const apiKey = anthropicApiKeySetting.get().trim();
-    if (!apiKey) return null;
-    if (!this.assistantSession || this.assistantSession.isExpired()) {
-      this.assistantSession = new AssistantSession(apiKey);
+    const llm = this.resolveAssistantConfiguration();
+    if (!llm) return null;
+    if (
+      !this.assistantSession ||
+      this.assistantSession.isExpired() ||
+      !this.assistantSession.matchesConfiguration(llm)
+    ) {
+      this.assistantSession?.cancel();
+      this.assistantSession = new AssistantSession(llm);
     }
     return this.assistantSession;
+  }
+
+  private resolveAssistantConfiguration(): ResolvedAssistantModel | null {
+    return resolveAssistantModel(assistantModelSetting.get(), {
+      anthropic: anthropicApiKeySetting.get(),
+      openai: openAiApiKeySetting.get(),
+    });
   }
 
   private buildAssistantContext(): AssistantContext {
@@ -704,7 +719,7 @@ class Shell {
   sendToAssistant(text: string): void {
     const session = this.ensureAssistantSession();
     if (!session) {
-      this.showAlert("Set an Anthropic API key in Settings to use the assistant.");
+      this.showAlert("Set an API key for the selected assistant model in Settings.");
       return;
     }
     if (!this.screenOn) this.wake("sidebar");

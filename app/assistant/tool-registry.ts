@@ -1,7 +1,7 @@
 /**
  * The assistant's tool registry: the single place that knows which tools exist,
  * whether each is currently callable, and how to invoke it. Both assistant
- * backends (direct Anthropic loop, external agent bridge) list and call tools
+ * backends (direct provider loop, external agent bridge) list and call tools
  * through here, so gating and timeouts are enforced in one spot rather than
  * trusted to a model or a remote agent.
  *

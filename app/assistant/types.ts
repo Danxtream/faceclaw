@@ -1,7 +1,7 @@
 /**
  * Shared assistant types. Kept backend-agnostic so the UI (AssistantLayer)
  * talks to the same session surface whether the turn runs on the phone
- * (direct Anthropic loop) or against the user's own agent (external bridge,
+ * (direct provider loop) or against the user's own agent (external bridge,
  * later phases).
  */
 

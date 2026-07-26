@@ -1,10 +1,13 @@
-import {
-  streamAnthropicMessage,
-  type AnthropicContentBlock,
-  type AnthropicMessage,
-  type AnthropicStreamHandle,
-  type AnthropicToolDefinition,
-} from "../native/anthropic";
+import { streamAnthropicMessage } from "../native/anthropic";
+import { streamOpenAiResponse } from "../native/openai";
+import type {
+  LlmContentBlock,
+  LlmMessage,
+  LlmStreamHandle,
+  LlmStreamOptions,
+  LlmToolDefinition,
+} from "./llm-protocol";
+import type { AssistantProvider } from "./models";
 import type { ToolRegistry } from "./tool-registry";
 import type { AssistantTurnCallbacks, AssistantTurnHandle } from "./types";
 
@@ -20,29 +23,30 @@ const MAX_ITERATIONS = 8;
 const MAX_TURN_MS = 2 * 60 * 1000;
 
 export type DirectTurnOptions = {
+  provider: AssistantProvider;
   apiKey: string;
   model: string;
   effort?: "low" | "medium" | "high";
   system: string;
   /** Owned by the session; this loop appends assistant + tool_result messages. */
-  messages: AnthropicMessage[];
+  messages: LlmMessage[];
   /**
    * Build the tool list for the next request. Called once per loop iteration so
    * the set reflects apps opening/closing and foreground changes mid-turn; it
    * also refreshes the session's api-name map that resolveToolName reads.
    */
-  buildTools: () => AnthropicToolDefinition[];
+  buildTools: () => LlmToolDefinition[];
   registry: ToolRegistry;
   /** Map an API tool name (as the model calls it) back to its registry name. */
   resolveToolName: (apiName: string) => string;
   callbacks: AssistantTurnCallbacks;
 };
 
-export class DirectAnthropicBackend {
+export class DirectAssistantBackend {
   runTurn(options: DirectTurnOptions): AssistantTurnHandle {
     const startMs = Date.now();
     let cancelled = false;
-    let streamHandle: AnthropicStreamHandle | null = null;
+    let streamHandle: LlmStreamHandle | null = null;
 
     const finishError = (message: string) => {
       if (cancelled) return;
@@ -61,7 +65,7 @@ export class DirectAnthropicBackend {
         return;
       }
 
-      streamHandle = streamAnthropicMessage({
+      const streamOptions: LlmStreamOptions = {
         apiKey: options.apiKey,
         model: options.model,
         system: options.system,
@@ -80,13 +84,13 @@ export class DirectAnthropicBackend {
             return;
           }
           // Record what the model produced this iteration.
-          const assistantContent: AnthropicContentBlock[] = result.content.length
+          const assistantContent: LlmContentBlock[] = result.content.length
             ? result.content
             : [{ type: "text", text: result.text }];
           options.messages.push({ role: "assistant", content: assistantContent });
 
           const toolUses = assistantContent.filter(
-            (block): block is Extract<AnthropicContentBlock, { type: "tool_use" }> =>
+            (block): block is Extract<LlmContentBlock, { type: "tool_use" }> =>
               block.type === "tool_use",
           );
           if (result.stopReason !== "tool_use" || toolUses.length === 0) {
@@ -110,7 +114,10 @@ export class DirectAnthropicBackend {
           streamHandle = null;
           finishError(message);
         },
-      });
+      };
+      streamHandle = options.provider === "openai"
+        ? streamOpenAiResponse(streamOptions)
+        : streamAnthropicMessage(streamOptions);
     };
 
     runIteration(0);
@@ -125,10 +132,10 @@ export class DirectAnthropicBackend {
   }
 
   private async runToolCalls(
-    toolUses: Array<Extract<AnthropicContentBlock, { type: "tool_use" }>>,
+    toolUses: Array<Extract<LlmContentBlock, { type: "tool_use" }>>,
     options: DirectTurnOptions,
-  ): Promise<AnthropicContentBlock[]> {
-    const results: AnthropicContentBlock[] = [];
+  ): Promise<LlmContentBlock[]> {
+    const results: LlmContentBlock[] = [];
     for (const toolUse of toolUses) {
       const canonicalName = options.resolveToolName(toolUse.name);
       options.callbacks.onToolActivity(canonicalName);
