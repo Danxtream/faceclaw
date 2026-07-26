@@ -1,6 +1,6 @@
 import { Utils } from "@nativescript/core";
 import { GrayImage } from "../graphics/image";
-import { toUint8Array } from "../util/array-util";
+import { grayImageFromPacket } from "./image-files";
 
 declare const com: any;
 
@@ -140,14 +140,7 @@ export class FaceclawMediaControllerBridge {
     if (!global.isAndroid) return null;
     this.ensureController();
     if (!this.controller) return null;
-    const bytes = toUint8Array(this.controller.getAlbumArtGray(Math.round(maxSize)));
-    if (bytes.length < 4) return null;
-    const width = bytes[0]! | (bytes[1]! << 8);
-    const height = bytes[2]! | (bytes[3]! << 8);
-    if (width <= 0 || height <= 0 || bytes.length < 4 + width * height) return null;
-    const image = new GrayImage(width, height, 0);
-    image.pixels.set(bytes.subarray(4, 4 + width * height));
-    return image;
+    return grayImageFromPacket(this.controller.getAlbumArtGray(Math.round(maxSize)));
   }
 
   /** The player's queue (playlist), empty when the player exposes none. */

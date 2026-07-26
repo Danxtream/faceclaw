@@ -203,9 +203,9 @@ public class FaceclawMediaController {
 
     /**
      * Album art for the active session's current item, grayscale, scaled to
-     * fit within maxSize x maxSize preserving aspect. Returns
-     * [widthLo, widthHi, heightLo, heightHi, pixels...] or an empty array
-     * when no art is available.
+     * fit within maxSize x maxSize preserving aspect. Returns a gray packet
+     * (see ImageFileLoader.bitmapToGrayPacket) or an empty array when no art
+     * is available.
      */
     public byte[] getAlbumArtGray(int maxSize) {
         Bitmap art;
@@ -225,38 +225,7 @@ public class FaceclawMediaController {
                 art = metadata.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON);
             }
         }
-        if (art == null || art.getWidth() <= 0 || art.getHeight() <= 0 || maxSize <= 0) {
-            return new byte[0];
-        }
-        try {
-            float scale = Math.min(1f, Math.min(
-                    (float) maxSize / art.getWidth(),
-                    (float) maxSize / art.getHeight()));
-            int width = Math.max(1, Math.round(art.getWidth() * scale));
-            int height = Math.max(1, Math.round(art.getHeight() * scale));
-            Bitmap scaled = Bitmap.createScaledBitmap(art, width, height, true);
-            if (scaled.getConfig() == Bitmap.Config.HARDWARE) {
-                scaled = scaled.copy(Bitmap.Config.ARGB_8888, false);
-            }
-            int[] pixels = new int[width * height];
-            scaled.getPixels(pixels, 0, width, 0, 0, width, height);
-            byte[] out = new byte[4 + width * height];
-            out[0] = (byte) (width & 0xff);
-            out[1] = (byte) ((width >> 8) & 0xff);
-            out[2] = (byte) (height & 0xff);
-            out[3] = (byte) ((height >> 8) & 0xff);
-            for (int i = 0; i < pixels.length; i++) {
-                int p = pixels[i];
-                int r = (p >> 16) & 0xff;
-                int g = (p >> 8) & 0xff;
-                int b = p & 0xff;
-                out[4 + i] = (byte) ((r * 299 + g * 587 + b * 114) / 1000);
-            }
-            return out;
-        } catch (Exception e) {
-            Log.w("FaceclawMedia", "album art conversion failed", e);
-            return new byte[0];
-        }
+        return ImageFileLoader.bitmapToGrayPacket(art, maxSize, maxSize);
     }
 
     /**

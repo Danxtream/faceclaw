@@ -11,10 +11,10 @@ const LINE_STEP = 14;
 const FOOTER_MARGIN = 36;
 
 /**
- * Paged text viewer for a document. Sized to its hosting stack (a teleprompt
+ * Paged text viewer for a document. Sized to its hosting stack (a Files
  * document window, or pushed over the file browser for view-in-place).
  */
-export class TelepromptLayer implements Layer {
+export class TextViewerLayer implements Layer {
   private lines: string[] | null = null;
   private wrappedForWidth = 0;
   private firstLine = 0;
@@ -22,7 +22,7 @@ export class TelepromptLayer implements Layer {
 
   constructor(
     private readonly documentText: string,
-    private readonly title = "Teleprompt",
+    private readonly title = "Text",
   ) {}
 
   paint(ctx: LayerContext): GrayImage {

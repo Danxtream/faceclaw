@@ -29,7 +29,7 @@ async function handleShareIntent(intent: android.content.Intent): Promise<void> 
     return;
   }
   const { dashboardController } = await import("../g2/dashboard-controller");
-  await dashboardController.openTelepromptDocument(text);
+  await dashboardController.openSharedTextDocument(text);
 }
 
 function readPlainTextShare(intent: android.content.Intent): string | null {

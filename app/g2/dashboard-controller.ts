@@ -55,11 +55,12 @@ import {
   DEBUG_TESTS_WINDOW_ID,
 } from "../ui/shell/debug-tests-app";
 import {
-  createTelepromptBrowserWindow,
-  createTelepromptDocumentWindow,
-  TELEPROMPT_SURFACE_ID,
-  TELEPROMPT_WINDOW_ID,
-} from "../ui/shell/teleprompt-app";
+  createFilesAppWindow,
+  createImageDocumentWindow,
+  createTextDocumentWindow,
+  FILES_SURFACE_ID,
+  FILES_WINDOW_ID,
+} from "../ui/shell/files-app";
 import {
   createNightscoutAppWindow,
   NIGHTSCOUT_SURFACE_ID,
@@ -264,7 +265,7 @@ class DashboardController {
         apps: [
           { appId: "timer", label: "Timer", icon: "timer" },
           { appId: "terminal", label: "Terminal", icon: "terminal" },
-          { appId: "teleprompt", label: "Teleprompt", icon: "file-text" },
+          { appId: "files", label: "Files", icon: "folder" },
           { appId: "music", label: "Music", icon: "music" },
           { appId: "nightscout", label: "Nightscout", icon: "nightscout" },
           { appId: "transcribe", label: "Transcribe", icon: "mic" },
@@ -922,21 +923,31 @@ class DashboardController {
   }
 
   /** A document arrived via Android's Share intent: open it as a new window. */
-  async openTelepromptDocument(text: string): Promise<void> {
-    this.appendLog(`teleprompt document received (${text.length} chars)`);
+  async openSharedTextDocument(text: string): Promise<void> {
+    this.appendLog(`shared text document received (${text.length} chars)`);
     if (!shell.isScreenOn()) {
       shell.wake("sidebar");
     }
-    this.openTelepromptDocumentWindow("Shared text", text);
+    this.openTextDocumentWindow("Shared text", text);
   }
 
-  /** Open a teleprompt document as its own (closeable, non-singleton) window. */
-  private openTelepromptDocumentWindow(title: string, text: string): void {
-    const windowId = `teleprompt:doc:${this.nextWindowSerial++}`;
+  /** Open a text document as its own (closeable, non-singleton) window. */
+  private openTextDocumentWindow(title: string, text: string): void {
+    const windowId = `files:doc:${this.nextWindowSerial++}`;
     void this.launchInProcessApp(windowId, `window:${windowId}`, (options) =>
-      createTelepromptDocumentWindow(windowId, title, text, options),
+      createTextDocumentWindow(windowId, title, text, options),
     ).catch((error) => {
-      this.appendLog(`teleprompt window failed: ${this.formatError(error)}`);
+      this.appendLog(`text document window failed: ${this.formatError(error)}`);
+    });
+  }
+
+  /** Open an image file as its own (closeable, non-singleton) window. */
+  private openImageDocumentWindow(title: string, path: string): void {
+    const windowId = `files:doc:${this.nextWindowSerial++}`;
+    void this.launchInProcessApp(windowId, `window:${windowId}`, (options) =>
+      createImageDocumentWindow(windowId, title, path, options),
+    ).catch((error) => {
+      this.appendLog(`image window failed: ${this.formatError(error)}`);
     });
   }
 
@@ -1252,11 +1263,12 @@ class DashboardController {
       );
       return;
     }
-    if (appId === "teleprompt") {
-      await this.launchInProcessApp(TELEPROMPT_WINDOW_ID, TELEPROMPT_SURFACE_ID, (options) =>
-        createTelepromptBrowserWindow({
+    if (appId === "files") {
+      await this.launchInProcessApp(FILES_WINDOW_ID, FILES_SURFACE_ID, (options) =>
+        createFilesAppWindow({
           ...options,
-          openDocumentWindow: (title, text) => this.openTelepromptDocumentWindow(title, text),
+          openDocumentWindow: (title, text) => this.openTextDocumentWindow(title, text),
+          openImageWindow: (title, path) => this.openImageDocumentWindow(title, path),
         }),
       );
       return;

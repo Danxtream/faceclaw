@@ -18,6 +18,8 @@ export type DirectoryEntry = {
   path: string;
   isDirectory: boolean;
   sizeBytes: number;
+  /** Last-modified time in epoch ms; 0 when unknown. */
+  modifiedMs: number;
 };
 
 export function hasAllFilesAccess(): boolean {
@@ -60,6 +62,7 @@ export function listDirectory(path: string): DirectoryEntry[] | null {
         path: String(file.getAbsolutePath()),
         isDirectory: Boolean(file.isDirectory()),
         sizeBytes: Number(file.length()),
+        modifiedMs: Number(file.lastModified()),
       });
     }
     entries.sort((a, b) => {
@@ -69,6 +72,24 @@ export function listDirectory(path: string): DirectoryEntry[] | null {
     return entries;
   } catch (error) {
     console.warn(`listDirectory failed for ${path}: ${error}`);
+    return null;
+  }
+}
+
+/** Stat a single path; null when it does not exist or cannot be checked. */
+export function statPath(path: string): DirectoryEntry | null {
+  try {
+    const file = new java.io.File(path);
+    if (!file.exists()) return null;
+    return {
+      name: String(file.getName()),
+      path: String(file.getAbsolutePath()),
+      isDirectory: Boolean(file.isDirectory()),
+      sizeBytes: Number(file.length()),
+      modifiedMs: Number(file.lastModified()),
+    };
+  } catch (error) {
+    console.warn(`statPath failed for ${path}: ${error}`);
     return null;
   }
 }
