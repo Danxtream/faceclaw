@@ -1,6 +1,7 @@
 import { clamp } from "~/util/numeric-util";
 import { formatRelativeTime } from "~/util/date-util";
 import { BdfFont, getDefaultSmallFont } from "../graphics/bdffont";
+import { truncateText } from "../graphics/textwrap";
 import { GrayImage } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
 import { GESTURE_DOUBLE_CLICK } from "./gestures";
@@ -245,20 +246,20 @@ function buildNotificationCardLayout(
   const time = formatRelativeTime(notification.postTime);
   const title = notificationTitle(notification);
   const timeSuffix = time ? `  ${time}` : "";
-  lines.push(truncateToWidth(font, `${title}${timeSuffix}`, cardTextWidth));
+  lines.push(truncateText(font, `${title}${timeSuffix}`, cardTextWidth));
 
   const appName = notification.appName || notification.packageName;
   const body = primaryNotificationBody(notification);
 
   if (selected) {
     if (appName && appName !== title) {
-      lines.push(truncateToWidth(font, appName, cardTextWidth));
+      lines.push(truncateText(font, appName, cardTextWidth));
     }
     if (body) {
       lines.push(...wrapText(font, body, cardTextWidth).slice(0, 4));
     }
   } else if (body) {
-    lines.push(truncateToWidth(font, wrapText(font, body, cardTextWidth)[0]!, cardTextWidth));
+    lines.push(truncateText(font, wrapText(font, body, cardTextWidth)[0]!, cardTextWidth));
   }
   if (notification.actions.length) {
     lines.push(`${notification.actions.length} quick action${notification.actions.length === 1 ? "" : "s"}`);
@@ -362,7 +363,7 @@ function drawDetailMenu(image: GrayImage, font: BdfFont, menu: DetailMenuItem[],
       image.fillRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, 19, 18, 6);
       image.drawRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, 19, 60, 6);
     }
-    const label = truncateToWidth(font, menu[index]!.label, DETAIL_MENU_WIDTH - 12);
+    const label = truncateText(font, menu[index]!.label, DETAIL_MENU_WIDTH - 12);
     image.drawText(font, menuX, y + 2, label, selected ? 255 : 185);
   }
 }
@@ -388,15 +389,6 @@ function primaryNotificationBody(notification: AndroidNotification): string {
 function detailNotificationBody(notification: AndroidNotification): string {
   const lines = notification.lines.length ? notification.lines.join("\n") : "";
   return [notification.bigText || notification.text, lines].filter(Boolean).join("\n");
-}
-
-function truncateToWidth(font: BdfFont, text: string, width: number): string {
-  if (font.measureText(text) <= width) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`${out}...`) > width) {
-    out = out.slice(0, -1);
-  }
-  return `${out}...`;
 }
 
 function notificationTitle(notification: AndroidNotification): string {

@@ -1,6 +1,6 @@
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/bdffont";
 import { GrayImage } from "../../graphics/image";
-import { wrapText } from "../../graphics/textwrap";
+import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import {
   GESTURE_CLICK,
@@ -109,9 +109,9 @@ class MusicAppLayer implements Layer {
     }
     image.drawText(font, META_X, ART_Y + 36, media.artist || "Unknown artist", 180);
     if (media.album) {
-      image.drawText(font, META_X, ART_Y + 52, truncate(font, media.album, metaWidth), 150);
+      image.drawText(font, META_X, ART_Y + 52, truncateText(font, media.album, metaWidth), 150);
     }
-    image.drawText(font, META_X, ART_Y + 68, truncate(font, media.appName || media.packageName, metaWidth), 110);
+    image.drawText(font, META_X, ART_Y + 68, truncateText(font, media.appName || media.packageName, metaWidth), 110);
     this.drawProgress(image, media, metaWidth);
 
     const queue = mediaControllerBridge.getQueue();
@@ -146,7 +146,7 @@ class MusicAppLayer implements Layer {
         );
       }
       const value = !action.enabled ? (selected ? 130 : 90) : selected ? 255 : 200;
-      image.drawText(font, ACTION_X, y + 1, truncate(font, action.label, ACTION_WIDTH - 16), value);
+      image.drawText(font, ACTION_X, y + 1, truncateText(font, action.label, ACTION_WIDTH - 16), value);
       if ((action.kind === "playlist" || action.kind === "browse") && action.enabled) {
         drawSubmenuIndicator(image, font, highlightX, highlightY, highlightWidth, highlightHeight, value);
       }
@@ -174,7 +174,7 @@ class MusicAppLayer implements Layer {
           );
         }
         const label = `${item.active ? "> " : "  "}${item.title || "(untitled)"}`;
-        image.drawText(font, QUEUE_X, y + 1, truncate(font, label, queueWidth - 4), selected ? 255 : 200);
+        image.drawText(font, QUEUE_X, y + 1, truncateText(font, label, queueWidth - 4), selected ? 255 : 200);
       }
       if (queue.length > visibleRows) {
         const trackHeight = visibleRows * ROW_HEIGHT - 4;
@@ -491,13 +491,4 @@ function formatMediaTime(milliseconds: number): string {
   return hours > 0
     ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
     : `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-function truncate(font: import("../../graphics/bdffont").BdfFont, text: string, maxWidth: number): string {
-  if (font.measureText(text) <= maxWidth) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) {
-    out = out.slice(0, -1);
-  }
-  return `${out}...`;
 }

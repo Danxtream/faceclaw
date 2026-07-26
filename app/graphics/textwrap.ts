@@ -47,6 +47,24 @@ export function wrapText(font: BdfFont, text: string, targetWidth: number, opts:
   return lines.length ? lines : [""];
 }
 
+export function truncateText(font: BdfFont, text: string, maxWidth: number): string {
+  if (font.measureText(text) <= maxWidth) return text;
+  let out = text;
+  while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) {
+    out = out.slice(0, -1);
+  }
+  return `${out}...`;
+}
+
+export function truncateLeft(font: BdfFont, text: string, maxWidth: number): string {
+  if (font.measureText(text) <= maxWidth) return text;
+  let out = text;
+  while (out.length > 1 && font.measureText(`...${out}`) > maxWidth) {
+    out = out.slice(1);
+  }
+  return `...${out}`;
+}
+
 function wrapParagraph(font: BdfFont, paragraph: string, targetWidth: number, opts: WrapTextOptions): string[] {
   if (paragraph.length === 0) {
     return [""];

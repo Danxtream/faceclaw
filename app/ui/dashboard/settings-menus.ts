@@ -1,4 +1,5 @@
 import { getDefaultSmallFont } from "../../graphics/bdffont";
+import type { GrayImage } from "../../graphics/image";
 import { getDashboardLogo } from "../../graphics/logo";
 import { shell } from "../shell/shell";
 import {
@@ -109,7 +110,7 @@ function settingsSections(): SettingsSection[] {
   ];
 }
 
-function renderAbout(args: { image: import("../../graphics/image").GrayImage; x: number; y: number; width: number }): void {
+function renderAbout(args: { image: GrayImage; x: number; y: number; width: number }): void {
   const { image, x, y, width } = args;
   const font = getDefaultSmallFont();
   const logo = getDashboardLogo();

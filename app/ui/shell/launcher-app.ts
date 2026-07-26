@@ -1,4 +1,5 @@
 import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
+import { truncateText } from "../../graphics/textwrap";
 import { GrayImage } from "../../graphics/image";
 import { renderIcon, type IconName } from "../../graphics/icons";
 import { clamp } from "../../util/numeric-util";
@@ -119,7 +120,7 @@ class LauncherGridLayer implements Layer {
       }
       const labelY = Math.round(blockTop + ICON_SIZE + LABEL_GAP);
       if (labelY + font.lineHeight <= gridBottom) {
-        const label = truncate(font, app.label, colW - 8);
+        const label = truncateText(font, app.label, colW - 8);
         image.drawText(font, Math.round(centerX - font.measureText(label) / 2), labelY, label, 210);
       }
     }
@@ -195,13 +196,4 @@ export function createLauncherWindow(options: LauncherOptions): ShellWindow {
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
   }).window;
-}
-
-function truncate(font: BdfFont, text: string, maxWidth: number): string {
-  if (font.measureText(text) <= maxWidth) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) {
-    out = out.slice(0, -1);
-  }
-  return `${out}...`;
 }

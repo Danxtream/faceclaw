@@ -3,6 +3,7 @@ import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
 import { GESTURE_DOUBLE_CLICK } from "../gestures";
 import { drawSelectionHighlight } from "../menu";
 import { Layer, type DashboardInputEvent, type LayerActions, type LayerContext } from "../layers";
+import { wrapText, truncateText } from "../../graphics/textwrap";
 
 const DIALOG_X = 40;
 const DIALOG_Y = 40;
@@ -90,7 +91,7 @@ export class AssistantLayer implements Layer {
     image.drawText(font, left, DIALOG_Y + 12, this.phase === "thinking" ? "Assistant ●" : "Assistant", 220);
     if (this.status) {
       const statusValue = this.phase === "error" ? 200 : 130;
-      image.drawText(font, left, DIALOG_Y + 30, truncate(font, this.status, TEXT_MAX_WIDTH), statusValue);
+      image.drawText(font, left, DIALOG_Y + 30, truncateText(font, this.status, TEXT_MAX_WIDTH), statusValue);
     }
 
     const inMenu = this.phase !== "thinking";
@@ -161,30 +162,4 @@ export class AssistantLayer implements Layer {
   onRemoved(): void {
     this.callbacks.onRemoved?.();
   }
-}
-
-function wrapText(font: BdfFont, text: string, maxWidth: number): string[] {
-  const words = text.split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let line = "";
-  for (const word of words) {
-    const candidate = line ? `${line} ${word}` : word;
-    if (line && font.measureText(candidate) > maxWidth) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = candidate;
-    }
-  }
-  if (line) lines.push(line);
-  return lines.length ? lines : [""];
-}
-
-function truncate(font: BdfFont, text: string, maxWidth: number): string {
-  if (font.measureText(text) <= maxWidth) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) {
-    out = out.slice(0, -1);
-  }
-  return `${out}...`;
 }

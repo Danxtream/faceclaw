@@ -1,6 +1,6 @@
 import { getDefaultLargeFont, getDefaultMediumFont, getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
 import { GrayImage } from "../../graphics/image";
-import { wrapText } from "../../graphics/textwrap";
+import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { type ForecastPeriod, type WeatherState } from "../../native/weather";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../gestures";
@@ -39,9 +39,9 @@ export class WeatherLayer implements Layer {
     if (weather.locationName) {
       image.drawText(
         font,
-        width - PAGE_X - font.measureText(truncate(font, weather.locationName, 220)),
+        width - PAGE_X - font.measureText(truncateText(font, weather.locationName, 220)),
         HEADER_Y,
-        truncate(font, weather.locationName, 220),
+        truncateText(font, weather.locationName, 220),
         150,
       );
     }
@@ -104,7 +104,7 @@ export class WeatherLayer implements Layer {
       medium,
       CURRENT_TEXT_X,
       CURRENT_TOP + 5,
-      truncate(medium, current.description || "Current conditions", width - CURRENT_TEXT_X - PAGE_X),
+      truncateText(medium, current.description || "Current conditions", width - CURRENT_TEXT_X - PAGE_X),
       220,
     );
 
@@ -150,10 +150,10 @@ export class WeatherLayer implements Layer {
         drawSelectionHighlight(image, PAGE_X - 7, y - 2, width - 2 * (PAGE_X - 7), FORECAST_ROW_HEIGHT - 2, ctx.stack.isFocused(), 5);
       }
       const shade = selected ? 245 : 190;
-      image.drawText(font, PAGE_X, y + 2, truncate(font, period.name, FORECAST_NAME_WIDTH), shade);
+      image.drawText(font, PAGE_X, y + 2, truncateText(font, period.name, FORECAST_NAME_WIDTH), shade);
       image.drawText(font, FORECAST_TEMP_X, y + 2, period.temperatureF === null ? "--" : `${Math.round(period.temperatureF)}°F`, shade);
       image.drawText(font, FORECAST_PRECIP_X, y + 2, period.precipitationPercent === null ? "--" : `${Math.round(period.precipitationPercent)}%`, selected ? 220 : 155);
-      image.drawText(font, FORECAST_SUMMARY_X, y + 2, truncate(font, period.shortForecast, width - FORECAST_SUMMARY_X - PAGE_X), selected ? 220 : 165);
+      image.drawText(font, FORECAST_SUMMARY_X, y + 2, truncateText(font, period.shortForecast, width - FORECAST_SUMMARY_X - PAGE_X), selected ? 220 : 165);
     }
 
     image.drawText(
@@ -189,9 +189,3 @@ function formatAge(ageMs: number): string {
   return `${Math.round(minutes / 60)}h ago`;
 }
 
-function truncate(font: BdfFont, text: string, maxWidth: number): string {
-  if (font.measureText(text) <= maxWidth) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) out = out.slice(0, -1);
-  return `${out}...`;
-}

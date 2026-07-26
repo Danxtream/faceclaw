@@ -1,4 +1,4 @@
-import { wrapText } from "../../graphics/textwrap";
+import { wrapText, truncateText } from "../../graphics/textwrap";
 import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
 import { GrayImage } from "../../graphics/image";
 import { Layer, type DashboardInputEvent, type LayerContext } from "../layers";
@@ -31,7 +31,7 @@ export class TextViewerLayer implements Layer {
     const image = new GrayImage(width, height, 0);
     const footerY = height - FOOTER_MARGIN;
     this.bodyLineCount = Math.max(1, Math.floor((footerY - BODY_Y) / LINE_STEP));
-    image.drawText(font, MARGIN_X + 4, TITLE_Y, truncateToWidth(font, this.title, width - 2 * MARGIN_X - 8), 220);
+    image.drawText(font, MARGIN_X + 4, TITLE_Y, truncateText(font, this.title, width - 2 * MARGIN_X - 8), 220);
 
     const lines = this.getLines(font, width);
     const visibleLines = lines.slice(this.firstLine, this.firstLine + this.bodyLineCount);
@@ -94,11 +94,3 @@ export class TextViewerLayer implements Layer {
   }
 }
 
-function truncateToWidth(font: BdfFont, text: string, maxWidth: number): string {
-  if (font.measureText(text) <= maxWidth) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) {
-    out = out.slice(0, -1);
-  }
-  return `${out}...`;
-}

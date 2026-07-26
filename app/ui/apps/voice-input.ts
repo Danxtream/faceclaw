@@ -1,4 +1,5 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
+import { wrapText, truncateText } from "../../graphics/textwrap";
 import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
 import { refineDictation, type AnthropicStreamHandle } from "../../native/anthropic";
@@ -228,7 +229,7 @@ export class VoiceInputLayer implements Layer {
 
     const left = DIALOG_X + 16;
     image.drawText(font, left, DIALOG_Y + 12, this.capturing ? "Voice ●" : "Voice", 220);
-    image.drawText(font, left, DIALOG_Y + 30, truncate(font, this.status, TEXT_MAX_WIDTH), 130);
+    image.drawText(font, left, DIALOG_Y + 30, truncateText(font, this.status, TEXT_MAX_WIDTH), 130);
 
     const inMenu = this.phase === "menu";
     const rows = inMenu ? this.menuRows() : [];
@@ -479,30 +480,4 @@ export class VoiceInputLayer implements Layer {
     }
     this.actions.requestRender();
   }
-}
-
-function wrapText(font: BdfFont, text: string, maxWidth: number): string[] {
-  const words = text.split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let line = "";
-  for (const word of words) {
-    const candidate = line ? `${line} ${word}` : word;
-    if (line && font.measureText(candidate) > maxWidth) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = candidate;
-    }
-  }
-  if (line) lines.push(line);
-  return lines.length ? lines : [""];
-}
-
-function truncate(font: BdfFont, text: string, maxWidth: number): string {
-  if (font.measureText(text) <= maxWidth) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) {
-    out = out.slice(0, -1);
-  }
-  return `${out}...`;
 }

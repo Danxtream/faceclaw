@@ -1,6 +1,6 @@
 import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
 import { GrayImage } from "../../graphics/image";
-import { wrapText } from "../../graphics/textwrap";
+import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { readUpcomingEvents, type CalendarEvent } from "../../native/calendar";
 import { timeFormatSetting } from "../dashboard-settings";
@@ -147,7 +147,7 @@ function drawEventRow(
   const maxTextWidth = width - 2 * x;
   for (let index = 0; index < row.lines.length; index++) {
     const value = index === 0 ? (selected ? 235 : 205) : 160;
-    image.drawText(font, x, cursorY + 3 + index * LINE_HEIGHT, truncateToWidth(font, row.lines[index]!, maxTextWidth), value);
+    image.drawText(font, x, cursorY + 3 + index * LINE_HEIGHT, truncateText(font, row.lines[index]!, maxTextWidth), value);
   }
 }
 
@@ -188,13 +188,4 @@ function formatEventTime(timestampMs: number): string {
     return `${hour12}:${minutes} ${hour24 < 12 ? "AM" : "PM"}`;
   }
   return `${String(hour24).padStart(2, "0")}:${minutes}`;
-}
-
-function truncateToWidth(font: BdfFont, text: string, width: number): string {
-  if (font.measureText(text) <= width) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`${out}...`) > width) {
-    out = out.slice(0, -1);
-  }
-  return `${out}...`;
 }

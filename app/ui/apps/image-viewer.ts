@@ -1,4 +1,5 @@
 import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
+import { truncateText } from "../../graphics/textwrap";
 import { GrayImage } from "../../graphics/image";
 import { loadImageFileAsGray } from "../../native/image-files";
 import { GESTURE_DOUBLE_CLICK } from "../gestures";
@@ -28,7 +29,7 @@ export class ImageViewerLayer implements Layer {
     const font = getDefaultSmallFont();
     const { width, height } = ctx.stack.getBaseSize();
     const out = new GrayImage(width, height, 0);
-    out.drawText(font, MARGIN_X, TITLE_Y, truncateToWidth(font, this.title, width - 2 * MARGIN_X), 220);
+    out.drawText(font, MARGIN_X, TITLE_Y, truncateText(font, this.title, width - 2 * MARGIN_X), 220);
 
     const bodyHeight = height - BODY_TOP - BODY_MARGIN;
     if (!this.loadAttempted) {
@@ -53,13 +54,4 @@ export class ImageViewerLayer implements Layer {
       ctx.stack.pop();
     }
   }
-}
-
-function truncateToWidth(font: BdfFont, text: string, maxWidth: number): string {
-  if (font.measureText(text) <= maxWidth) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) {
-    out = out.slice(0, -1);
-  }
-  return `${out}...`;
 }

@@ -1,4 +1,5 @@
 import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
+import { truncateText, truncateLeft } from "../../graphics/textwrap";
 import { GrayImage } from "../../graphics/image";
 import { renderIcon, type IconName } from "../../graphics/icons";
 import { clamp } from "../../util/numeric-util";
@@ -163,7 +164,7 @@ export class FileBrowserLayer implements Layer {
         drawSelectionHighlight(image, LIST_X - 6, y - 1, width - 2 * LIST_X + 12, ROW_HEIGHT - 1, ctx.stack.isFocused(), 4);
       }
       const value = itemValue(row, selected);
-      image.drawText(font, LIST_X, y + 1, truncateRight(font, row.label, width - 2 * LIST_X), value);
+      image.drawText(font, LIST_X, y + 1, truncateText(font, row.label, width - 2 * LIST_X), value);
     }
 
     image.drawText(font, 20, height - 16, `${GESTURE_CLICK} open   ${GESTURE_DOUBLE_CLICK} up / back`, 110);
@@ -192,7 +193,7 @@ export class FileBrowserLayer implements Layer {
         if (selected) {
           drawSelectionHighlight(image, LIST_X - 6, textY - 2, width - 2 * LIST_X + 12, font.lineHeight + 4, focused, 4);
         }
-        image.drawText(font, LIST_X, textY, truncateRight(font, row.item.label, width - 2 * LIST_X), itemValue(row.item, selected));
+        image.drawText(font, LIST_X, textY, truncateText(font, row.item.label, width - 2 * LIST_X), itemValue(row.item, selected));
         continue;
       }
 
@@ -215,7 +216,7 @@ export class FileBrowserLayer implements Layer {
             transparentZero: true,
           });
         }
-        const label = truncateRight(font, item.label, colW - 8);
+        const label = truncateText(font, item.label, colW - 8);
         const labelY = Math.round(blockTop + ICON_SIZE + LABEL_GAP);
         image.drawText(font, Math.round(centerX - font.measureText(label) / 2), labelY, label, item.supported ? 210 : 100);
       }
@@ -572,22 +573,4 @@ function basename(path: string): string {
 
 function truncateChars(text: string, maxLength: number): string {
   return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 3))}...`;
-}
-
-function truncateRight(font: BdfFont, text: string, maxWidth: number): string {
-  if (font.measureText(text) <= maxWidth) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) {
-    out = out.slice(0, -1);
-  }
-  return `${out}...`;
-}
-
-function truncateLeft(font: BdfFont, text: string, maxWidth: number): string {
-  if (font.measureText(text) <= maxWidth) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`...${out}`) > maxWidth) {
-    out = out.slice(1);
-  }
-  return `...${out}`;
 }

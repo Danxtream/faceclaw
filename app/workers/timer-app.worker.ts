@@ -20,6 +20,7 @@ import {
   GESTURE_DOUBLE_CLICK,
   GESTURE_SCROLL,
 } from "../ui/gestures";
+import { clamp } from "../util/numeric-util";
 
 declare const global: any;
 declare const com: any;
@@ -579,6 +580,3 @@ function formatDuration(durationMs: number): string {
   return `${seconds}s`;
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}

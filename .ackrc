@@ -1,1 +1,4 @@
 --ignore-file=match:.mjs
+--ignore-dir=tempPlugin
+--ignore-dir=build
+--ignore-dir=platforms/android/build-tools
