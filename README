@@ -19,34 +19,48 @@ have not yet been iplemented. If you want to use OpenClaw with Even Realities G2
 smart glasses today, consider using OcuClaw (which is an Even Hub app) instead.
 
 
-## Compiling and Installing
+## Installation
 
-To compile this, you will need an Android SDK environment, with SDK version 35
+To compile, you will need an Android SDK environment with SDK version 35
 installed and licenses accepted, and the ANDROID_HOME pointing to the install.
-You will need a JDK environment (v21), with the JAVA_HOME environment variable
-pointed at it. You will also need a reasonably up to date npm and nodejs
-installed.
+You will need Nativescript installed, and a JDK environment (v21), with the
+JAVA_HOME environment variable pointed at it. You will also need a reasonably
+up to date npm and nodejs installed.
 
+To install a version that you compiled, you will need `adb` connected. Go to
+Settings>About phone and tap the "Build number" field seven times. Then plug
+the phone's USB-C port into your computer, authorize access on the phone, then
+run `nativescript run android 
+
+The compile, run
+  'npm run build'
+To install, run
+  `nativescript run android --juslaunch`
 
 ## Features
 
+ * A voice assistant that wakes up when you say "Hey Even", transcribes text
+   with an on-device model, OpenAI Whisper, or ElevenLabs API, and responds
+   to queries and commands using an Anthropic or OpenAI model (requires an API
+   key).
+ * Multitasking, with an app-switcher sidebar and app launcher
  * Integration with Android notifications: A top-bar that shows the
    same icons your phone does, popups when notifications arrive, and menu
    items to dismiss or use Android-app-provided custom actions like mark as
    read or quick reply.
- * An app-launcher and app-switcher sidebar
- * Mirror terminal apps such as coding agents with g2mirror
-   (https://github.com/jimrandomh/g2mirror) and view them on the glasses
- * A media player integration, which can view and control the currently
-   playing track and playlist. Compatible with most Android media players
-   (Spotify and VLC media player tested).
- * Integratation with Nightscout, an outside app for viewing blood-glucose
-   data.
- * Voice transcription using the G2's microphone with ElevenLabs' cloud
-   transcription model (requires an API key from ElevenLabs)
- * Connection management with auto-reconnect, autodetection of conflict with
-   the official Even Realities app, and some amount of experience/iteration
-   on the issues that come with keeping it runnign all day
+ * Mirror terminal apps such as Claude Code or Codex CLI with g2mirror
+   (https://github.com/jimrandomh/g2mirror), view them on the glasses, and
+   send them inputs with the voice assistant
+ * Media player controls including playlist and media library navigation,
+   compatible with most Android media players
+ * Turn-by-turn directions (requires a Mapbox API token)
+ * Nightscout, an app for viewing blood-glucose data (requires a cloud server
+   and API token)
+ * Power management: the glasses go to sleep properly when the screen is off,
+   and wake when you double-tap the ring or speak the wakeword, allowing
+   battery life similar to the stock Even app.
+ * Connection management with auto-reconnect, and autodetection of conflict
+   with the official Even Realities app
  * On-phone screen mirroring and simulated ring input
  * Dual-language NativeScript architecture with Java for the multithreaded
    Android API and bluetooth stack bits, Typescript for the bits you want to

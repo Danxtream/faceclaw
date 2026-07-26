@@ -6,8 +6,7 @@ for interfacing with Android SDK).
 Typescript parts are in app/. Java parts are in App_Resources/Android/src/main/java/com/faceclaw/app/.
 
 If build.sh exists, it's a machine-specific wrapper that sets some environment
-variables to point to where tools are installed, then runs
-  `nativescript build android`.
+variables to point to where tools are installed, then runs `npm run build`.
 If build_and_run.sh exists, it does everything build.sh does plus
   `nativescript run android --device <id> --justlaunch`,
 which will launch the app on the developer's phone if it is plugged in and has
