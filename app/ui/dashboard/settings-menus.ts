@@ -18,6 +18,7 @@ import {
   suspendEvenHubWhenScreenOffSetting,
   terminalAuthTokenSetting,
   terminalHostSetting,
+  terminalLaunchPresetsSetting,
   terminalPortSetting,
   textSettingMenuItem,
   timeFormatSetting,
@@ -81,6 +82,7 @@ function settingsSections(): SettingsSection[] {
         textSettingMenuItem(terminalHostSetting),
         textSettingMenuItem(terminalPortSetting),
         textSettingMenuItem(terminalAuthTokenSetting),
+        textSettingMenuItem(terminalLaunchPresetsSetting),
       ],
     },
     {

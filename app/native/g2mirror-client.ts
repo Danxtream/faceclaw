@@ -13,6 +13,7 @@ declare const java: any;
 
 const PROTOCOL_VERSION = 1;
 const SESSION_LIST_REFRESH_MS = 3_000;
+const LAUNCH_REPLY_TIMEOUT_MS = 10_000;
 // Wrapper-side pause between submitted text and its trailing "\r". Apps that
 // infer pasting from bytes arriving in one read (e.g. Claude Code) would
 // otherwise treat the "\r" as a pasted newline instead of the Enter key.
@@ -86,6 +87,14 @@ export class G2MirrorClient {
   private readonly sessionDetachedListeners = new Set<(reason: string) => void>();
   private readonly bellListeners = new Set<(socket: string, lastBellAtMs: number) => void>();
   private readonly titleListeners = new Set<(socket: string, title: string) => void>();
+  // Launch requests awaiting their reply, oldest first. The server answers
+  // each `launch` with either `launched` or an `error` whose message starts
+  // with "launch failed", so replies are matched to requests in order.
+  private readonly pendingLaunches: Array<{
+    resolve: (socket: string) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }> = [];
 
   constructor(private readonly options: G2MirrorClientOptions) {}
 
@@ -172,6 +181,7 @@ export class G2MirrorClient {
 
   stop(): void {
     this.stopped = true;
+    this.rejectAllPendingLaunches("client stopped");
     this.clearListRefreshTimer();
     if (this.ws) {
       // Best effort: let the wrapped app resize back before we go away.
@@ -194,6 +204,32 @@ export class G2MirrorClient {
     if (this.phase === "connected" || this.phase === "attached") {
       this.send({ type: "list" });
     }
+  }
+
+  /**
+   * Start a new detached session from a named server-side launch preset (the
+   * wire can only pick presets by name, never supply a command line; the
+   * token needs a launch grant covering the preset). Resolves with the new
+   * session's socket, which can then be attached like any other session.
+   */
+  launchSession(preset: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      if (this.phase !== "connected" && this.phase !== "attached") {
+        reject(new Error("Not connected to the g2mirror server."));
+        return;
+      }
+      const pending = {
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          const index = this.pendingLaunches.indexOf(pending);
+          if (index >= 0) this.pendingLaunches.splice(index, 1);
+          reject(new Error(`Launch of "${preset}" timed out.`));
+        }, LAUNCH_REPLY_TIMEOUT_MS),
+      };
+      this.pendingLaunches.push(pending);
+      this.send({ type: "launch", command: preset });
+    });
   }
 
   connectSession(socket: string): void {
@@ -282,6 +318,9 @@ export class G2MirrorClient {
         return;
       case "error": {
         const errorText = String(message.message ?? "unknown error");
+        if (errorText.startsWith("launch failed") && this.pendingLaunches.length) {
+          this.settlePendingLaunch(null, errorText);
+        }
         if (this.phase === "connecting") {
           // Handshake rejection; the server closes the socket after this.
           this.setState("failed", `Rejected: ${errorText}`);
@@ -325,6 +364,12 @@ export class G2MirrorClient {
           listener(socket, title);
         }
         this.emitState();
+        return;
+      }
+      case "launched": {
+        const socket = String(message.socket ?? "");
+        this.settlePendingLaunch(socket, `launch reply carried no socket`);
+        this.listSessions();
         return;
       }
       case "connect": {
@@ -398,7 +443,26 @@ export class G2MirrorClient {
     }
   }
 
+  /** Settle the oldest pending launch: resolve with `socket` if non-empty, else reject. */
+  private settlePendingLaunch(socket: string | null, errorText: string): void {
+    const pending = this.pendingLaunches.shift();
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    if (socket) {
+      pending.resolve(socket);
+    } else {
+      pending.reject(new Error(errorText));
+    }
+  }
+
+  private rejectAllPendingLaunches(reason: string): void {
+    while (this.pendingLaunches.length) {
+      this.settlePendingLaunch(null, reason);
+    }
+  }
+
   private handleConnectionLost(statusText: string): void {
+    this.rejectAllPendingLaunches("connection lost");
     this.clearListRefreshTimer();
     this.ws = null;
     this.listenerProxy = null;

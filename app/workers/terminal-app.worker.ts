@@ -27,6 +27,7 @@ import { clamp } from "../util/numeric-util";
 import {
   terminalAuthTokenSetting,
   terminalHostSetting,
+  terminalLaunchPresetsSetting,
   terminalPortSetting,
 } from "../ui/dashboard-settings";
 import { TerminalEmulator } from "../ui/apps/terminal-emulator";
@@ -139,6 +140,28 @@ const TERMINAL_TOOLS: ToolSpec[] = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     availability: "open",
   },
+  {
+    name: "list_launch_presets",
+    description:
+      "List the named launch presets that can start a new terminal session on the host machine (for launch_session).",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    availability: "open",
+  },
+  {
+    name: "launch_session",
+    description:
+      "Start a new terminal session on the host machine from a named launch preset (see list_launch_presets) and open a window viewing it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        preset: { type: "string", description: "Name of the launch preset to start." },
+      },
+      required: ["preset"],
+      additionalProperties: false,
+    },
+    availability: "open",
+    timeoutMs: 15_000,
+  },
 ];
 let viewportWidth = 0;
 let viewportHeight = 0;
@@ -230,6 +253,8 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
 // in the dashboard's Settings menu, which lives in the main isolate).
 onSettingsStoreChanged((key) => {
   if (!key.startsWith("terminal.")) return;
+  // The preset list only feeds menus and tool replies; no reconnect needed.
+  if (key === "terminal.launchPresets") return;
   if (gridCols > 0) {
     startControlClient();
   }
@@ -436,6 +461,18 @@ function windowMenuItems(window: TerminalWindow): MenuItem[] {
   if (window.kind === "hub") {
     const phase = controlState?.phase;
     if (phase === "connected" || phase === "attached") {
+      for (const preset of launchPresetNames()) {
+        items.push({
+          label: `Launch ${preset}`,
+          onSelect: (ctx) => {
+            ctx.stack.pop();
+            launchAndOpenView(preset).catch((error) => {
+              // The hub status line also shows the server's error message.
+              console.warn(`terminal launch ${preset} failed: ${error}`);
+            });
+          },
+        });
+      }
       items.push({
         label: "Disconnect",
         onSelect: (ctx) => {
@@ -623,10 +660,31 @@ function viewWindowIdForSocket(socket: string): string | null {
 }
 
 function openViewWindowFor(session: G2MirrorSession): void {
+  openViewWindow(session.socket, sessionLabel(session));
+}
+
+function openViewWindow(socket: string, label: string): void {
   const windowId = `terminal:view:${nextViewSerial++}`;
-  const label = sessionLabel(session);
-  pendingViews.set(windowId, { socket: session.socket, label });
+  pendingViews.set(windowId, { socket, label });
   post({ type: "open-window-request", windowId, title: label, iconLetter: "T", icon: "terminal", focus: true });
+}
+
+/** Preset names the user listed in Settings > Terminal (the wire protocol has no way to enumerate the server's). */
+function launchPresetNames(): string[] {
+  const names: string[] = [];
+  for (const piece of terminalLaunchPresetsSetting.get().split(",")) {
+    const name = piece.trim();
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+/** Launch a preset on the server and open a view window on the new session. */
+async function launchAndOpenView(preset: string): Promise<string> {
+  if (!controlClient) throw new Error("Not connected to the g2mirror server.");
+  const socket = await controlClient.launchSession(preset);
+  openViewWindow(socket, preset);
+  return socket;
 }
 
 function paint(window: TerminalWindow): GrayImage {
@@ -800,7 +858,7 @@ function sessionLabel(session: G2MirrorSession): string {
 }
 
 /** Dispatch an assistant tool-call (unprefixed name) to its handler. */
-function handleTerminalTool(name: string, args: any): ToolResult {
+function handleTerminalTool(name: string, args: any): ToolResult | Promise<ToolResult> {
   switch (name) {
     case "list_sessions":
       return toolListSessions();
@@ -808,9 +866,32 @@ function handleTerminalTool(name: string, args: any): ToolResult {
       return toolSendInput(args);
     case "read_screen":
       return toolReadScreen();
+    case "list_launch_presets":
+      return toolListLaunchPresets();
+    case "launch_session":
+      return toolLaunchSession(args);
     default:
       return { ok: false, error: `Unknown terminal tool: ${name}` };
   }
+}
+
+function toolListLaunchPresets(): ToolResult {
+  const presets = launchPresetNames();
+  if (!presets.length) {
+    return { ok: true, content: "No launch presets configured (Settings > Terminal > Launch presets)." };
+  }
+  return { ok: true, content: presets.map((preset) => `- ${preset}`).join("\n") };
+}
+
+async function toolLaunchSession(args: any): Promise<ToolResult> {
+  const preset = String(args?.preset ?? "").trim();
+  if (!preset) return { ok: false, error: "launch_session requires a preset name." };
+  const phase = controlState?.phase;
+  if (phase !== "connected" && phase !== "attached") {
+    return { ok: false, error: "Not connected to the g2mirror server." };
+  }
+  const socket = await launchAndOpenView(preset);
+  return { ok: true, content: `Launched "${preset}" (session ${socket}) and opened a window viewing it.` };
 }
 
 function toolListSessions(): ToolResult {

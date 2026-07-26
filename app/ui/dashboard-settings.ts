@@ -427,6 +427,17 @@ export const terminalAuthTokenSetting = new ConfigSettingString({
   description: "Shared secret that must match the g2mirror server's configured auth token.",
 });
 
+export const terminalLaunchPresetsSetting = new ConfigSettingString({
+  id: "terminal-launch-presets",
+  label: "Launch presets",
+  storageKey: "terminal.launchPresets",
+  defaultValue: "shell",
+  editorTitle: "g2mirror launch presets (comma-separated)",
+  glassesEditTitle: "Edit launch presets",
+  description:
+    "Comma-separated names of g2mirror launch presets that can be started from the glasses. Presets are defined in the server's config; the wire protocol has no way to list them, so name them here. The default server config defines \"shell\".",
+});
+
 export const nightscoutSiteUrlSetting = new ConfigSettingString({
   id: "nightscout-site-url",
   label: "Nightscout site URL",
