@@ -7,6 +7,7 @@ import {
   batteryDisplayModeSetting,
   brightnessSetting,
   elevenLabsApiKeySetting,
+  mapboxApiKeySetting,
   openAiApiKeySetting,
   enumSettingMenuItem,
   firmwareDebugFlagsSetting,
@@ -68,6 +69,7 @@ function settingsSections(): SettingsSection[] {
         textSettingMenuItem(elevenLabsApiKeySetting),
         textSettingMenuItem(openAiApiKeySetting),
         textSettingMenuItem(anthropicApiKeySetting),
+        textSettingMenuItem(mapboxApiKeySetting),
       ],
     },
     {

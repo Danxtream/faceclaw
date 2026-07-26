@@ -8,7 +8,7 @@ import {
   OsEventTypeName,
 } from "./events";
 import { loadDeviceAddresses } from "./device-addresses";
-import { ensureBlePermissions, ensureVoicePermissions } from "./android-permissions";
+import { ensureBlePermissions, ensureFineLocationPermission, ensureVoicePermissions } from "./android-permissions";
 import { FaceclawCommunicatorBridge, type FrameMetrics, type RawInputEvent } from "../native/faceclaw-communicator";
 import * as frameTimings from "../native/frame-timings";
 import { startForegroundNotification, stopForegroundNotification, updateForegroundNotification } from "../native/foreground-service";
@@ -26,6 +26,7 @@ import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
 import { registerSystemTools } from "../assistant/system-tools";
+import { registerNavigateTools } from "../assistant/navigate-tools";
 import { WorkerAppHost } from "../ui/shell/worker-window";
 import { createLauncherWindow, LAUNCHER_SURFACE_ID } from "../ui/shell/launcher-app";
 import {
@@ -241,6 +242,8 @@ class DashboardController {
     // The always-available assistant tools (calendar, media, notifications,
     // glasses state) register once at startup, independent of any connection.
     registerSystemTools();
+    // nav.* tools launch the Navigate app on demand, so they need launchApp.
+    registerNavigateTools((appId) => this.launchApp(appId));
     shell.configure({
       actions: {
         ...sharedActions,
@@ -272,6 +275,7 @@ class DashboardController {
           { appId: "notifications", label: "Notifications", icon: "bell" },
           { appId: "calendar", label: "Calendar", icon: "calendar" },
           { appId: "weather", label: "Weather", icon: "cloud-sun" },
+          { appId: "navigate", label: "Navigate", icon: "map" },
           { appId: "debug-tests", label: "Debug tests", icon: "flask-conical" },
           { appId: "settings", label: "Settings", icon: "settings" },
         ],
@@ -1192,6 +1196,8 @@ class DashboardController {
       worker = new Worker("../workers/timer-app.worker");
     } else if (appId === "terminal") {
       worker = new Worker("../workers/terminal-app.worker");
+    } else if (appId === "navigate") {
+      worker = new Worker("../workers/navigate-app.worker");
     } else {
       return null;
     }
@@ -1298,6 +1304,20 @@ class DashboardController {
       }
       host.openWindow({ windowId: "timer:main", title: "Timer", iconLetter: "T", icon: "timer", focus: true });
       this.appendLog("launched timer:main");
+      return;
+    }
+    if (appId === "navigate") {
+      // Navigation needs precise location; prompt on the phone while the
+      // window opens (the worker can't show permission dialogs).
+      void ensureFineLocationPermission().catch(() => {});
+      const existing = shell.getWindows().find((window) => window.appId === "navigate");
+      if (existing) {
+        shell.focusWindow(existing.windowId);
+        this.requestShellRender();
+        return;
+      }
+      host.openWindow({ windowId: "navigate:main", title: "Navigate", iconLetter: "N", icon: "map", focus: true });
+      this.appendLog("launched navigate:main");
       return;
     }
   }

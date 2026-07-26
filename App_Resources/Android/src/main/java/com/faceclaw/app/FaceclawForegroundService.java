@@ -111,11 +111,23 @@ public class FaceclawForegroundService extends Service {
         if (hasRecordAudioPermission()) {
             type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
         }
+        // The location type keeps while-in-use location flowing to the
+        // Navigate app when the phone screen locks. Only claimed once the
+        // permission exists: on API 34+ claiming it without the permission
+        // makes startForeground throw.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && hasFineLocationPermission()) {
+            type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
+        }
         return type;
     }
 
     private boolean hasRecordAudioPermission() {
         return ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean hasFineLocationPermission() {
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
                 == PackageManager.PERMISSION_GRANTED;
     }
 }

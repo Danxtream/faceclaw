@@ -331,6 +331,16 @@ export const anthropicApiKeySetting = new ConfigSettingString({
   formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
 });
 
+export const mapboxApiKeySetting = new ConfigSettingString({
+  id: "mapbox-api-key",
+  label: "Mapbox token",
+  storageKey: "maps.mapboxApiKey",
+  defaultValue: "",
+  editorTitle: "Mapbox public token (pk.…)",
+  glassesEditTitle: "Edit Mapbox token",
+  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+});
+
 export const terminalHostSetting = new ConfigSettingString({
   id: "terminal-host",
   label: "Host",

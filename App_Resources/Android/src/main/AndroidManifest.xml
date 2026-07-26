@@ -18,8 +18,9 @@
 	<uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
 	<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
 	<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
-	<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30"/>
-	<!-- Approximate foreground location is sufficient for the Weather app. -->
+	<!-- Precise location for turn-by-turn navigation (Navigate app); pre-31
+	     it also covers BLE scanning. Weather only needs coarse. -->
+	<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
 	<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
 	<uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
 	<uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation"/>
@@ -31,6 +32,7 @@
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
 	<uses-permission android:name="android.permission.WAKE_LOCK"/>
 	<!-- Needed to resolve other apps' notification small icons (Icon TYPE_RESOURCE):
 	     package visibility filtering otherwise makes Icon.loadDrawable fail with
@@ -79,7 +81,7 @@
 			android:name="com.faceclaw.app.FaceclawForegroundService"
 			android:enabled="true"
 			android:exported="false"
-			android:foregroundServiceType="connectedDevice|microphone" />
+			android:foregroundServiceType="connectedDevice|microphone|location" />
 		<service
 			android:name="com.faceclaw.app.FaceclawMediaNotificationListenerService"
 			android:enabled="true"

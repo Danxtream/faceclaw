@@ -4,10 +4,12 @@ const PERMISSION_REQUEST_CODE = 4242;
 const VOICE_PERMISSION_REQUEST_CODE = 4243;
 const CALENDAR_PERMISSION_REQUEST_CODE = 4244;
 const LOCATION_PERMISSION_REQUEST_CODE = 4245;
+const FINE_LOCATION_PERMISSION_REQUEST_CODE = 4246;
 const POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS";
 const RECORD_AUDIO_PERMISSION = "android.permission.RECORD_AUDIO";
 const READ_CALENDAR_PERMISSION = "android.permission.READ_CALENDAR";
 const ACCESS_COARSE_LOCATION_PERMISSION = "android.permission.ACCESS_COARSE_LOCATION";
+const ACCESS_FINE_LOCATION_PERMISSION = "android.permission.ACCESS_FINE_LOCATION";
 
 function getActivity(): androidx.appcompat.app.AppCompatActivity {
   const activity = Application.android.foregroundActivity ?? Application.android.startActivity;
@@ -124,6 +126,33 @@ export async function ensureCalendarPermission(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Whether precise (GPS) foreground location access has been granted. */
+export function hasFineLocationPermission(): boolean {
+  if (!global.isAndroid) return false;
+  return isPermissionGranted(ACCESS_FINE_LOCATION_PERMISSION);
+}
+
+/**
+ * Prompt for precise foreground location access (navigation needs GPS fixes
+ * with bearing). Requests coarse alongside fine so Android's "approximate
+ * only" choice degrades gracefully rather than denying outright; resolves
+ * true only when precise access is actually held.
+ */
+export async function ensureFineLocationPermission(): Promise<boolean> {
+  if (!global.isAndroid) return false;
+  try {
+    await ensurePermissions(
+      [ACCESS_FINE_LOCATION_PERMISSION, ACCESS_COARSE_LOCATION_PERMISSION],
+      FINE_LOCATION_PERMISSION_REQUEST_CODE,
+      "Location",
+    );
+  } catch {
+    // Fall through: the user may have granted approximate-only, which still
+    // reports as a denial of fine. Re-check what is actually held.
+  }
+  return hasFineLocationPermission();
 }
 
 /** Whether approximate foreground location access has been granted. */

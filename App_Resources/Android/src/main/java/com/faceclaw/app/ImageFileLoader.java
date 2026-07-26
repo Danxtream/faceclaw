@@ -51,6 +51,34 @@ public final class ImageFileLoader {
     }
 
     /**
+     * Decode an in-memory image file (PNG/JPEG/WebP bytes, e.g. a fetched
+     * map tile) and downscale to fit within maxWidth x maxHeight. Takes a
+     * ByteBuffer because NativeScript marshals a JS ArrayBuffer to one.
+     */
+    public static byte[] loadGrayFromBytes(java.nio.ByteBuffer buffer, int maxWidth, int maxHeight) {
+        if (buffer == null || maxWidth <= 0 || maxHeight <= 0) {
+            return new byte[0];
+        }
+        try {
+            java.nio.ByteBuffer source = buffer.duplicate();
+            source.rewind();
+            byte[] data = new byte[source.remaining()];
+            source.get(data);
+            if (data.length == 0) {
+                return new byte[0];
+            }
+            Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);
+            if (bitmap == null) {
+                return new byte[0];
+            }
+            return bitmapToGrayPacket(bitmap, maxWidth, maxHeight);
+        } catch (Exception | OutOfMemoryError e) {
+            Log.w(TAG, "byte-array image decode failed", e);
+            return new byte[0];
+        }
+    }
+
+    /**
      * Scale a bitmap to fit within maxWidth x maxHeight (preserving aspect,
      * never upscaling) and convert it to the grayscale packet format.
      * Transparent pixels darken toward black (the on-glasses background).
