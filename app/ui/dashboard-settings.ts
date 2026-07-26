@@ -23,7 +23,7 @@ export type NightscoutSettings = {
 };
 export type BatteryDisplayMode = "icon" | "percentage";
 export type TimeFormat = "24h" | "12h";
-export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "never";
+export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "3m" | "never";
 // "auto" lets the glasses' ambient-light sensor drive brightness; the numeric
 // values are exact levels on the firmware's 0-100 scale (nonlinear: ~30 is
 // dim-but-readable indoors, ~60 is bright outdoors).
@@ -37,6 +37,8 @@ type ConfigSettingOptions<TValue, TId extends string> = {
   storageKey: string;
   defaultValue: TValue;
   formatValue?: (value: TValue) => string;
+  /** Extended description shown in the Settings panel when the row is selected. */
+  description?: string;
 };
 
 // Fired after any setting changes, in any isolate (storage lives in the Java
@@ -62,6 +64,7 @@ onSettingsStoreChanged(() => {
 export abstract class ConfigSetting<TValue, TId extends string = string> {
   readonly id: TId;
   readonly label: string;
+  readonly description?: string;
   protected readonly storageKey: string;
   protected readonly defaultValue: TValue;
   private readonly valueFormatter: (value: TValue) => string;
@@ -69,6 +72,7 @@ export abstract class ConfigSetting<TValue, TId extends string = string> {
   protected constructor(options: ConfigSettingOptions<TValue, TId>) {
     this.id = options.id;
     this.label = options.label;
+    this.description = options.description;
     this.storageKey = options.storageKey;
     this.defaultValue = options.defaultValue;
     this.valueFormatter = options.formatValue ?? ((value) => String(value));
@@ -180,6 +184,7 @@ export const systemCardNameSetting = new ConfigSettingString({
   glassesEditTitle: "Edit dashboard name",
   normalize: normalizeSystemCardName,
   formatValue: (value) => value || "Faceclaw",
+  description: "Title text shown on the dashboard's system card.",
 });
 
 export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMode>({
@@ -189,6 +194,7 @@ export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMod
   defaultValue: "icon",
   values: ["icon", "percentage"],
   formatValue: batteryDisplayModeLabel,
+  description: "How the top bar shows the phone and glasses battery levels: a small gauge icon or an exact percentage.",
 });
 
 export const uiFontSetting = new ConfigSettingEnum<UiFontChoice>({
@@ -198,6 +204,7 @@ export const uiFontSetting = new ConfigSettingEnum<UiFontChoice>({
   defaultValue: "terminus",
   values: UI_FONT_VALUES,
   formatValue: uiFontLabel,
+  description: "Typeface for UI text on the glasses. Terminus is fixed-width; TerminusV is a proportional variant that fits more text per line.",
 });
 
 export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
@@ -207,6 +214,7 @@ export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
   defaultValue: "24h",
   values: ["24h", "12h"],
   formatValue: timeFormatLabel,
+  description: "Whether the top-bar clock shows 24-hour or 12-hour time.",
 });
 
 export const brightnessSetting = new ConfigSettingEnum<BrightnessSetting>({
@@ -216,6 +224,7 @@ export const brightnessSetting = new ConfigSettingEnum<BrightnessSetting>({
   defaultValue: "auto",
   values: BRIGHTNESS_VALUES,
   formatValue: brightnessLabel,
+  description: "Display brightness. Auto lets the ambient-light sensor pick the level; numbers set an exact level. After picking Auto, it may take some time to first adjust.",
 });
 
 export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>({
@@ -223,15 +232,17 @@ export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>(
   label: "Screen timeout",
   storageKey: "display.screenTimeout",
   defaultValue: "30s",
-  values: ["15s", "30s", "1m", "never"],
+  values: ["15s", "30s", "1m", "3m", "never"],
   formatValue: screenTimeoutLabel,
+  description: "How long the display stays on after the last input before turning itself off. \"Never\" keeps it on until turned off manually.",
 });
 
 export const voiceControlEnabledSetting = new ConfigSettingBoolean({
   id: "voice-control-enabled",
   label: "Enable",
   storageKey: "voice.enabled",
-  defaultValue: false,
+  defaultValue: true,
+  description: "Master switch for voice features, including wakeword detection and voice input.",
 });
 
 export const rawScreenshotsEnabledSetting = new ConfigSettingBoolean({
@@ -239,6 +250,7 @@ export const rawScreenshotsEnabledSetting = new ConfigSettingBoolean({
   label: "Take raw screenshots",
   storageKey: "developer.rawScreenshots",
   defaultValue: false,
+  description: "Show a button in the phone app that captures the exact frame data being sent to the glasses.",
 });
 
 export const firmwareDebugFlagsSetting = new ConfigSettingBoolean({
@@ -246,13 +258,15 @@ export const firmwareDebugFlagsSetting = new ConfigSettingBoolean({
   label: "Firmware debug flags",
   storageKey: "developer.firmwareDebugFlags",
   defaultValue: false,
+  description: "Overlay debug information provided by custom firmware that shows draw timings and dirty rects. Only useful for firmware development.",
 });
 
 export const suspendEvenHubWhenScreenOffSetting = new ConfigSettingBoolean({
   id: "suspend-evenhub-screen-off",
   label: "Suspend EvenHub when screen off",
   storageKey: "developer.suspendEvenHubWhenScreenOff",
-  defaultValue: false,
+  defaultValue: true,
+  description: "Suspend the EvenHub session while the display is off. This significantly improves battery life, but increases the latency of waking the screen.",
 });
 
 export type VoiceProvider = "onboard" | "elevenlabs" | "whisper";
@@ -270,6 +284,7 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   defaultValue: "onboard",
   values: ["onboard", "elevenlabs", "whisper"],
   formatValue: (value) => voiceProviderLabels[value] ?? value,
+  description: "Speech-to-text engine for voice input. ElevenLabs and Whisper are cloud services that need an API key, with significantly better accuracy than on-device transcription.",
 });
 
 const wakeWordActionLabels: Record<WakeWordAction, string> = {
@@ -285,6 +300,7 @@ export const wakeWordActionSetting = new ConfigSettingEnum<WakeWordAction>({
   defaultValue: "voice-input",
   values: ["voice-input", "off", "turn-screen-on"],
   formatValue: (value) => wakeWordActionLabels[value] ?? value,
+  description: "What saying \"Hey Even\" does: start voice input, just turn the screen on, or nothing.",
 });
 
 export const saveVoiceRecordingsSetting = new ConfigSettingBoolean({
@@ -292,6 +308,7 @@ export const saveVoiceRecordingsSetting = new ConfigSettingBoolean({
   label: "Save voice recordings",
   storageKey: "developer.saveVoiceRecordings",
   defaultValue: false,
+  description: "Keep a copy of captured voice audio on the phone, for debugging transcription problems.",
 });
 
 export const assistantSkipConfirmationSetting = new ConfigSettingBoolean({
@@ -299,6 +316,7 @@ export const assistantSkipConfirmationSetting = new ConfigSettingBoolean({
   label: "Send to assistant without confirming",
   storageKey: "assistant.skipConfirmationAfterWakeword",
   defaultValue: false,
+  description: "After a wakeword utterance, send the transcript straight to the assistant instead of stopping at the Send/Type confirmation menu.",
 });
 
 export const elevenLabsApiKeySetting = new ConfigSettingString({
@@ -309,6 +327,7 @@ export const elevenLabsApiKeySetting = new ConfigSettingString({
   editorTitle: "ElevenLabs API key",
   glassesEditTitle: "Edit ElevenLabs key",
   formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+  description: "ElevenLabs API key, used when ElevenLabs is the transcription provider. The key needs the speech-to-text permission.",
 });
 
 export const openAiApiKeySetting = new ConfigSettingString({
@@ -319,6 +338,7 @@ export const openAiApiKeySetting = new ConfigSettingString({
   editorTitle: "OpenAI API key",
   glassesEditTitle: "Edit OpenAI key",
   formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+  description: "OpenAI API key, used when Whisper is the transcription provider or an OpenAI model is selected for the voice assistant.",
 });
 
 export const anthropicApiKeySetting = new ConfigSettingString({
@@ -329,6 +349,7 @@ export const anthropicApiKeySetting = new ConfigSettingString({
   editorTitle: "Anthropic API key",
   glassesEditTitle: "Edit Anthropic key",
   formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+  description: "Anthropic API key, used when an Anthropic model is selected for the voice assistant.",
 });
 
 export const mapboxApiKeySetting = new ConfigSettingString({
@@ -339,6 +360,7 @@ export const mapboxApiKeySetting = new ConfigSettingString({
   editorTitle: "Mapbox public token (pk.…)",
   glassesEditTitle: "Edit Mapbox token",
   formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+  description: "Mapbox public token (pk. prefix), used by the Navigate app for maps, geocoding, and directions.",
 });
 
 export const terminalHostSetting = new ConfigSettingString({
@@ -348,6 +370,7 @@ export const terminalHostSetting = new ConfigSettingString({
   defaultValue: "",
   editorTitle: "g2mirror host (tailscale IP)",
   glassesEditTitle: "Edit terminal host",
+  description: "Hostname or IP address (e.g. a Tailscale address) of the machine running g2mirror, for the Terminal app.",
 });
 
 export const terminalPortSetting = new ConfigSettingString({
@@ -357,6 +380,7 @@ export const terminalPortSetting = new ConfigSettingString({
   defaultValue: "8737",
   editorTitle: "g2mirror port",
   glassesEditTitle: "Edit terminal port",
+  description: "TCP port the g2mirror server listens on. The default is 8737.",
 });
 
 export const terminalAuthTokenSetting = new ConfigSettingString({
@@ -366,6 +390,7 @@ export const terminalAuthTokenSetting = new ConfigSettingString({
   defaultValue: "",
   editorTitle: "g2mirror auth token",
   glassesEditTitle: "Edit terminal auth token",
+  description: "Shared secret that must match the g2mirror server's configured auth token.",
 });
 
 export const nightscoutSiteUrlSetting = new ConfigSettingString({
@@ -377,6 +402,7 @@ export const nightscoutSiteUrlSetting = new ConfigSettingString({
   glassesEditTitle: "Edit Nightscout URL",
   normalize: normalizeNightscoutSiteUrl,
   formatValue: emptySettingDisplay,
+  description: "Base URL of a Nightscout site to fetch glucose readings from, for the dashboard's glucose card.",
 });
 
 export const nightscoutApiTokenSetting = new ConfigSettingString({
@@ -388,6 +414,7 @@ export const nightscoutApiTokenSetting = new ConfigSettingString({
   glassesEditTitle: "Edit API token",
   normalize: normalizeNightscoutApiToken,
   formatValue: maskToken,
+  description: "Access token for the Nightscout site's API.",
 });
 
 
@@ -399,6 +426,8 @@ export function screenTimeoutSettingToMs(value: ScreenTimeoutSetting): number | 
       return 30_000;
     case "1m":
       return 60_000;
+    case "3m":
+      return 180_000;
     case "never":
       return null;
   }
@@ -476,6 +505,7 @@ export function enumSettingMenuItem<TValue extends string, TId extends string = 
   const style = opts?.style ?? "cycle";
   return {
     label: setting.label,
+    description: setting.description,
       onSelect: (ctx) => {
         if (style === "cycle") {
         const oldValue = setting.get();
@@ -511,6 +541,7 @@ export function toggleSettingMenuItem<TId extends string = string>(
 ): MenuItem {
   return {
     label: setting.label,
+    description: setting.description,
     onSelect: (ctx) => {
       setting.set(!setting.get());
       opts?.onChange?.(ctx, setting.get(), !setting.get());
@@ -527,6 +558,7 @@ export function textSettingMenuItem<TId extends string = string>(
 ): MenuItem {
   return {
     label: setting.label,
+    description: setting.description,
     onSelect: (ctx: LayerContext) => {
       void ctx.actions.startTextSettingEdit(setting);
       ctx.stack.push(new EditTextSettingLayer(setting));

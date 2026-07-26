@@ -43,6 +43,8 @@ export type MenuItemRenderArgs = {
 
 export type MenuItem = {
   label: string;
+  /** Extended description; the Settings panel shows it below the list while the item is selected. */
+  description?: string;
   onSelect: (ctx: LayerContext, menu: MenuLayer) => Promise<void> | void;
   render?: (args: MenuItemRenderArgs) => void;
 };

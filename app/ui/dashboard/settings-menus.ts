@@ -100,6 +100,7 @@ function settingsSections(): SettingsSection[] {
       items: [
         {
           label: "Disconnect from glasses",
+          description: "Close the Bluetooth connection to the glasses and return them to standby.",
           onSelect: async (ctx) => {
             ctx.stack.clearToBase();
             await ctx.actions.disconnect();

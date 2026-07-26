@@ -1,5 +1,6 @@
 import { getDefaultSmallFont } from "../../graphics/bdffont";
 import { GrayImage } from "../../graphics/image";
+import { wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../gestures";
 import { DashboardInputEvent, Layer, LayerContext } from "../layers";
@@ -27,6 +28,7 @@ export type SettingsSection = {
 const PAD = 8;
 const ROW_H = 20;
 const LEFT_W = 150;
+const MAX_DESCRIPTION_LINES = 3;
 // A throwaway menu to satisfy MenuItem.onSelect's second parameter; the
 // settings items never use it (they act via ctx only).
 const NO_MENU = new MenuLayer(null, []);
@@ -95,7 +97,16 @@ export class SettingsPanelLayer implements Layer {
     if (section.renderDetail) {
       section.renderDetail({ image, x: rightX, y: top, width: rightW, height: listBottom - top, ctx });
     } else if (rightItems.length) {
-      const rightRows = Math.max(1, ((listBottom - top) / ROW_H) | 0);
+      // Once focus is in the right column, the bottom of the pane shows the
+      // selected item's extended description (when it has one), with the row
+      // list shrunk to make room.
+      const selectedItem = this.focus === "right" ? rightItems[this.rightIndex] : undefined;
+      const descriptionLines = selectedItem?.description
+        ? wrapText(font, selectedItem.description, rightW - 4).slice(0, MAX_DESCRIPTION_LINES)
+        : [];
+      const descriptionH = descriptionLines.length ? descriptionLines.length * font.lineHeight + 10 : 0;
+      const rightListBottom = listBottom - descriptionH;
+      const rightRows = Math.max(1, ((rightListBottom - top) / ROW_H) | 0);
       this.rightScroll = clampScroll(this.rightIndex, this.rightScroll, rightRows, rightItems.length);
       for (let i = this.rightScroll; i < Math.min(rightItems.length, this.rightScroll + rightRows); i++) {
         const item = rightItems[i]!;
@@ -110,6 +121,12 @@ export class SettingsPanelLayer implements Layer {
           item.render({ image, x: rightX + 8, y: rowY, width: rightW - 16, height: ROW_H - 3, selected, text: item.label, ctx });
         } else {
           image.drawText(font, rightX + 8, rowY + 4, item.label, selected ? 255 : 200);
+        }
+      }
+      if (descriptionLines.length) {
+        image.drawLine(rightX, rightListBottom, rightX + rightW, rightListBottom, 40);
+        for (let i = 0; i < descriptionLines.length; i++) {
+          image.drawText(font, rightX + 4, rightListBottom + 6 + i * font.lineHeight, descriptionLines[i]!, 150);
         }
       }
     }
