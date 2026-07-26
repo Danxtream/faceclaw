@@ -1,3 +1,5 @@
+import { buildRefineUserMessage, REFINE_SYSTEM_PROMPT } from "../prompts";
+
 declare const com: any;
 
 /**
@@ -261,13 +263,6 @@ function describeHttpError(code: number, body: string): string {
   }
 }
 
-const REFINE_SYSTEM_PROMPT =
-  "You edit dictated text. The user dictated a message, then dictated a follow-up. " +
-  "If the follow-up is additional content, append it to the message where it naturally fits. " +
-  "If it describes an edit (a correction, a deletion, or content to insert somewhere specific), apply that edit instead of appending the instruction itself. " +
-  "Fix only what the follow-up asks; keep the rest of the original wording. " +
-  "Output only the final text of the message, with no preamble, quotes, or commentary.";
-
 export type RefineDictationOptions = {
   apiKey: string;
   original: string;
@@ -290,7 +285,7 @@ export function refineDictation(options: RefineDictationOptions): AnthropicStrea
     messages: [
       {
         role: "user",
-        content: `Original dictation:\n${options.original}\n\nFollow-up dictation:\n${options.followup}`,
+        content: buildRefineUserMessage(options.original, options.followup),
       },
     ],
     onTextDelta: options.onTextDelta,

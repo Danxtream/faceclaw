@@ -1,4 +1,5 @@
 import { DEFAULT_LLM_MODEL, type AnthropicMessage, type AnthropicToolDefinition } from "../native/anthropic";
+import { buildAssistantSystemPrompt } from "../prompts";
 import { DirectAnthropicBackend } from "./direct-backend";
 import { toolRegistry, type ToolRegistry } from "./tool-registry";
 import type { AssistantContext, AssistantTurnCallbacks, AssistantTurnHandle } from "./types";
@@ -18,13 +19,6 @@ const SESSION_IDLE_MS = 10 * 60 * 1000;
 
 /** Trim history from the head once it grows past this many messages. */
 const MAX_HISTORY_MESSAGES = 40;
-
-const SYSTEM_PROMPT_BASE = [
-  "You are the voice assistant built into a pair of Even Realities G2 smart glasses.",
-  "Your reply is shown as text on a 576x288 monochrome heads-up display and may also be read aloud, so keep it short: 1-3 plain sentences, no markdown, no bullet lists unless the user explicitly asks for a list.",
-  "Prefer doing things with the tools you have over describing how the user could do them; when a tool can answer or act, use it.",
-  "If a tool fails or a capability is missing, say so briefly rather than inventing a result.",
-].join(" ");
 
 export class AssistantSession {
   private readonly backend = new DirectAnthropicBackend();
@@ -60,7 +54,7 @@ export class AssistantSession {
     this.messages.push({ role: "user", content: text });
     this.trimHistory();
 
-    const system = `${SYSTEM_PROMPT_BASE}\n\n${describeContext(ctx)}`;
+    const system = buildAssistantSystemPrompt(ctx);
 
     const finish = () => {
       this.turnHandle = null;
@@ -137,19 +131,4 @@ function startsWithToolResult(message: AnthropicMessage): boolean {
     message.content.length > 0 &&
     message.content[0]!.type === "tool_result"
   );
-}
-
-function describeContext(ctx: AssistantContext): string {
-  const parts = [`Current time: ${ctx.localTime}.`];
-  parts.push(`The glasses display is currently ${ctx.screenOn ? "on" : "off"}.`);
-  if (ctx.foregroundApp) {
-    const title = ctx.foregroundTitle ? ` ("${ctx.foregroundTitle}")` : "";
-    parts.push(`The foreground app is ${ctx.foregroundApp}${title}.`);
-  } else {
-    parts.push("No app is in the foreground (the launcher is showing).");
-  }
-  if (ctx.headsetBattery !== null) {
-    parts.push(`Glasses battery: ${ctx.headsetBattery}%.`);
-  }
-  return `Context: ${parts.join(" ")}`;
 }
