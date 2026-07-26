@@ -22,6 +22,9 @@ export const ICON_SVGS = {
     '<svg viewBox="0 0 24 24" fill="none"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>',
   timer:
     '<svg viewBox="0 0 24 24" fill="none"><line x1="10" x2="14" y1="2" y2="2"/><line x1="12" x2="15" y1="14" y2="11"/><circle cx="12" cy="14" r="8"/></svg>',
+  // Not a Lucide icon: an L-tetromino built from four squares, for Blocks.
+  "l-piece":
+    '<svg viewBox="0 0 24 24" fill="none"><rect width="6" height="6" x="5" y="1.5" rx="1"/><rect width="6" height="6" x="5" y="9" rx="1"/><rect width="6" height="6" x="5" y="16.5" rx="1"/><rect width="6" height="6" x="12.5" y="16.5" rx="1"/></svg>',
   terminal:
     '<svg viewBox="0 0 24 24" fill="none"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg>',
   "file-text":

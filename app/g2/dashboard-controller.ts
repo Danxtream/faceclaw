@@ -276,6 +276,7 @@ class DashboardController {
           { appId: "calendar", label: "Calendar", icon: "calendar" },
           { appId: "weather", label: "Weather", icon: "cloud-sun" },
           { appId: "navigate", label: "Navigate", icon: "map" },
+          { appId: "blocks", label: "Blocks", icon: "l-piece" },
           { appId: "debug-tests", label: "Debug tests", icon: "flask-conical" },
           { appId: "settings", label: "Settings", icon: "settings" },
         ],
@@ -1198,6 +1199,8 @@ class DashboardController {
       worker = new Worker("../workers/terminal-app.worker");
     } else if (appId === "navigate") {
       worker = new Worker("../workers/navigate-app.worker");
+    } else if (appId === "blocks") {
+      worker = new Worker("../workers/blocks-app.worker");
     } else {
       return null;
     }
@@ -1304,6 +1307,17 @@ class DashboardController {
       }
       host.openWindow({ windowId: "timer:main", title: "Timer", iconLetter: "T", icon: "timer", focus: true });
       this.appendLog("launched timer:main");
+      return;
+    }
+    if (appId === "blocks") {
+      const existing = shell.getWindows().find((window) => window.appId === "blocks");
+      if (existing) {
+        shell.focusWindow(existing.windowId);
+        this.requestShellRender();
+        return;
+      }
+      host.openWindow({ windowId: "blocks:main", title: "Blocks", iconLetter: "B", icon: "l-piece", focus: true });
+      this.appendLog("launched blocks:main");
       return;
     }
     if (appId === "navigate") {

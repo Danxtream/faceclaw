@@ -70,6 +70,15 @@ export type CallToolOptions = {
 
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
 
+/** One registration as seen by the shell's tool-debug dialog. */
+export type ToolDebugEntry = {
+  spec: ToolSpec;
+  /** The window that contributed the tool, or null for system-registered tools. */
+  windowId: string | null;
+  /** Whether the tool is callable right now (availability gate at snapshot time). */
+  live: boolean;
+};
+
 /** How the shell reaches a window's tool handler and gates its foreground tools. */
 export type AppToolProvider = {
   windowId: string;
@@ -164,6 +173,26 @@ export class ToolRegistry {
       specs.push(registration.spec);
     }
     return specs;
+  }
+
+  /**
+   * Snapshot of every registration, including ones not currently live — for
+   * the shell's debug dialog only; backends must use listTools.
+   */
+  listToolsForDebug(): ToolDebugEntry[] {
+    const ownerByName = new Map<string, string>();
+    for (const [windowId, names] of this.windowToolNames) {
+      for (const name of names) ownerByName.set(name, windowId);
+    }
+    const entries: ToolDebugEntry[] = [];
+    for (const registration of this.registrations.values()) {
+      entries.push({
+        spec: registration.spec,
+        windowId: ownerByName.get(registration.spec.name) ?? null,
+        live: this.isLive(registration),
+      });
+    }
+    return entries;
   }
 
   /**

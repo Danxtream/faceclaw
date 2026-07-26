@@ -19,6 +19,8 @@ import {
 } from "../dashboard-settings";
 import { ShellChromeLayer, type ShellChromeState, type ShellChromeWindow } from "./chrome-layer";
 import { ShellModalLayer } from "./modal-layer";
+import { ToolDebugMenuLayer } from "./tool-debug-layer";
+import { toolRegistry } from "../../assistant/tool-registry";
 import { SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
 
 /**
@@ -813,9 +815,10 @@ class Shell {
   private openEscapeMenu(): void {
     if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
     const foreground = this.foregroundWindow();
-    if (!foreground?.closeable) return;
-    const items: MenuItem[] = [
-      {
+    if (!foreground) return;
+    const items: MenuItem[] = [];
+    if (foreground.closeable) {
+      items.push({
         label: "Close window",
         onSelect: (ctx) => {
           // Pop the menu first (its onRemoved returns focus to the sidebar),
@@ -823,9 +826,36 @@ class Shell {
           ctx.stack.pop();
           this.closeForegroundWindow();
         },
+      });
+    }
+    items.push({
+      label: "Debug",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        this.openToolDebugDialog();
       },
-    ];
+    });
     this.stack.push(new ShellOverlayMenuLayer(items, () => this.yieldFocusToSidebar()));
+    this.config.requestShellRender();
+  }
+
+  /**
+   * Escape menu > Debug: list the assistant tools registered for the
+   * foreground window's app (live or gated). System-wide "always" tools are
+   * constant and omitted.
+   */
+  private openToolDebugDialog(): void {
+    const foreground = this.foregroundWindow();
+    const appId = foreground?.appId ?? null;
+    const entries = appId
+      ? toolRegistry
+          .listToolsForDebug()
+          .filter(
+            (entry) =>
+              entry.spec.name.startsWith(`app.${appId}.`) || entry.windowId === foreground!.windowId,
+          )
+      : [];
+    this.stack.push(new ToolDebugMenuLayer(appId, entries, () => this.yieldFocusToSidebar()));
     this.config.requestShellRender();
   }
 
