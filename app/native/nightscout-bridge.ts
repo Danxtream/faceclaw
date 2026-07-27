@@ -103,6 +103,11 @@ const NIGHTSCOUT_REFRESH_MS = 60_000;
 const NIGHTSCOUT_HISTORY_COUNT = 30;
 const NIGHTSCOUT_GRAPH_WINDOW_MS = 2 * 60 * 60 * 1000;
 const NIGHTSCOUT_TREATMENT_LOOKBACK_MS = 3 * 60 * 60 * 1000;
+// The v1 treatments API silently adds `created_at >= now - 4 days` to any
+// query without an explicit date filter (lib/server/query.js enforceDateFilter),
+// which is shorter than a typical cannula age. 62 days matches the window the
+// Nightscout webapp uses for its own CAGE query.
+const NIGHTSCOUT_SITE_CHANGE_LOOKBACK_MS = 62 * 24 * 60 * 60 * 1000;
 
 const DEFAULT_NIGHTSCOUT_STATE: NightscoutState = {
   available: false,
@@ -195,6 +200,7 @@ export class NightscoutBridge {
         return;
       }
       const treatmentStartIso = new Date(nowMs - NIGHTSCOUT_TREATMENT_LOOKBACK_MS).toISOString();
+      const siteChangeStartIso = new Date(nowMs - NIGHTSCOUT_SITE_CHANGE_LOOKBACK_MS).toISOString();
       const tokenQuery = `token=${encodeURIComponent(apiToken)}`;
       const [entries, deviceStatus, status, treatments, siteChanges] = await Promise.all([
         fetchJson<NightscoutEntryResponse[]>(
@@ -210,7 +216,7 @@ export class NightscoutBridge {
           `${siteUrl}/api/v1/treatments.json?find%5Bcreated_at%5D%5B%24gte%5D=${encodeURIComponent(treatmentStartIso)}&${tokenQuery}`,
         ),
         fetchJson<NightscoutTreatmentResponse[]>(
-          `${siteUrl}/api/v1/treatments.json?find%5BeventType%5D=Site%20Change&count=1&${tokenQuery}`,
+          `${siteUrl}/api/v1/treatments.json?find%5BeventType%5D=Site%20Change&find%5Bcreated_at%5D%5B%24gte%5D=${encodeURIComponent(siteChangeStartIso)}&count=1&${tokenQuery}`,
         ),
       ]);
 

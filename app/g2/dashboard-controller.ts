@@ -9,7 +9,7 @@ import {
 } from "./events";
 import { loadDeviceAddresses } from "./device-addresses";
 import { ensureBlePermissions, ensureFineLocationPermission, ensureVoicePermissions } from "./android-permissions";
-import { FaceclawCommunicatorBridge, type FrameMetrics, type RawInputEvent } from "../native/faceclaw-communicator";
+import { FaceclawCommunicatorBridge, type RawInputEvent } from "../native/faceclaw-communicator";
 import * as frameTimings from "../native/frame-timings";
 import { startForegroundNotification, stopForegroundNotification, updateForegroundNotification } from "../native/foreground-service";
 import { mediaControllerBridge } from "../native/media-controller";
@@ -734,9 +734,9 @@ class DashboardController {
         this.appendLog(message);
         this.emit();
       });
-      this.offFrameMetrics = communicator.onFrameMetrics((metrics) => {
+      this.offFrameMetrics = communicator.onFrameMetrics(() => {
         if (this.phase === "connected") {
-          this.setStatus(`Connected. Last frame: ${this.formatFrameMetrics(metrics)}.`);
+          this.setStatus("Connected.");
           // A rendered frame means the session is warmed up (fixedLayoutCreated),
           // so the buzzer won't be dropped. Play the one-time welcome sound now.
           if (this.welcomeSoundArmed) {
@@ -922,7 +922,16 @@ class DashboardController {
     }
   }
 
-  async injectSyntheticRingInput(kind: "click" | "double-click" | "scroll-up" | "scroll-down"): Promise<void> {
+  async injectSyntheticRingInput(
+    kind: "click" | "double-click" | "scroll-up" | "scroll-down" | "long-press" | "wakeword",
+  ): Promise<void> {
+    if (kind === "long-press") {
+      // Hardware delivers a press event and then a release when the finger
+      // lifts; emulate a short hold so the escape-menu countdown never fires.
+      await this.handleInputEvent(this.buildSyntheticRingInput("long-press"));
+      await this.handleInputEvent(this.buildSyntheticRingInput("long-press-release"));
+      return;
+    }
     const event = this.buildSyntheticRingInput(kind);
     await this.handleInputEvent(event);
   }
@@ -1542,11 +1551,6 @@ class DashboardController {
     updateForegroundNotification("Connected");
   }
 
-  private formatFrameMetrics(metrics: FrameMetrics): string {
-    return `paint=${Math.round(metrics.paintMs)}ms, transmit=${Math.round(metrics.transmitMs)}ms, tiles=${Math.round(metrics.tileCount)}`;
-  }
-
-
   private appendLog(line: string): void {
     const stamped = `[${formatTimestamp(new Date())}] ${line}`;
     //this.log = this.log ? `${this.log}\n${stamped}` : stamped;
@@ -1589,9 +1593,46 @@ class DashboardController {
     return `${sanitized.slice(0, 237)}...`;
   }
 
-  private buildSyntheticRingInput(kind: "click" | "double-click" | "scroll-up" | "scroll-down"): RawInputEvent {
+  private buildSyntheticRingInput(
+    kind:
+      | "click"
+      | "double-click"
+      | "scroll-up"
+      | "scroll-down"
+      | "long-press"
+      | "long-press-release"
+      | "wakeword",
+  ): RawInputEvent {
     const frameId = frameTimings.startFrame(`input:synthetic:${kind}`);
     switch (kind) {
+      case "wakeword":
+        // Same event the glasses report for the spoken wakeword (sid 0x07).
+        return {
+          kind: "even-ai",
+          containerName: "",
+          eventType: EvenAIStatus.EVEN_AI_WAKE_UP,
+          eventSource: 0,
+          systemExitReasonCode: 0,
+          frameId,
+        };
+      case "long-press":
+        return {
+          kind: "sys-event",
+          containerName: "",
+          eventType: OsEventTypeList.RING_LONG_PRESS_EVENT,
+          eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
+          systemExitReasonCode: 0,
+          frameId,
+        };
+      case "long-press-release":
+        return {
+          kind: "sys-event",
+          containerName: "",
+          eventType: OsEventTypeList.RING_LONG_PRESS_RELEASE_EVENT,
+          eventSource: EventSourceType.TOUCH_EVENT_FROM_RING,
+          systemExitReasonCode: 0,
+          frameId,
+        };
       case "click":
         return {
           kind: "sys-event",

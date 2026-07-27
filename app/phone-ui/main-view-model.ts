@@ -437,6 +437,14 @@ export class MainViewModel extends Observable {
     await dashboardController.injectSyntheticRingInput("click");
   }
 
+  async onSyntheticLongPressTap(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("long-press");
+  }
+
+  async onSyntheticMicTap(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("wakeword");
+  }
+
   private appendLog(line: string): void {
     const stamp = new Date().toISOString().slice(11, 19);
     this.log = this.log ? `${this.log}\n[${stamp}] ${line}` : `[${stamp}] ${line}`;

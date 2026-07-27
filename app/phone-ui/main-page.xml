@@ -37,7 +37,9 @@
                     <GridLayout rows="auto,auto,auto" columns="*,*,*" class="m-t-8">
                         <Button row="0" col="1" text="Swipe up" tap="{{ onSyntheticUpTap }}" />
                         <Button row="1" col="0" text="Double-click" tap="{{ onSyntheticLeftTap }}" />
+                        <Button row="1" col="1" text="Long press" tap="{{ onSyntheticLongPressTap }}" />
                         <Button row="1" col="2" text="Click" tap="{{ onSyntheticRightTap }}" />
+                        <Button row="0" col="2" text="Microphone" tap="{{ onSyntheticMicTap }}" />
                         <Button row="2" col="1" text="Swipe down" tap="{{ onSyntheticDownTap }}" />
                     </GridLayout>
                     <Button text="Save raw screenshot" tap="{{ onScreenshotTap }}" visibility="{{ screenshotButtonVisibility }}" />
@@ -83,7 +85,9 @@
                     <GridLayout rows="auto,auto,auto" columns="*,*,*">
                         <Button row="0" col="1" text="Swipe up" tap="{{ onSyntheticUpTap }}" />
                         <Button row="1" col="0" text="Double-click" tap="{{ onSyntheticLeftTap }}" />
+                        <Button row="1" col="1" text="Long press" tap="{{ onSyntheticLongPressTap }}" />
                         <Button row="1" col="2" text="Click" tap="{{ onSyntheticRightTap }}" />
+                        <Button row="0" col="2" text="Microphone" tap="{{ onSyntheticMicTap }}" />
                         <Button row="2" col="1" text="Swipe down" tap="{{ onSyntheticDownTap }}" />
                     </GridLayout>
                     <Button text="Save raw screenshot" tap="{{ onScreenshotTap }}" visibility="{{ screenshotButtonVisibility }}" />
