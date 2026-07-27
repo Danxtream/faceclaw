@@ -171,6 +171,8 @@ class ShellAlertLayer implements Layer {
 class Shell {
   private windows: ShellWindow[] = [];
   private selectedIndex = 0;
+  /** Window ids in most-recently-visible-first order; closing the visible window returns to the next entry. */
+  private mruWindowIds: string[] = [];
   private focus: FocusKind = "sidebar";
   private screenOn = true;
   private lastInputAtMs = Date.now();
@@ -229,9 +231,26 @@ class Shell {
     const existing = this.windows.findIndex((w) => w.windowId === window.windowId);
     if (existing >= 0) {
       this.windows[existing] = window;
+      if (existing === this.selectedIndex) this.noteWindowVisible(window.windowId);
     } else {
       this.windows.push(window);
+      if (this.windows.length - 1 === this.selectedIndex) this.noteWindowVisible(window.windowId);
     }
+  }
+
+  /** Move a window to the front of the most-recently-visible order. */
+  private noteWindowVisible(windowId: string): void {
+    this.mruWindowIds = this.mruWindowIds.filter((id) => id !== windowId);
+    this.mruWindowIds.unshift(windowId);
+  }
+
+  /** Index of the most recently visible window still in the registry, or -1. */
+  private mostRecentWindowIndex(): number {
+    for (const id of this.mruWindowIds) {
+      const index = this.windows.findIndex((w) => w.windowId === id);
+      if (index >= 0) return index;
+    }
+    return -1;
   }
 
   removeWindow(windowId: string): void {
@@ -240,10 +259,14 @@ class Shell {
     const wasSelected = index === this.selectedIndex;
     this.windows.splice(index, 1);
     this.attention.delete(windowId);
-    if (this.selectedIndex > index) {
+    this.mruWindowIds = this.mruWindowIds.filter((id) => id !== windowId);
+    if (wasSelected) {
+      // Return to the most recently visible remaining window.
+      const mruIndex = this.mostRecentWindowIndex();
+      this.selectedIndex =
+        mruIndex >= 0 ? mruIndex : Math.min(index, Math.max(0, this.windows.length - 1));
+    } else if (this.selectedIndex > index) {
       this.selectedIndex--;
-    } else if (this.selectedIndex >= this.windows.length) {
-      this.selectedIndex = Math.max(0, this.windows.length - 1);
     }
     if (this.focus === "window" && (wasSelected || !this.windows.length)) {
       this.focus = "sidebar";
@@ -251,8 +274,11 @@ class Shell {
     if (wasSelected) {
       // Hand the foreground to whatever is now selected.
       const next = this.windows[this.selectedIndex];
-      next?.setForeground?.(true);
-      next?.requestRender();
+      if (next) {
+        this.noteWindowVisible(next.windowId);
+        next.setForeground?.(true);
+        next.requestRender();
+      }
     }
     this.config.requestShellRender();
   }
@@ -579,6 +605,7 @@ class Shell {
     const previous = this.windows[this.selectedIndex];
     this.selectedIndex = index;
     const next = this.windows[index];
+    if (next) this.noteWindowVisible(next.windowId);
     previous?.setForeground?.(false);
     next?.setForeground?.(true);
     next?.requestRender();

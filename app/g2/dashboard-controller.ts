@@ -27,8 +27,13 @@ import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
 import { registerSystemTools } from "../assistant/system-tools";
 import { registerNavigateTools } from "../assistant/navigate-tools";
+import { registerWindowTools } from "../assistant/window-tools";
 import { WorkerAppHost } from "../ui/shell/worker-window";
-import { createLauncherWindow, LAUNCHER_SURFACE_ID } from "../ui/shell/launcher-app";
+import {
+  createLauncherWindow,
+  LAUNCHER_SURFACE_ID,
+  type LauncherAppEntry,
+} from "../ui/shell/launcher-app";
 import {
   createSettingsAppWindow,
   SETTINGS_SURFACE_ID,
@@ -141,6 +146,25 @@ const LOW_BATTERY_PERCENT = 5;
 const EVEN_APP_DETECTED_MESSAGE =
   "The Even Realities app appears to be running. If Faceclaw has trouble connecting, open its app settings and force stop it.";
 
+// The launcher grid's app list; also fixes the app ids apps.launch accepts.
+const LAUNCHER_APPS: LauncherAppEntry[] = [
+  { appId: "timer", label: "Timer", icon: "timer" },
+  { appId: "terminal", label: "Terminal", icon: "terminal" },
+  { appId: "files", label: "Files", icon: "folder" },
+  { appId: "music", label: "Music", icon: "music" },
+  { appId: "nightscout", label: "Nightscout", icon: "nightscout" },
+  { appId: "transcribe", label: "Transcribe", icon: "mic" },
+  { appId: "notifications", label: "Notifications", icon: "bell" },
+  { appId: "calendar", label: "Calendar", icon: "calendar" },
+  { appId: "weather", label: "Weather", icon: "cloud-sun" },
+  { appId: "navigate", label: "Navigate", icon: "map" },
+  { appId: "blocks", label: "Blocks", icon: "l-piece" },
+  { appId: "minesweeper", label: "Minesweeper", icon: "bomb" },
+  { appId: "freecell", label: "Freecell", icon: "spade" },
+  { appId: "debug-tests", label: "Debug tests", icon: "flask-conical" },
+  { appId: "settings", label: "Settings", icon: "settings" },
+];
+
 function createInitialDisplayPreview(): ImageSource | null {
   return grayImageToPreviewSource(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
 }
@@ -244,6 +268,12 @@ class DashboardController {
     registerSystemTools();
     // nav.* tools launch the Navigate app on demand, so they need launchApp.
     registerNavigateTools((appId) => this.launchApp(appId));
+    // apps.* tools mirror the launcher grid and sidebar (launch, focus, close).
+    registerWindowTools({
+      apps: LAUNCHER_APPS,
+      launchApp: (appId) => this.launchApp(appId),
+      requestShellRender: () => this.requestShellRender(),
+    });
     shell.configure({
       actions: {
         ...sharedActions,
@@ -265,21 +295,7 @@ class DashboardController {
           ...sharedActions,
           requestRender: () => shell.foregroundWindow()?.requestRender(),
         },
-        apps: [
-          { appId: "timer", label: "Timer", icon: "timer" },
-          { appId: "terminal", label: "Terminal", icon: "terminal" },
-          { appId: "files", label: "Files", icon: "folder" },
-          { appId: "music", label: "Music", icon: "music" },
-          { appId: "nightscout", label: "Nightscout", icon: "nightscout" },
-          { appId: "transcribe", label: "Transcribe", icon: "mic" },
-          { appId: "notifications", label: "Notifications", icon: "bell" },
-          { appId: "calendar", label: "Calendar", icon: "calendar" },
-          { appId: "weather", label: "Weather", icon: "cloud-sun" },
-          { appId: "navigate", label: "Navigate", icon: "map" },
-          { appId: "blocks", label: "Blocks", icon: "l-piece" },
-          { appId: "debug-tests", label: "Debug tests", icon: "flask-conical" },
-          { appId: "settings", label: "Settings", icon: "settings" },
-        ],
+        apps: LAUNCHER_APPS,
         launchApp: (appId) => this.launchApp(appId),
         submitFrame: (image, paintMs, frameId) =>
           this.submitWindowFrame(LAUNCHER_SURFACE_ID, image, paintMs, frameId),
@@ -1210,6 +1226,10 @@ class DashboardController {
       worker = new Worker("../workers/navigate-app.worker");
     } else if (appId === "blocks") {
       worker = new Worker("../workers/blocks-app.worker");
+    } else if (appId === "minesweeper") {
+      worker = new Worker("../workers/minesweeper-app.worker");
+    } else if (appId === "freecell") {
+      worker = new Worker("../workers/freecell-app.worker");
     } else {
       return null;
     }
@@ -1327,6 +1347,40 @@ class DashboardController {
       }
       host.openWindow({ windowId: "blocks:main", title: "Blocks", iconLetter: "B", icon: "l-piece", focus: true });
       this.appendLog("launched blocks:main");
+      return;
+    }
+    if (appId === "minesweeper") {
+      const existing = shell.getWindows().find((window) => window.appId === "minesweeper");
+      if (existing) {
+        shell.focusWindow(existing.windowId);
+        this.requestShellRender();
+        return;
+      }
+      host.openWindow({
+        windowId: "minesweeper:main",
+        title: "Minesweeper",
+        iconLetter: "M",
+        icon: "bomb",
+        focus: true,
+      });
+      this.appendLog("launched minesweeper:main");
+      return;
+    }
+    if (appId === "freecell") {
+      const existing = shell.getWindows().find((window) => window.appId === "freecell");
+      if (existing) {
+        shell.focusWindow(existing.windowId);
+        this.requestShellRender();
+        return;
+      }
+      host.openWindow({
+        windowId: "freecell:main",
+        title: "Freecell",
+        iconLetter: "F",
+        icon: "spade",
+        focus: true,
+      });
+      this.appendLog("launched freecell:main");
       return;
     }
     if (appId === "navigate") {

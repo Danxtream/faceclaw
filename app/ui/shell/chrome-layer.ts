@@ -4,7 +4,7 @@ import { BATTERY_ICON_WIDTH, drawBattery } from "../../graphics/battery";
 import { readActiveNotificationIcons } from "../../native/notification-icons";
 import { readPhoneBatteryState } from "../../native/phone-battery";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../../util/render-freshness";
-import { renderIcon, type IconName } from "../../graphics/icons";
+import { renderIcon, renderIconWithGlyph, type IconName } from "../../graphics/icons";
 import { batteryDisplayModeSetting, timeFormatSetting } from "../dashboard-settings";
 import { Layer } from "../layers";
 import { scrollToKeepSelectionVisible } from "../menu";
@@ -49,9 +49,9 @@ export function makeLetterWindowIcon(letter: string): ShellChromeWindow["drawIco
 }
 
 /** Window icon rendered from an SVG (Lucide), rendered once per size and cached. */
-export function makeSvgWindowIcon(name: IconName): ShellChromeWindow["drawIcon"] {
+export function makeSvgWindowIcon(name: IconName, glyph?: string): ShellChromeWindow["drawIcon"] {
   return (image, x, y, size, inverted) => {
-    const icon = renderIcon(name, size);
+    const icon = glyph ? renderIconWithGlyph(name, glyph, size) : renderIcon(name, size);
     if (!icon) return;
     const dx = x + Math.max(0, ((size - icon.width) / 2) | 0);
     const dy = y + Math.max(0, ((size - icon.height) / 2) | 0);
@@ -74,8 +74,8 @@ export function makeSvgWindowIcon(name: IconName): ShellChromeWindow["drawIcon"]
 }
 
 /** SVG icon when a name is given, else the letter placeholder. */
-export function windowIcon(icon: IconName | undefined, letter: string): ShellChromeWindow["drawIcon"] {
-  return icon ? makeSvgWindowIcon(icon) : makeLetterWindowIcon(letter);
+export function windowIcon(icon: IconName | undefined, letter: string, glyph?: string): ShellChromeWindow["drawIcon"] {
+  return icon ? makeSvgWindowIcon(icon, glyph) : makeLetterWindowIcon(letter);
 }
 
 /**

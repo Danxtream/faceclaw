@@ -15,6 +15,7 @@
 import "@nativescript/core/globals";
 import { GrayImage } from "../graphics/image";
 import { getFont } from "../graphics/bdffont";
+import { TERMINAL_ICON_GLYPHS } from "../graphics/icons";
 import * as frameTimings from "../native/frame-timings";
 import { GESTURE_DOUBLE_CLICK } from "../ui/gestures";
 import {
@@ -81,6 +82,8 @@ type ViewWindow = BaseWindow & {
   kind: "view";
   socket: string;
   label: string;
+  /** Sidebar-icon character (">3"); "" if every glyph was taken at open time. */
+  glyph: string;
   client: G2MirrorClient;
   emulator: TerminalEmulator;
   receivedData: boolean;
@@ -103,7 +106,7 @@ type ViewWindow = BaseWindow & {
 type TerminalWindow = HubWindow | ViewWindow;
 
 const windows = new Map<string, TerminalWindow>();
-const pendingViews = new Map<string, { socket: string; label: string }>();
+const pendingViews = new Map<string, { socket: string; label: string; glyph: string }>();
 // The view an assistant tool acts on when the terminal isn't foregrounded:
 // the last view to be foregrounded or receive input.
 let activeViewId: string | null = null;
@@ -269,7 +272,7 @@ function openWindow(windowId: string, surfaceId: string, viewport: { width: numb
   const pendingView = pendingViews.get(windowId);
   if (pendingView) {
     pendingViews.delete(windowId);
-    windows.set(windowId, createViewWindow(windowId, surfaceId, pendingView.socket, pendingView.label));
+    windows.set(windowId, createViewWindow(windowId, surfaceId, pendingView));
     renderHubWindows();
     return;
   }
@@ -365,7 +368,12 @@ function renderHubWindows(): void {
   }
 }
 
-function createViewWindow(windowId: string, surfaceId: string, socket: string, label: string): ViewWindow {
+function createViewWindow(
+  windowId: string,
+  surfaceId: string,
+  view: { socket: string; label: string; glyph: string },
+): ViewWindow {
+  const { socket, label, glyph } = view;
   const client = new G2MirrorClient(clientOptions());
   const window: ViewWindow = {
     kind: "view",
@@ -378,6 +386,7 @@ function createViewWindow(windowId: string, surfaceId: string, socket: string, l
     menu: null,
     socket,
     label,
+    glyph,
     client,
     emulator: new TerminalEmulator(gridCols, gridRows),
     receivedData: false,
@@ -663,10 +672,36 @@ function openViewWindowFor(session: G2MirrorSession): void {
   openViewWindow(session.socket, sessionLabel(session));
 }
 
+/**
+ * Lowest unused sidebar-icon character for a new view window (its terminal
+ * icon shows ">N"). Glyphs free up when their window closes, since usage is
+ * recomputed from the live windows; "" (plain ">_" icon) if all are taken.
+ */
+function allocateViewGlyph(): string {
+  const used = new Set<string>();
+  for (const window of windows.values()) {
+    if (window.kind === "view") used.add(window.glyph);
+  }
+  for (const pending of pendingViews.values()) used.add(pending.glyph);
+  for (const glyph of TERMINAL_ICON_GLYPHS) {
+    if (!used.has(glyph)) return glyph;
+  }
+  return "";
+}
+
 function openViewWindow(socket: string, label: string): void {
   const windowId = `terminal:view:${nextViewSerial++}`;
-  pendingViews.set(windowId, { socket, label });
-  post({ type: "open-window-request", windowId, title: label, iconLetter: "T", icon: "terminal", focus: true });
+  const glyph = allocateViewGlyph();
+  pendingViews.set(windowId, { socket, label, glyph });
+  post({
+    type: "open-window-request",
+    windowId,
+    title: label,
+    iconLetter: "T",
+    icon: "terminal",
+    iconGlyph: glyph || undefined,
+    focus: true,
+  });
 }
 
 /** Preset names the user listed in Settings > Terminal (the wire protocol has no way to enumerate the server's). */

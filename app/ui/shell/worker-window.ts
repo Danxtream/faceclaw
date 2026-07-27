@@ -35,6 +35,7 @@ export type WorkerAppReply =
       title: string;
       iconLetter: string;
       icon?: IconName;
+      iconGlyph?: string;
       focus?: boolean;
     }
   | { type: "set-title"; windowId: string; title: string }
@@ -86,6 +87,8 @@ export type WorkerWindowSpec = {
   iconLetter: string;
   /** Lucide icon name for the sidebar indicator; falls back to iconLetter. */
   icon?: IconName;
+  /** Per-window character variant of `icon` (e.g. ">3" terminal icons). */
+  iconGlyph?: string;
   /** Foreground and focus the window once its surface exists. */
   focus?: boolean;
 };
@@ -152,6 +155,7 @@ export class WorkerAppHost {
             title: message.title,
             iconLetter: message.iconLetter,
             icon: message.icon,
+            iconGlyph: message.iconGlyph,
             focus: message.focus,
           });
           break;
@@ -242,7 +246,7 @@ export class WorkerAppHost {
         this.post({ type: "close-window", windowId: spec.windowId });
         this.options.removeSurface(surfaceId);
       },
-      drawIcon: windowIcon(spec.icon, spec.iconLetter),
+      drawIcon: windowIcon(spec.icon, spec.iconLetter, spec.iconGlyph),
       handleInput: (event, frameId) => {
         this.post({
           type: "input",

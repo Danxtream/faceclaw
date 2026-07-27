@@ -25,6 +25,10 @@ export const ICON_SVGS = {
   // Not a Lucide icon: an L-tetromino built from four squares, for Blocks.
   "l-piece":
     '<svg viewBox="0 0 24 24" fill="none"><rect width="6" height="6" x="5" y="1.5" rx="1"/><rect width="6" height="6" x="5" y="9" rx="1"/><rect width="6" height="6" x="5" y="16.5" rx="1"/><rect width="6" height="6" x="12.5" y="16.5" rx="1"/></svg>',
+  bomb:
+    '<svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="13" r="9"/><path d="M14.35 4.65 16.3 2.7a2.41 2.41 0 0 1 3.4 0l1.6 1.6a2.4 2.4 0 0 1 0 3.4l-1.95 1.95"/><path d="m22 2-1.5 1.5"/></svg>',
+  spade:
+    '<svg viewBox="0 0 24 24" fill="none"><path d="M12 18v4"/><path d="M2 14.499a5.5 5.5 0 0 0 9.591 3.675.6.6 0 0 1 .818.001A5.5 5.5 0 0 0 22 14.5c0-2.29-1.5-4-3-5.5l-5.492-5.312a2 2 0 0 0-3-.02L5 8.999c-1.5 1.5-3 3.2-3 5.5"/></svg>',
   terminal:
     '<svg viewBox="0 0 24 24" fill="none"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg>',
   "file-text":
@@ -63,18 +67,85 @@ export const ICON_SVGS = {
 
 export type IconName = keyof typeof ICON_SVGS;
 
+// The "_" element of the terminal icon, swapped out for a session glyph in
+// renderIconWithGlyph.
+const TERMINAL_UNDERSCORE = '<path d="M11 13h4"/>';
+
+/**
+ * Session-marker glyphs for per-terminal window icons: the terminal icon's
+ * "_" replaced by a character, drawn in the same stroked style. Hand-fitted
+ * to the box x 11.5–16.5, y 8–16 beside the ">" chevron. The zero is slashed
+ * to keep it distinct from the letter O.
+ */
+const TERMINAL_GLYPH_SHAPES: Record<string, string> = {
+  "0": '<ellipse cx="14" cy="12" rx="2.5" ry="4"/><path d="m13 13.6 2-3.2"/>',
+  "1": '<path d="m12.5 9.5 1.5-1.5v8"/><path d="M12.5 16h3"/>',
+  "2": '<path d="M11.8 9.8a2.3 2.3 0 0 1 4.5.6c0 2.5-4.6 3-4.6 5.6h4.8"/>',
+  "3": '<path d="M12 8h2.2a2 2 0 0 1 0 4H13h1.2a2 2 0 0 1 0 4H12"/>',
+  "4": '<path d="M15.5 16V8l-4 5.2h5"/>',
+  "5": '<path d="M16.2 8h-4.2v3.4h2.2a2.3 2.3 0 0 1 0 4.6H12"/>',
+  "6": '<path d="M15.8 8a5.6 5.6 0 0 0-3.8 5.5"/><circle cx="14" cy="13.7" r="2.3"/>',
+  "7": '<path d="M11.8 8h4.7l-3.4 8"/>',
+  "8": '<circle cx="14" cy="9.9" r="1.9"/><circle cx="14" cy="13.9" r="2.1"/>',
+  "9": '<circle cx="14" cy="10.3" r="2.3"/><path d="M12.2 16a5.6 5.6 0 0 0 3.8-5.5"/>',
+  A: '<path d="M11.5 16 14 8l2.5 8"/><path d="M12.6 13h2.8"/>',
+  B: '<path d="M12 16V8h1.8a2 2 0 0 1 0 4H12h2a2 2 0 0 1 0 4z"/>',
+  C: '<path d="M16.4 9.6a3.2 4.3 0 1 0 0 4.8"/>',
+  D: '<path d="M12 8h1a3.4 4 0 0 1 0 8h-1z"/>',
+  E: '<path d="M16.3 8H12v8h4.3"/><path d="M12 12h3.4"/>',
+  F: '<path d="M16.3 8H12v8"/><path d="M12 12h3.4"/>',
+  G: '<path d="M16.4 9.6a3.2 4.3 0 1 0 .1 4.9"/><path d="M16.5 14.5V12h-2.3"/>',
+  H: '<path d="M12 8v8"/><path d="M16.3 8v8"/><path d="M12 12h4.3"/>',
+  I: '<path d="M12.7 8h2.9"/><path d="M14.1 8v8"/><path d="M12.7 16h2.9"/>',
+  J: '<path d="M16 8v5.8a2.1 2.1 0 0 1-4.2 0"/>',
+  K: '<path d="M12 8v8"/><path d="m16.3 8-4.3 4 4.3 4"/>',
+  L: '<path d="M12 8v8h4.3"/>',
+  M: '<path d="M11.6 16V8l2.4 4.5L16.4 8v8"/>',
+  N: '<path d="M12 16V8l4.3 8V8"/>',
+  O: '<ellipse cx="14" cy="12" rx="2.5" ry="4"/>',
+  P: '<path d="M12 16V8h2a2.2 2.2 0 0 1 0 4.4h-2"/>',
+  Q: '<ellipse cx="14" cy="12" rx="2.5" ry="4"/><path d="m15 13.8 1.6 2.2"/>',
+  R: '<path d="M12 16V8h2a2.2 2.2 0 0 1 0 4.4h-2"/><path d="m14.4 12.4 2 3.6"/>',
+  S: '<path d="M16.2 9a2.7 2.7 0 0 0-4.3 2c.3 2.3 4.4.7 4.3 3a2.7 2.7 0 0 1-4.4 1.2"/>',
+  T: '<path d="M11.7 8h4.6"/><path d="M14 8v8"/>',
+  U: '<path d="M12 8v5.8a2.15 2.15 0 0 0 4.3 0V8"/>',
+  V: '<path d="m11.6 8 2.4 8 2.4-8"/>',
+  W: '<path d="m11.5 8 1 8 1.5-4.6L15.5 16l1-8"/>',
+  X: '<path d="m11.8 8 4.4 8"/><path d="m16.2 8-4.4 8"/>',
+  Y: '<path d="m11.8 8 2.2 4.2L16.2 8"/><path d="M14 12.2V16"/>',
+  Z: '<path d="M11.8 8h4.4l-4.4 8h4.4"/>',
+};
+
+/** Characters usable as terminal-icon glyphs, in allocation order (1-9 first, 0 as the tenth). */
+export const TERMINAL_ICON_GLYPHS = "1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
 const cache = new Map<string, GrayImage | null>();
 
 /** Render an icon SVG to a size×size grayscale bitmap, rendered once and cached. */
 export function renderIcon(name: IconName, size: number): GrayImage | null {
-  const key = `${name}:${size}`;
+  return renderSvgCached(name, ICON_SVGS[name], size);
+}
+
+/**
+ * Render an icon with a glyph character substituted in — currently only the
+ * terminal icon, whose "_" becomes the glyph (">3" instead of ">_"). Falls
+ * back to the plain icon for other names or unsupported characters.
+ */
+export function renderIconWithGlyph(name: IconName, glyph: string, size: number): GrayImage | null {
+  const shape = name === "terminal" ? TERMINAL_GLYPH_SHAPES[glyph] : undefined;
+  if (!shape) return renderIcon(name, size);
+  return renderSvgCached(`${name}[${glyph}]`, ICON_SVGS.terminal.replace(TERMINAL_UNDERSCORE, shape), size);
+}
+
+function renderSvgCached(cacheName: string, svg: string, size: number): GrayImage | null {
+  const key = `${cacheName}:${size}`;
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
 
   let icon: GrayImage | null = null;
   if (global.isAndroid) {
     try {
-      const bytes = com.faceclaw.app.IconRenderer.renderSvgGray(ICON_SVGS[name], Math.round(size), ICON_STROKE_WIDTH);
+      const bytes = com.faceclaw.app.IconRenderer.renderSvgGray(svg, Math.round(size), ICON_STROKE_WIDTH);
       if (bytes && bytes.length >= size * size) {
         icon = new GrayImage(size, size, 0);
         for (let i = 0; i < size * size; i++) {
@@ -82,7 +153,7 @@ export function renderIcon(name: IconName, size: number): GrayImage | null {
         }
       }
     } catch (error) {
-      console.warn(`renderIcon(${name}) failed: ${error}`);
+      console.warn(`renderIcon(${cacheName}) failed: ${error}`);
     }
   }
   cache.set(key, icon);
