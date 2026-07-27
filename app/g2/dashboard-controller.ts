@@ -161,6 +161,7 @@ const LAUNCHER_APPS: LauncherAppEntry[] = [
   { appId: "blocks", label: "Blocks", icon: "l-piece" },
   { appId: "minesweeper", label: "Minesweeper", icon: "bomb" },
   { appId: "freecell", label: "Freecell", icon: "spade" },
+  { appId: "pinball", label: "Pinball", icon: "pinball" },
   { appId: "debug-tests", label: "Debug tests", icon: "flask-conical" },
   { appId: "settings", label: "Settings", icon: "settings" },
 ];
@@ -1230,6 +1231,8 @@ class DashboardController {
       worker = new Worker("../workers/minesweeper-app.worker");
     } else if (appId === "freecell") {
       worker = new Worker("../workers/freecell-app.worker");
+    } else if (appId === "pinball") {
+      worker = new Worker("../workers/pinball-app.worker");
     } else {
       return null;
     }
@@ -1381,6 +1384,23 @@ class DashboardController {
         focus: true,
       });
       this.appendLog("launched freecell:main");
+      return;
+    }
+    if (appId === "pinball") {
+      const existing = shell.getWindows().find((window) => window.appId === "pinball");
+      if (existing) {
+        shell.focusWindow(existing.windowId);
+        this.requestShellRender();
+        return;
+      }
+      host.openWindow({
+        windowId: "pinball:main",
+        title: "Pinball",
+        iconLetter: "P",
+        icon: "pinball",
+        focus: true,
+      });
+      this.appendLog("launched pinball:main");
       return;
     }
     if (appId === "navigate") {

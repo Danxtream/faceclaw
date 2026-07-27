@@ -13,7 +13,9 @@ const STORAGE_KEY = "launcher.folders";
 /** The out-of-the-box grouping, applied only while the setting is unset. */
 const DEFAULT_ASSIGNMENTS: Record<string, string> = {
   blocks: "Games",
+  freecell: "Games",
   minesweeper: "Games",
+  pinball: "Games",
 };
 
 export const FOLDER_NAME_MAX_LENGTH = 24;

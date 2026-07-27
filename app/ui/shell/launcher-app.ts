@@ -180,7 +180,7 @@ class LauncherGridLayer implements Layer {
       const blockTop = rowY(row) + Math.max(2, (rowH - ICON_SIZE - font.lineHeight - LABEL_GAP) / 2);
       if (blockTop >= gridBottom) break; // fully below the grid
       const centerX = (index % COLS) * colW + colW / 2;
-      const icon = renderIcon(entry.kind === "app" ? entry.icon : "folder", ICON_SIZE);
+      const icon = renderIcon(entry.kind === "app" ? entry.icon : "folder-filled", ICON_SIZE);
       if (icon) {
         // Clip the icon at the grid bottom so a peeking row shows only its top.
         const clipHeight = Math.min(icon.height, Math.floor(gridBottom - blockTop));
