@@ -37,15 +37,14 @@ public class FaceclawVoiceController {
     private static final int EXPECTED_PACKET_INTERVAL_MS = 50;
     private static final int LATE_PACKET_INTERVAL_MS = 90;
     private static final int STATS_INTERVAL_MS = 5_000;
-    // Push-to-talk utterance boundaries come from the button, so we accumulate
-    // the whole utterance and re-decode it in full for each live partial. The
-    // decode is of the complete audio each time, so the emitted text is the
-    // model's current best transcript of everything spoken so far (REPLACE,
-    // never a delta) — re-decoding a growing buffer and diffing prefixes was
-    // the source of the duplicated/garbled output.
+    // Push-to-talk utterance boundaries come from the button. We re-decode the
+    // current audio segment in full for each live partial and emit the complete
+    // utterance text (REPLACE, never a delta). The sherpa Moonshine v2 decoder
+    // used here fails once a single input grows past roughly 9.1 seconds, so
+    // longer utterances are committed in model-safe segments.
     private static final int TRANSCRIPT_DECODE_INTERVAL_MS = 700;
     private static final int TRANSCRIPT_MIN_SAMPLES = SAMPLE_RATE / 3;
-    private static final int TRANSCRIPT_MAX_SAMPLES = SAMPLE_RATE * 30;
+    private static final int TRANSCRIPT_SEGMENT_MAX_SAMPLES = SAMPLE_RATE * 8;
     private static final int TRANSCRIPT_LOG_PREVIEW_CHARS = 80;
     private static final String ASSET_ROOT = "faceclaw-voice";
     private static final String MODEL_DIR = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01";
@@ -84,8 +83,11 @@ public class FaceclawVoiceController {
     private OfflineRecognizer recognizer;
     private OnlineStream stream;
     private FaceclawLc3Decoder lc3Decoder;
-    private float[] transcriptSamples = new float[TRANSCRIPT_MAX_SAMPLES];
+    private final float[] transcriptSamples = new float[TRANSCRIPT_SEGMENT_MAX_SAMPLES];
     private int transcriptSampleCount;
+    private long committedTranscriptSampleCount;
+    private String committedTranscript = "";
+    private String currentSegmentTranscript = "";
     private long lastTranscriptDecodeAtMs;
     private String lastTranscript = "";
     private volatile boolean saveRecordings;
@@ -470,58 +472,110 @@ public class FaceclawVoiceController {
     }
 
     private void appendTranscriptSamples(float[] samples) {
-        // The utterance is bounded by the push-to-talk button; the cap is only a
-        // safety limit. If it's hit, keep the most recent audio and let the
-        // transcript track that window (the beginning is unlikely to still be on
-        // screen after 30s anyway).
-        int available = TRANSCRIPT_MAX_SAMPLES - transcriptSampleCount;
-        if (samples.length > available) {
-            int drop = samples.length - available;
-            if (drop >= transcriptSampleCount) {
-                transcriptSampleCount = 0;
-            } else {
-                System.arraycopy(transcriptSamples, drop, transcriptSamples, 0, transcriptSampleCount - drop);
-                transcriptSampleCount -= drop;
+        int sourceOffset = 0;
+        while (sourceOffset < samples.length) {
+            int available = TRANSCRIPT_SEGMENT_MAX_SAMPLES - transcriptSampleCount;
+            int count = Math.min(available, samples.length - sourceOffset);
+            System.arraycopy(samples, sourceOffset, transcriptSamples, transcriptSampleCount, count);
+            transcriptSampleCount += count;
+            sourceOffset += count;
+
+            if (transcriptSampleCount == TRANSCRIPT_SEGMENT_MAX_SAMPLES) {
+                commitTranscriptSegment();
             }
         }
-        System.arraycopy(samples, 0, transcriptSamples, transcriptSampleCount, samples.length);
-        transcriptSampleCount += samples.length;
     }
 
     /**
-     * Decode the entire accumulated utterance and emit the model's current best
-     * full transcript (REPLACE semantics — the caller displays it as-is).
+     * Decode the current model-safe segment and emit the best transcript of the
+     * complete utterance (REPLACE semantics — the caller displays it as-is).
      */
     private void decodeTranscript(boolean isFinal) {
-        OfflineRecognizer currentRecognizer = recognizer;
-        if (currentRecognizer == null || transcriptSampleCount <= 0) {
+        if (recognizer == null || transcriptSampleCount <= 0) {
             if (isFinal) {
                 emitTranscript(lastTranscript, true);
             }
             return;
         }
+        int segmentSampleCount = transcriptSampleCount;
+        String segmentText = recognizeTranscriptSegment();
+        if (segmentText.length() > 0) {
+            currentSegmentTranscript = segmentText;
+        } else {
+            segmentText = currentSegmentTranscript;
+        }
+        String text = joinTranscript(committedTranscript, segmentText);
+        lastTranscript = text;
+        logTranscriptDecode(isFinal, segmentSampleCount, text);
+        emitTranscript(text, isFinal);
+    }
+
+    /**
+     * Finalize a full segment before accepting more audio. This keeps every
+     * Moonshine invocation below its failing sequence length while retaining
+     * all earlier text in the replace-semantics preview.
+     */
+    private void commitTranscriptSegment() {
+        int segmentSampleCount = transcriptSampleCount;
+        String segmentText = recognizeTranscriptSegment();
+        if (segmentText.length() == 0) {
+            segmentText = currentSegmentTranscript;
+        }
+        committedTranscript = joinTranscript(committedTranscript, segmentText);
+        currentSegmentTranscript = "";
+        committedTranscriptSampleCount += segmentSampleCount;
+        transcriptSampleCount = 0;
+        lastTranscript = committedTranscript;
+        lastTranscriptDecodeAtMs = SystemClock.elapsedRealtime();
+        logTranscriptDecode(false, segmentSampleCount, committedTranscript);
+        emitTranscript(committedTranscript, false);
+    }
+
+    private String recognizeTranscriptSegment() {
+        OfflineRecognizer currentRecognizer = recognizer;
+        if (currentRecognizer == null || transcriptSampleCount <= 0) {
+            return "";
+        }
         OfflineStream offlineStream = currentRecognizer.createStream();
-        String text;
         try {
             offlineStream.acceptWaveform(Arrays.copyOf(transcriptSamples, transcriptSampleCount), SAMPLE_RATE);
             currentRecognizer.decode(offlineStream);
             OfflineRecognizerResult result = currentRecognizer.getResult(offlineStream);
             String raw = result == null ? "" : result.getText();
-            text = raw == null ? "" : raw.trim();
+            return raw == null ? "" : raw.trim();
         } finally {
             offlineStream.release();
         }
-        lastTranscript = text;
+    }
+
+    private void logTranscriptDecode(boolean isFinal, int segmentSampleCount, String text) {
+        double totalAudioSec =
+                (committedTranscriptSampleCount + transcriptSampleCount) / (double) SAMPLE_RATE;
         String preview = text.length() <= TRANSCRIPT_LOG_PREVIEW_CHARS
                 ? text : text.substring(0, TRANSCRIPT_LOG_PREVIEW_CHARS) + "...";
         Log.i(TAG, "Moonshine decode final=" + isFinal
-                + " audioSec=" + String.format(java.util.Locale.US, "%.2f", transcriptSampleCount / (double) SAMPLE_RATE)
+                + " audioSec=" + String.format(java.util.Locale.US, "%.2f", totalAudioSec)
+                + " segmentAudioSec=" + String.format(java.util.Locale.US, "%.2f", segmentSampleCount / (double) SAMPLE_RATE)
                 + " textLen=" + text.length() + " text=\"" + preview + "\"");
-        emitTranscript(text, isFinal);
+    }
+
+    private static String joinTranscript(String prefix, String suffix) {
+        if (prefix == null || prefix.length() == 0) {
+            return suffix == null ? "" : suffix;
+        }
+        if (suffix == null || suffix.length() == 0) {
+            return prefix;
+        }
+        char first = suffix.charAt(0);
+        boolean attachesToPrevious = ".,!?;:%)]}".indexOf(first) >= 0;
+        return prefix + (attachesToPrevious ? "" : " ") + suffix;
     }
 
     private void resetTranscriptState() {
         transcriptSampleCount = 0;
+        committedTranscriptSampleCount = 0;
+        committedTranscript = "";
+        currentSegmentTranscript = "";
         lastTranscriptDecodeAtMs = 0;
     }
 
