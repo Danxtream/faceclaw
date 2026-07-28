@@ -73,28 +73,37 @@ public final class BleImageOptimizer {
     public static final class TileImagePlan {
         final int tileIndex;
         final BleProtocol.ImageTileOptions tile;
-        final byte[] bmp;      // raw 4bpp BMP, kept for the displayed-tile dedup cache
-        final byte[] payload;  // bytes actually streamed: mode-6 zlib(rle(4bpp)) when it shrinks, else == bmp
+        // Headerless packed 4bpp frame (top-down, stride ceil(width/2)), kept for
+        // the displayed-tile dedup cache. Frames are immutable by convention:
+        // producers always allocate a fresh buffer, so no defensive copy here.
+        public final byte[] packed;
+        public final int width;
+        public final int height;
+        final byte[] payload;  // bytes actually streamed: mode-6 zlib(rle(4bpp)) when it shrinks, else a raw BMP
         final int sessionId;
         List<BleProtocol.ImageFragment> fragments = Collections.emptyList();
 
-        TileImagePlan(int tileIndex, BleProtocol.ImageTileOptions tile, byte[] bmp, int sessionId) {
+        TileImagePlan(int tileIndex, BleProtocol.ImageTileOptions tile, byte[] packed, int width, int height, int sessionId) {
             this.tileIndex = tileIndex;
             this.tile = tile;
-            this.bmp = BmpUtil.copyTileBmp(bmp);
-            this.payload = maybeCompress(this.bmp);
+            this.packed = packed == null ? new byte[0] : packed;
+            this.width = width;
+            this.height = height;
+            this.payload = maybeCompress(this.packed, width, height);
             this.sessionId = sessionId;
         }
 
         /**
          * Plan with an explicit wire payload (e.g. a mode-3 incremental update).
-         * bmp must still be the FULL new frame: it feeds the displayed-frame
+         * packed must still be the FULL new frame: it feeds the displayed-frame
          * dedup cache, which after an applied incremental equals the full frame.
          */
-        TileImagePlan(int tileIndex, BleProtocol.ImageTileOptions tile, byte[] bmp, int sessionId, byte[] payloadOverride) {
+        TileImagePlan(int tileIndex, BleProtocol.ImageTileOptions tile, byte[] packed, int width, int height, int sessionId, byte[] payloadOverride) {
             this.tileIndex = tileIndex;
             this.tile = tile;
-            this.bmp = BmpUtil.copyTileBmp(bmp);
+            this.packed = packed == null ? new byte[0] : packed;
+            this.width = width;
+            this.height = height;
             this.payload = payloadOverride;
             this.sessionId = sessionId;
         }
@@ -137,18 +146,10 @@ public final class BleImageOptimizer {
         }
     }
 
-    public static IncrementalPlan buildIncrementalImagePayload(byte[] previousBmp, byte[] newBmp, int frameId) {
-        int width = BmpUtil.readBmpWidth(newBmp);
-        int height = BmpUtil.readBmpHeight(newBmp);
-        if (width <= 0 || height <= 0
-                || width != BmpUtil.readBmpWidth(previousBmp)
-                || height != BmpUtil.readBmpHeight(previousBmp)) {
-            return null;
-        }
-        byte[] previous = BmpUtil.pack4bppFromBmp(previousBmp);
-        byte[] next = BmpUtil.pack4bppFromBmp(newBmp);
+    public static IncrementalPlan buildIncrementalImagePayload(byte[] previous, byte[] next, int width, int height, int frameId) {
         int stride = (width + 1) >> 1;
-        if (previous.length != stride * height || next.length != stride * height) {
+        if (width <= 0 || height <= 0 || previous == null || next == null
+                || previous.length != stride * height || next.length != stride * height) {
             return null;
         }
 
@@ -271,18 +272,10 @@ public final class BleImageOptimizer {
      * single region (use the single-rect path), when it fragments past maxRects, or
      * when the frames aren't comparable.
      */
-    public static MultiRectPlan buildMultiRectImagePayload(byte[] previousBmp, byte[] newBmp, int fidStart, int maxRects) {
-        int width = BmpUtil.readBmpWidth(newBmp);
-        int height = BmpUtil.readBmpHeight(newBmp);
-        if (width <= 0 || height <= 0
-                || width != BmpUtil.readBmpWidth(previousBmp)
-                || height != BmpUtil.readBmpHeight(previousBmp)) {
-            return null;
-        }
-        byte[] previous = BmpUtil.pack4bppFromBmp(previousBmp);
-        byte[] next = BmpUtil.pack4bppFromBmp(newBmp);
+    public static MultiRectPlan buildMultiRectImagePayload(byte[] previous, byte[] next, int width, int height, int fidStart, int maxRects) {
         int stride = (width + 1) >> 1;
-        if (previous.length != stride * height || next.length != stride * height) {
+        if (width <= 0 || height <= 0 || previous == null || next == null
+                || previous.length != stride * height || next.length != stride * height) {
             return null;
         }
 
@@ -417,19 +410,16 @@ public final class BleImageOptimizer {
     /**
      * RLE- then zlib-compress headerless 4bpp pixels for CFW load_image_z mode 6 when
      * it shrinks the payload. Wire format: [6][zlib(rle(4bpp pixels))]. A raw BMP
-     * (starts 'B') is sent verbatim when compression does not help.
+     * (starts 'B') is sent when compression does not help; that is the only spot
+     * where BMP framing is still built.
      */
-    static byte[] maybeCompress(byte[] bmp) {
-        if (bmp == null || bmp.length == 0) {
-            return bmp;
-        }
-        byte[] packed = BmpUtil.pack4bppFromBmp(bmp);
-        if (packed.length == 0) {
-            return bmp;
+    static byte[] maybeCompress(byte[] packed, int width, int height) {
+        if (packed == null || packed.length == 0) {
+            return packed;
         }
         byte[] z = deflate(rleEncode(packed));
         if (z == null || z.length + 1 >= packed.length) {
-            return bmp;
+            return BmpUtil.build4bppBmpFromPacked(packed, width, height);
         }
         byte[] out = new byte[z.length + 1];
         out[0] = 6;
@@ -487,24 +477,33 @@ public final class BleImageOptimizer {
         return (i & 1) != 0 ? (b & 0x0f) : (b >> 4);
     }
 
+    // Level 6: BEST_COMPRESSION cost 18-109ms per frame on the BLE worker,
+    // but BEST_SPEED inflated typical payloads from ~2.7KB past the 3800-byte
+    // fragment boundary, adding a whole extra ack round trip (~350ms). The
+    // default level keeps payloads under one fragment at about half the CPU.
+    // One long-lived Deflater per thread: constructing one allocates and
+    // initializes a native zlib stream, which is measurable at per-frame rates.
+    private static final ThreadLocal<Deflater> DEFLATER =
+        new ThreadLocal<Deflater>() {
+            @Override protected Deflater initialValue() {
+                return new Deflater(Deflater.DEFAULT_COMPRESSION);
+            }
+        };
+
     private static byte[] deflate(byte[] data) {
-        // Level 6: BEST_COMPRESSION cost 18-109ms per frame on the BLE worker,
-        // but BEST_SPEED inflated typical payloads from ~2.7KB past the 3800-byte
-        // fragment boundary, adding a whole extra ack round trip (~350ms). The
-        // default level keeps payloads under one fragment at about half the CPU.
-        Deflater deflater = new Deflater(Deflater.DEFAULT_COMPRESSION);
-        deflater.setInput(data);
-        deflater.finish();
-        ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(64, data.length / 3));
-        byte[] buf = new byte[4096];
+        Deflater deflater = DEFLATER.get();
         try {
+            deflater.setInput(data);
+            deflater.finish();
+            ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(64, data.length / 3));
+            byte[] buf = new byte[4096];
             while (!deflater.finished()) {
                 out.write(buf, 0, deflater.deflate(buf));
             }
+            return out.toByteArray();
         } finally {
-            deflater.end();
+            deflater.reset();
         }
-        return out.toByteArray();
     }
 
     public static final class ImageUpdateStats {

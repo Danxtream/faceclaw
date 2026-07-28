@@ -9,33 +9,64 @@ public class BmpUtil {
         return Arrays.copyOf(bmp, bmp.length);
     }
 
-    public static byte[] buildBlankWarmupBmp(byte[] bmp) {
-        byte[] warmup = BmpUtil.copyTileBmp(bmp);
-        int pixelOffset = readBmpPixelOffset(warmup);
-        if (pixelOffset <= 0 || pixelOffset >= warmup.length) {
-            Arrays.fill(warmup, (byte) 0);
-            return warmup;
+    // Quantize an 8-bit gray value to a 4-bit nibble. Truncate rather than round
+    // up at the bottom: the shell's color-key convention paints intentional
+    // black as 1 (0 being transparent), which must land on nibble 0, not a
+    // faintly-visible level 1.
+    private static final byte[] GRAY_TO_NIBBLE = new byte[256];
+    static {
+        for (int v = 1; v < 256; v++) {
+            GRAY_TO_NIBBLE[v] = (byte) Math.min(15, (v + 8) >> 4);
         }
-        Arrays.fill(warmup, pixelOffset, warmup.length, (byte) 0);
-        return warmup;
     }
 
     /**
-     * Build a 4bpp grayscale BMP (BITMAPINFOHEADER + 16-entry gray palette,
-     * bottom-up rows padded to a 4-byte stride) from a full-resolution 8bpp
-     * grayscale buffer. The buffer is row-major, top-to-bottom, one byte per
-     * pixel with values 0..255; each pixel is quantized to a 4-bit nibble.
-     *
-     * Building the wire format here, rather than on the TypeScript side, keeps
-     * all framing concerns in one place so future firmware changes that drop or
-     * replace the BMP header (e.g. 8-bit color depth or iframes) only touch Java.
+     * Pack a full-resolution 8bpp grayscale buffer (row-major, top-to-bottom,
+     * one byte per pixel) into the headerless 4bpp wire format used by CFW
+     * load_image_z modes 3/6/8: top-down rows, stride ceil(width/2), high
+     * nibble = left pixel. This is the canonical in-memory frame format; BMP
+     * framing (needed only when an uncompressed full frame goes on the wire)
+     * is added on demand by build4bppBmpFromPacked.
      */
-    public static byte[] build4bppBmp(byte[] gray8, int width, int height) {
+    public static byte[] pack4bppFromGray8(byte[] gray8, int width, int height) {
         if (width <= 0 || height <= 0) {
             return new byte[0];
         }
-        int bytesPerPixelRow = (width + 1) >> 1;
-        int rowStride = (bytesPerPixelRow + 3) & ~3;
+        int stride = (width + 1) >> 1;
+        byte[] out = new byte[stride * height];
+        if (gray8 == null || gray8.length < width * height) {
+            return out; // short buffer: treat missing pixels as black
+        }
+        int pairs = width >> 1;
+        int src = 0;
+        int dst = 0;
+        for (int y = 0; y < height; y++) {
+            for (int i = 0; i < pairs; i++) {
+                out[dst++] = (byte) ((GRAY_TO_NIBBLE[gray8[src] & 0xff] << 4)
+                        | GRAY_TO_NIBBLE[gray8[src + 1] & 0xff]);
+                src += 2;
+            }
+            if ((width & 1) != 0) {
+                out[dst++] = (byte) (GRAY_TO_NIBBLE[gray8[src++] & 0xff] << 4);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Wrap a packed 4bpp frame in BMP framing (BITMAPINFOHEADER + 16-entry gray
+     * palette, bottom-up rows padded to a 4-byte stride). Only the full-frame
+     * image path still speaks BMP on the wire (warmup, and the fallback when
+     * mode-6 compression does not shrink the frame); everything else uses the
+     * headerless packed format directly.
+     */
+    public static byte[] build4bppBmpFromPacked(byte[] packed, int width, int height) {
+        int packedStride = (width + 1) >> 1;
+        if (width <= 0 || height <= 0
+                || packed == null || packed.length < packedStride * height) {
+            return new byte[0];
+        }
+        int rowStride = (packedStride + 3) & ~3;
         int pixelDataSize = rowStride * height;
 
         int fileHeaderSize = 14;
@@ -69,29 +100,10 @@ public class BmpUtil {
 
         for (int bmpRow = 0; bmpRow < height; bmpRow++) {
             int srcY = height - 1 - bmpRow; // BMP rows run bottom-up
-            int srcRowOffset = srcY * width;
-            int rowOffset = pixelOffset + bmpRow * rowStride;
-            for (int x = 0; x < width; x += 2) {
-                int hi = grayToNibble(sampleGray(gray8, srcRowOffset + x));
-                int lo = (x + 1 < width) ? grayToNibble(sampleGray(gray8, srcRowOffset + x + 1)) : 0;
-                buf[rowOffset + (x >> 1)] = (byte) ((hi << 4) | lo);
-            }
+            System.arraycopy(packed, srcY * packedStride,
+                    buf, pixelOffset + bmpRow * rowStride, packedStride);
         }
         return buf;
-    }
-
-    private static int sampleGray(byte[] gray8, int index) {
-        return (index >= 0 && index < gray8.length) ? (gray8[index] & 0xff) : 0;
-    }
-
-    private static int grayToNibble(int value) {
-        // Truncate rather than round up: the shell's color-key convention
-        // paints intentional black as 1 (0 being transparent), which must
-        // land on nibble 0, not a faintly-visible level 1.
-        if (value <= 0) {
-            return 0;
-        }
-        return Math.min(15, (value+8) >> 4);
     }
 
     private static void putUint16Le(byte[] buf, int offset, int value) {
@@ -108,71 +120,5 @@ public class BmpUtil {
 
     private static void putInt32Le(byte[] buf, int offset, int value) {
         putUint32Le(buf, offset, value);
-    }
-
-    public static int readBmpWidth(byte[] bmp) {
-        if (bmp == null || bmp.length < 0x36 || bmp[0] != 0x42 || bmp[1] != 0x4d) {
-            return 0;
-        }
-        return readUint32Le(bmp, 18);
-    }
-
-    public static int readBmpHeight(byte[] bmp) {
-        if (bmp == null || bmp.length < 0x36 || bmp[0] != 0x42 || bmp[1] != 0x4d) {
-            return 0;
-        }
-        int heightSigned = readInt32Le(bmp, 22);
-        return heightSigned < 0 ? -heightSigned : heightSigned;
-    }
-
-    public static int readBmpPixelOffset(byte[] bmp) {
-        if (bmp == null || bmp.length < 14 || bmp[0] != 0x42 || bmp[1] != 0x4d) {
-            return -1;
-        }
-        return (bmp[10] & 0xff)
-              | ((bmp[11] & 0xff) << 8)
-              | ((bmp[12] & 0xff) << 16)
-              | ((bmp[13] & 0xff) << 24);
-    }
-
-    /**
-     * Strip the BMP header and row padding, producing the headerless 4bpp wire
-     * format expected by CFW load_image_z mode 6: top-down rows, stride =
-     * ceil(width/2), high nibble = left pixel.
-     */
-    public static byte[] pack4bppFromBmp(byte[] bmp) {
-        if (bmp == null || bmp.length < 0x36 || bmp[0] != 0x42 || bmp[1] != 0x4d) {
-            return new byte[0];
-        }
-        int width = readUint32Le(bmp, 18);
-        int heightSigned = readInt32Le(bmp, 22);
-        int height = heightSigned < 0 ? -heightSigned : heightSigned;
-        int pixelOffset = readBmpPixelOffset(bmp);
-        if (width <= 0 || height <= 0 || pixelOffset < 0 || pixelOffset >= bmp.length) {
-            return new byte[0];
-        }
-        int packedStride = (width + 1) >> 1;
-        int bmpStride = (packedStride + 3) & ~3;
-        if (pixelOffset + (long) bmpStride * height > bmp.length) {
-            return new byte[0];
-        }
-        byte[] out = new byte[packedStride * height];
-        for (int y = 0; y < height; y++) {
-            int srcY = height - 1 - y;
-            int srcRow = pixelOffset + srcY * bmpStride;
-            System.arraycopy(bmp, srcRow, out, y * packedStride, packedStride);
-        }
-        return out;
-    }
-
-    private static int readUint32Le(byte[] buf, int offset) {
-        return (buf[offset] & 0xff)
-              | ((buf[offset + 1] & 0xff) << 8)
-              | ((buf[offset + 2] & 0xff) << 16)
-              | ((buf[offset + 3] & 0xff) << 24);
-    }
-
-    private static int readInt32Le(byte[] buf, int offset) {
-        return readUint32Le(buf, offset);
     }
 }
