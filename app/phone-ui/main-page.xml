@@ -2,6 +2,8 @@
     <ActionBar title="Faceclaw">
         <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
+        <ActionItem text="Take screenshot" tap="{{ onTakeScreenshotTap }}" android.position="popup" />
+        <ActionItem text="Record screen" tap="{{ onRecordScreenTap }}" android.position="popup" />
         <ActionItem text="Uninstall custom firmware" tap="{{ onUninstallFirmwareTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="{{ showLogMenuLabel }}" tap="{{ onToggleLogTap }}" android.position="popup" />
     </ActionBar>
@@ -42,7 +44,7 @@
                         <Button row="0" col="2" text="Microphone" tap="{{ onSyntheticMicTap }}" />
                         <Button row="2" col="1" text="Swipe down" tap="{{ onSyntheticDownTap }}" />
                     </GridLayout>
-                    <Button text="Save raw screenshot" tap="{{ onScreenshotTap }}" visibility="{{ screenshotButtonVisibility }}" />
+                    <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
                 </StackLayout>
                 <Label row="2" text="{{ status }}" class="m-t-16" textWrap="true" />
                 <ScrollView id="logScrollView" row="3" class="m-t-16" visibility="{{ showLogVisibility }}">
@@ -90,7 +92,7 @@
                         <Button row="0" col="2" text="Microphone" tap="{{ onSyntheticMicTap }}" />
                         <Button row="2" col="1" text="Swipe down" tap="{{ onSyntheticDownTap }}" />
                     </GridLayout>
-                    <Button text="Save raw screenshot" tap="{{ onScreenshotTap }}" visibility="{{ screenshotButtonVisibility }}" />
+                    <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
                 </StackLayout>
                 <Label row="1" col="0" colSpan="2" text="{{ status }}" class="m-t-16" textWrap="true" />
                 <ScrollView id="logScrollViewLandscape" row="2" col="0" colSpan="2" class="m-t-16" visibility="{{ showLogVisibility }}">

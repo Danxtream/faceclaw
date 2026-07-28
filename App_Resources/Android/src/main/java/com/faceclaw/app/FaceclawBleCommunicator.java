@@ -437,14 +437,49 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 java.nio.ByteBuffer.wrap(composite.gray), composite.width, composite.height, brightenGamma);
     }
 
-    /** Save the current composite as a raw 4bpp screenshot; returns the path or "". */
-    public String saveRawCompositeScreenshot() throws java.io.IOException {
+    /** Save the current composite as a 4-bit grayscale PNG; returns the path or "". */
+    public String saveCompositePngScreenshot() throws java.io.IOException {
         SurfaceCompositor.Composite composite = compositor.previewComposite();
         if (composite == null) {
             return "";
         }
-        return ScreenshotUtil.saveRawScreenshot(
-                appContext, java.nio.ByteBuffer.wrap(composite.gray), composite.width, composite.height);
+        return ScreenshotUtil.savePngScreenshot(appContext, composite.gray, composite.width, composite.height);
+    }
+
+    // Active animated-GIF screen recording, or null when idle. Frames are
+    // pushed by recordScreenFrame(), which the TS side calls at each
+    // phone-preview flush.
+    private volatile GifScreenRecorder screenRecorder;
+
+    /** Begin collecting composite frames for an animated-GIF screen recording. */
+    public void startScreenRecording() {
+        screenRecorder = new GifScreenRecorder();
+    }
+
+    /** Capture the current composite into the active recording; no-op when idle. */
+    public void recordScreenFrame() {
+        GifScreenRecorder recorder = screenRecorder;
+        if (recorder == null) {
+            return;
+        }
+        SurfaceCompositor.Composite composite = compositor.previewComposite();
+        if (composite == null) {
+            return;
+        }
+        recorder.addFrame(composite.gray, composite.width, composite.height, System.currentTimeMillis());
+    }
+
+    /** Finish the recording and save it as an animated GIF; returns the path or "". */
+    public String stopScreenRecording() throws java.io.IOException {
+        GifScreenRecorder recorder = screenRecorder;
+        screenRecorder = null;
+        if (recorder == null) {
+            return "";
+        }
+        if (recorder.isOverflowed()) {
+            logLine("screen recording hit its frame cap; the tail was dropped");
+        }
+        return recorder.save(appContext);
     }
 
     /**

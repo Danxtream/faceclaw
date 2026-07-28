@@ -30,6 +30,7 @@ import {
   terminalHostSetting,
   terminalLaunchPresetsSetting,
   terminalPortSetting,
+  terminalWakeOnBellSetting,
 } from "../ui/dashboard-settings";
 import { TerminalEmulator } from "../ui/apps/terminal-emulator";
 import type { DashboardInputEvent } from "../ui/layers";
@@ -76,6 +77,13 @@ type HubWindow = BaseWindow & {
   kind: "hub";
   selectedIndex: number;
   scrollRow: number;
+  /**
+   * Session sockets in display order, captured when the window last became
+   * visible so the list doesn't reshuffle under the user while it's open.
+   * Cleared on foreground/screen-on; orderedSessions() rebuilds it lazily,
+   * sorting by recency and appending sessions that appear while visible.
+   */
+  sessionOrder: string[];
 };
 
 type ViewWindow = BaseWindow & {
@@ -179,6 +187,13 @@ let controlClient: G2MirrorClient | null = null;
 let controlState: G2MirrorState | null = null;
 let controlUnsubscribers: Array<() => void> = [];
 
+// When each session (by socket) last "updated", unix epoch ms: bells, title
+// changes, and terminal output from open views. Sessions first seen in the
+// initial list after (re)connect are seeded from their last bell, since we
+// weren't watching; ones appearing later were just created, so they get "now".
+const sessionRecency = new Map<string, number>();
+let controlSessionsSeeded = false;
+
 function post(message: WorkerAppReply): void {
   global.postMessage(message);
 }
@@ -225,6 +240,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       window.foreground = message.foreground;
       window.focused = message.focused;
       if (window.foreground && window.kind === "view") activeViewId = window.windowId;
+      if (window.foreground && window.kind === "hub") window.sessionOrder = [];
       if (window.foreground) renderAndSubmit(window, 0);
       break;
     }
@@ -232,7 +248,10 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       screenOn = message.on;
       if (screenOn) {
         for (const window of windows.values()) {
-          if (window.foreground) renderAndSubmit(window, 0);
+          if (!window.foreground) continue;
+          // Waking counts as becoming visible: let the session list re-sort.
+          if (window.kind === "hub") window.sessionOrder = [];
+          renderAndSubmit(window, 0);
         }
       }
       break;
@@ -256,8 +275,8 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
 // in the dashboard's Settings menu, which lives in the main isolate).
 onSettingsStoreChanged((key) => {
   if (!key.startsWith("terminal.")) return;
-  // The preset list only feeds menus and tool replies; no reconnect needed.
-  if (key === "terminal.launchPresets") return;
+  // Settings that don't affect the connection; no reconnect needed.
+  if (key === "terminal.launchPresets" || key === "terminal.wakeOnBell") return;
   if (gridCols > 0) {
     startControlClient();
   }
@@ -287,6 +306,7 @@ function openWindow(windowId: string, surfaceId: string, viewport: { width: numb
     menu: null,
     selectedIndex: 0,
     scrollRow: 0,
+    sessionOrder: [],
   });
   // The hub carries the app's assistant tools; declare them once it exists.
   post({ type: "set-tools", windowId, tools: TERMINAL_TOOLS });
@@ -333,16 +353,40 @@ function startControlClient(): void {
   const client = new G2MirrorClient(options);
   controlClient = client;
   controlState = client.state();
+  controlSessionsSeeded = false;
   controlUnsubscribers.push(
     client.onStateChange((state) => {
+      noteSessionListRecency(state);
       controlState = state;
       renderHubWindows();
     }),
-    client.onBell((socket) => {
-      routeBell(socket);
+    client.onBell((socket, lastBellAtMs) => {
+      routeBell(socket, lastBellAtMs);
+    }),
+    client.onTitle((socket) => {
+      noteSessionUpdated(socket);
     }),
   );
   client.start();
+}
+
+function noteSessionUpdated(socket: string): void {
+  sessionRecency.set(socket, Date.now());
+}
+
+function noteSessionListRecency(state: G2MirrorState): void {
+  for (const session of state.sessions) {
+    const known = sessionRecency.get(session.socket);
+    if (known === undefined) {
+      sessionRecency.set(
+        session.socket,
+        Math.max(session.lastBellAt ?? 0, controlSessionsSeeded ? Date.now() : 0),
+      );
+    } else if ((session.lastBellAt ?? 0) > known) {
+      sessionRecency.set(session.socket, session.lastBellAt!);
+    }
+  }
+  if (state.sessions.length) controlSessionsSeeded = true;
 }
 
 function stopControlClient(): void {
@@ -354,11 +398,21 @@ function stopControlClient(): void {
   controlState = null;
 }
 
-function routeBell(socket: string): void {
+function routeBell(socket: string, lastBellAtMs: number): void {
+  const known = sessionRecency.get(socket) ?? 0;
+  if (lastBellAtMs > known) sessionRecency.set(socket, lastBellAtMs);
   for (const window of windows.values()) {
     if (window.kind === "view" && window.socket === socket && !window.foreground) {
       post({ type: "set-attention", windowId: window.windowId, attention: true });
     }
+  }
+  if (terminalWakeOnBellSetting.get()) {
+    // Wake to the belling session's view window, or the hub if it has none.
+    // The shell drops the message unless the glasses are actually asleep.
+    const viewId = viewWindowIdForSocket(socket);
+    const hubId = [...windows.values()].find((window) => window.kind === "hub")?.windowId ?? null;
+    const target = viewId ?? hubId;
+    if (target) post({ type: "wake-window", windowId: target });
   }
 }
 
@@ -434,6 +488,7 @@ function createViewWindow(
         window.emulator.reset();
       }
       window.receivedData = true;
+      noteSessionUpdated(window.socket);
       window.emulator.write(data, () => scheduleRender(window));
     }),
     client.onSessionDetached((reason) => {
@@ -594,13 +649,36 @@ type HubItem = {
   onSelect?: () => void;
 };
 
-function hubItems(): HubItem[] {
+/**
+ * The control connection's sessions in this hub window's display order:
+ * most-recently-updated first as of when the window became visible, with
+ * sessions that appeared since then at the end. The captured order lives in
+ * window.sessionOrder (cleared when the window becomes visible) so the list
+ * doesn't reshuffle while the user is looking at it.
+ */
+function orderedSessions(window: HubWindow): G2MirrorSession[] {
+  const sessions = controlState?.sessions ?? [];
+  const position = new Map<string, number>();
+  for (const socket of window.sessionOrder) {
+    if (!position.has(socket)) position.set(socket, position.size);
+  }
+  const fresh = sessions
+    .filter((session) => !position.has(session.socket))
+    .sort((a, b) => (sessionRecency.get(b.socket) ?? 0) - (sessionRecency.get(a.socket) ?? 0));
+  for (const session of fresh) {
+    position.set(session.socket, position.size);
+    window.sessionOrder.push(session.socket);
+  }
+  return sessions.slice().sort((a, b) => position.get(a.socket)! - position.get(b.socket)!);
+}
+
+function hubItems(window: HubWindow): HubItem[] {
   const items: HubItem[] = [];
   const state = controlState;
   const phase = state?.phase ?? "idle";
 
   if (phase === "connected" || phase === "attached") {
-    for (const session of state?.sessions ?? []) {
+    for (const session of orderedSessions(window)) {
       const openWindowId = viewWindowIdForSocket(session.socket);
       items.push({
         label: openWindowId ? `${sessionLabel(session)}  [open]` : sessionLabel(session),
@@ -631,7 +709,7 @@ function hubItems(): HubItem[] {
 }
 
 function handleHubInput(window: HubWindow, event: DashboardInputEvent, frameId: number): void {
-  const items = hubItems();
+  const items = hubItems(window);
   switch (event.type) {
     case "scroll-up":
       window.selectedIndex = Math.max(0, window.selectedIndex - 1);
@@ -746,7 +824,7 @@ function paintHub(window: HubWindow): GrayImage {
     listTop += 28;
   }
 
-  const items = hubItems();
+  const items = hubItems(window);
   window.selectedIndex = Math.max(0, Math.min(window.selectedIndex, items.length - 1));
   const visibleRowCount = Math.max(1, ((viewportHeight - 30 - listTop) / HUB_ROW_HEIGHT) | 0);
   window.scrollRow = scrollToKeepSelectionVisible(window.scrollRow, window.selectedIndex, visibleRowCount, items.length);

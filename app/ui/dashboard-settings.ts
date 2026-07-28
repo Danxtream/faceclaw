@@ -49,8 +49,8 @@ type ConfigSettingOptions<TValue, TId extends string> = {
 
 // Fired after any setting changes, in any isolate (storage lives in the Java
 // FaceclawSettings store and broadcasts to every isolate). Lets phone-side UI
-// that depends on settings toggled from the glasses (e.g. the raw-screenshot
-// button) update without waiting for an unrelated snapshot emit. Delivery is
+// that depends on settings toggled from the glasses (e.g. the text-setting
+// editor) update without waiting for an unrelated snapshot emit. Delivery is
 // asynchronous: one message-loop tick after the set().
 const settingChangeListeners = new Set<() => void>();
 
@@ -263,14 +263,6 @@ export const voiceControlEnabledSetting = new ConfigSettingBoolean({
   description: "Master switch for voice features, including wakeword detection and voice input.",
 });
 
-export const rawScreenshotsEnabledSetting = new ConfigSettingBoolean({
-  id: "raw-screenshots-enabled",
-  label: "Take raw screenshots",
-  storageKey: "developer.rawScreenshots",
-  defaultValue: false,
-  description: "Show a button in the phone app that captures the exact frame data being sent to the glasses.",
-});
-
 export const firmwareDebugFlagsSetting = new ConfigSettingBoolean({
   id: "firmware-debug-flags",
   label: "Firmware debug flags",
@@ -436,6 +428,15 @@ export const terminalLaunchPresetsSetting = new ConfigSettingString({
   glassesEditTitle: "Edit launch presets",
   description:
     "Comma-separated names of g2mirror launch presets that can be started from the glasses. Presets are defined in the server's config; the wire protocol has no way to list them, so name them here. The default server config defines \"shell\".",
+});
+
+export const terminalWakeOnBellSetting = new ConfigSettingBoolean({
+  id: "terminal-wake-on-bell",
+  label: "Wake glasses on terminal bell",
+  storageKey: "terminal.wakeOnBell",
+  defaultValue: false,
+  description:
+    "When a terminal rings its bell while the glasses are asleep, wake them and focus that terminal's window (or the terminals list if it has no window open).",
 });
 
 export const nightscoutSiteUrlSetting = new ConfigSettingString({

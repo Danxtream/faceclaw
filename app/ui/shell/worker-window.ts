@@ -29,6 +29,15 @@ export type WorkerAppReply =
       windowId: string;
     }
   | {
+      /**
+       * Wake the glasses and focus one of the app's windows (e.g. a terminal
+       * bell with wake-on-bell enabled). Ignored unless the screen is off, so
+       * it can never steal focus from an in-use screen.
+       */
+      type: "wake-window";
+      windowId: string;
+    }
+  | {
       /** App-initiated window (e.g. a terminal view opened from the hub list). */
       type: "open-window-request";
       windowId: string;
@@ -146,6 +155,14 @@ export class WorkerAppHost {
         case "focus-window":
           if (this.openWindows.has(message.windowId)) {
             shell.focusWindow(message.windowId);
+            this.options.requestShellRender();
+          }
+          break;
+        case "wake-window":
+          if (this.openWindows.has(message.windowId) && !shell.isScreenOn()) {
+            // Focus first so wake's foreground-window refresh hits the target.
+            shell.focusWindow(message.windowId);
+            shell.wake("window");
             this.options.requestShellRender();
           }
           break;

@@ -90,7 +90,6 @@ import {
   firmwareDebugFlagsSetting,
   nightscoutSiteUrlSetting,
   onAnySettingChanged,
-  rawScreenshotsEnabledSetting,
   saveVoiceRecordingsSetting,
   screenTimeoutSetting,
   screenTimeoutSettingToMs,
@@ -122,7 +121,7 @@ export type DashboardSnapshot = {
   evenAppConflictWarningVisible: boolean;
   firmwareWarningMessage: string;
   firmwareWarningVisible: boolean;
-  rawScreenshotsEnabled: boolean;
+  screenRecordingActive: boolean;
   batteryOptimizationWarningVisible: boolean;
 };
 
@@ -203,6 +202,7 @@ class DashboardController {
   private evenAppConflictMessage = "";
   private firmwareWarningMessage = "";
   private batteryOptimizationWarningVisible = false;
+  private screenRecordingActive = false;
   private displayPreview: ImageSource | null = createInitialDisplayPreview();
   private silentMode = false;
   // Brightness value last pushed to the glasses; see pushBrightness.
@@ -311,7 +311,7 @@ class DashboardController {
       });
     });
     // Settings toggled from the glasses can change what the phone UI shows
-    // (e.g. the raw-screenshot button), so re-emit the snapshot on any change.
+    // (e.g. the text-setting editor), so re-emit the snapshot on any change.
     onAnySettingChanged(() => {
       this.emit();
       // Apply a firmware-debug-flags toggle live while connected (Java dedups).
@@ -520,13 +520,45 @@ class DashboardController {
     void this.communicator.setBrightness(level === null, level ?? 0).catch(() => {});
   }
 
+  /** Save the current composited screen as a 4-bit grayscale PNG. */
+  saveScreenshot(): string {
+    const path = this.communicator?.saveScreenshot() ?? "";
+    this.appendLog(path ? `screenshot saved: ${path}` : "screenshot skipped: not connected");
+    return path;
+  }
+
   /**
-   * Save the current composited screen as the raw headerless 4bpp frame
-   * buffer the wire compressor sees; test data for compression experiments.
+   * Begin collecting composited frames for an animated-GIF screen recording.
+   * Frames are captured at the same points the phone-side preview is
+   * refreshed, so the recording matches what the phone display showed.
    */
-  saveRawDashboardScreenshot(): string {
-    const path = this.communicator?.saveRawCompositeScreenshot() ?? "";
-    this.appendLog(path ? `raw screenshot saved: ${path}` : "raw screenshot skipped: not connected");
+  startScreenRecording(): void {
+    if (this.screenRecordingActive) return;
+    const communicator = this.communicator;
+    if (!communicator) {
+      this.appendLog("screen recording skipped: not connected");
+      return;
+    }
+    communicator.startScreenRecording();
+    // Capture the starting frame immediately rather than waiting for the
+    // next preview flush.
+    communicator.recordScreenFrame();
+    this.screenRecordingActive = true;
+    this.appendLog("screen recording started");
+    this.emit();
+  }
+
+  /** Finish the recording and save it as an animated GIF; returns the path or "". */
+  stopScreenRecording(): string {
+    if (!this.screenRecordingActive) return "";
+    this.screenRecordingActive = false;
+    let path = "";
+    try {
+      path = this.communicator?.stopScreenRecording() ?? "";
+    } finally {
+      this.emit();
+    }
+    this.appendLog(path ? `screen recording saved: ${path}` : "screen recording discarded: no frames");
     return path;
   }
 
@@ -552,7 +584,7 @@ class DashboardController {
       evenAppConflictWarningVisible: this.evenAppConflictMessage.length > 0,
       firmwareWarningMessage: this.firmwareWarningMessage,
       firmwareWarningVisible: this.firmwareWarningMessage.length > 0,
-      rawScreenshotsEnabled: rawScreenshotsEnabledSetting.get(),
+      screenRecordingActive: this.screenRecordingActive,
       batteryOptimizationWarningVisible: this.batteryOptimizationWarningVisible,
     };
   }
@@ -907,6 +939,18 @@ class DashboardController {
     this.communicator = null;
     this.evenHubSessionSuspended = false;
     this.evenHubResumePromise = null;
+
+    // The recording's frame store lives in the communicator, so save what has
+    // accumulated rather than silently losing it with the connection.
+    if (this.screenRecordingActive) {
+      this.screenRecordingActive = false;
+      try {
+        const path = communicator?.stopScreenRecording() ?? "";
+        this.appendLog(path ? `screen recording saved: ${path}` : "screen recording discarded: no frames");
+      } catch (error) {
+        this.appendLog(`screen recording save failed: ${this.formatError(error)}`);
+      }
+    }
 
     try {
       const leaseReleased = await communicator?.setFaceclawWakeLeaseEnabled(false).catch((error) => {
@@ -1654,6 +1698,11 @@ class DashboardController {
       return;
     }
     this.lastConnectedPreviewUpdateAtMs = now;
+    // The recorder captures at the same cadence the phone-side preview is
+    // refreshed, so the GIF matches what the phone display showed.
+    if (this.screenRecordingActive) {
+      this.communicator.recordScreenFrame();
+    }
     const preview = this.communicator.getCompositePreview();
     if (preview) {
       this.setDisplayPreview(preview);

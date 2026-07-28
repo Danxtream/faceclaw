@@ -390,10 +390,28 @@ export class FaceclawCommunicatorBridge {
     return bitmap ? new ImageSource(bitmap) : null;
   }
 
-  /** Save the current composite as a raw 4bpp screenshot; returns the path (empty if none). */
-  saveRawCompositeScreenshot(): string {
+  /** Save the current composite as a 4-bit grayscale PNG; returns the path (empty if none). */
+  saveScreenshot(): string {
     if (!global.isAndroid) return "";
-    return String(this.communicator.saveRawCompositeScreenshot());
+    return String(this.communicator.saveCompositePngScreenshot());
+  }
+
+  /** Begin collecting composite frames for an animated-GIF screen recording. */
+  startScreenRecording(): void {
+    if (!global.isAndroid) return;
+    this.communicator.startScreenRecording();
+  }
+
+  /** Capture the current composite into the active recording; no-op when idle. */
+  recordScreenFrame(): void {
+    if (!global.isAndroid) return;
+    this.communicator.recordScreenFrame();
+  }
+
+  /** Finish the recording and save the animated GIF; returns the path (empty if no frames). */
+  stopScreenRecording(): string {
+    if (!global.isAndroid) return "";
+    return String(this.communicator.stopScreenRecording());
   }
 
   /**

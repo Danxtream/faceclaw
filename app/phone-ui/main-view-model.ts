@@ -17,7 +17,7 @@ export class MainViewModel extends Observable {
   private _evenAppConflictWarningVisible = false;
   private _firmwareWarningMessage = "";
   private _firmwareWarningVisible = false;
-  private _rawScreenshotsEnabled = false;
+  private _screenRecordingActive = false;
   private _batteryOptimizationWarningVisible = false;
   private _showLog = false;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
@@ -37,7 +37,7 @@ export class MainViewModel extends Observable {
       this.evenAppConflictWarningVisible = snapshot.evenAppConflictWarningVisible;
       this.firmwareWarningMessage = snapshot.firmwareWarningMessage;
       this.firmwareWarningVisible = snapshot.firmwareWarningVisible;
-      this.rawScreenshotsEnabled = snapshot.rawScreenshotsEnabled;
+      this.screenRecordingActive = snapshot.screenRecordingActive;
       this.batteryOptimizationWarningVisible = snapshot.batteryOptimizationWarningVisible;
     });
   }
@@ -258,27 +258,43 @@ export class MainViewModel extends Observable {
     return this._firmwareWarningVisible ? "visible" : "collapse";
   }
 
-  get rawScreenshotsEnabled(): boolean {
-    return this._rawScreenshotsEnabled;
+  get screenRecordingActive(): boolean {
+    return this._screenRecordingActive;
   }
 
-  set rawScreenshotsEnabled(value: boolean) {
-    if (this._rawScreenshotsEnabled !== value) {
-      this._rawScreenshotsEnabled = value;
-      this.notifyPropertyChange("rawScreenshotsEnabled", value);
-      this.notifyPropertyChange("screenshotButtonVisibility", this.screenshotButtonVisibility);
+  set screenRecordingActive(value: boolean) {
+    if (this._screenRecordingActive !== value) {
+      this._screenRecordingActive = value;
+      this.notifyPropertyChange("screenRecordingActive", value);
+      this.notifyPropertyChange("stopRecordingButtonVisibility", this.stopRecordingButtonVisibility);
     }
   }
 
-  get screenshotButtonVisibility(): "visible" | "collapse" {
-    return this._rawScreenshotsEnabled ? "visible" : "collapse";
+  get stopRecordingButtonVisibility(): "visible" | "collapse" {
+    return this._screenRecordingActive ? "visible" : "collapse";
   }
 
-  onScreenshotTap(): void {
+  onTakeScreenshotTap(): void {
     try {
-      dashboardController.saveRawDashboardScreenshot();
+      dashboardController.saveScreenshot();
     } catch (error) {
-      console.error("raw screenshot failed", error);
+      console.error("screenshot failed", error);
+    }
+  }
+
+  onRecordScreenTap(): void {
+    try {
+      dashboardController.startScreenRecording();
+    } catch (error) {
+      console.error("screen recording start failed", error);
+    }
+  }
+
+  onStopRecordingTap(): void {
+    try {
+      dashboardController.stopScreenRecording();
+    } catch (error) {
+      console.error("screen recording stop failed", error);
     }
   }
 
