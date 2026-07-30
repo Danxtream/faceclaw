@@ -1,4 +1,4 @@
-import { G2_LENS_HEIGHT, GrayImage } from "../graphics/image";
+import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
 import { getDefaultSmallFont, type BdfFont } from "../graphics/bdffont";
 import { clamp } from "../util/numeric-util";
@@ -330,7 +330,7 @@ export class TextPageLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const image = new GrayImage(576, 288, 0);
+    const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     image.drawText(font, 18, 14, this.title, 220);
     image.drawRect(12, 12, 552, 264, 52);
 

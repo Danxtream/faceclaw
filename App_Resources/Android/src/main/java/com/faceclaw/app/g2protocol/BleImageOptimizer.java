@@ -79,7 +79,7 @@ public final class BleImageOptimizer {
         public final byte[] packed;
         public final int width;
         public final int height;
-        final byte[] payload;  // bytes actually streamed: mode-6 zlib(rle(4bpp)) when it shrinks, else a raw BMP
+        final byte[] payload;  // bytes actually streamed: mode-6 zlib(rle(4bpp))
         final int sessionId;
         List<BleProtocol.ImageFragment> fragments = Collections.emptyList();
 
@@ -408,19 +408,16 @@ public final class BleImageOptimizer {
     }
 
     /**
-     * RLE- then zlib-compress headerless 4bpp pixels for CFW load_image_z mode 6 when
-     * it shrinks the payload. Wire format: [6][zlib(rle(4bpp pixels))]. A raw BMP
-     * (starts 'B') is sent when compression does not help; that is the only spot
-     * where BMP framing is still built.
+     * RLE- then zlib-compress headerless 4bpp pixels for CFW load_image_z mode 6.
+     * Wire format: [6][zlib(rle(4bpp pixels))]. Always use mode 6: the logical
+     * image can be larger than its EvenHub carrier, so a raw BMP fallback would
+     * carry dimensions the legacy container loader cannot accept.
      */
     static byte[] maybeCompress(byte[] packed, int width, int height) {
         if (packed == null || packed.length == 0) {
             return packed;
         }
         byte[] z = deflate(rleEncode(packed));
-        if (z == null || z.length + 1 >= packed.length) {
-            return BmpUtil.build4bppBmpFromPacked(packed, width, height);
-        }
         byte[] out = new byte[z.length + 1];
         out[0] = 6;
         System.arraycopy(z, 0, out, 1, z.length);

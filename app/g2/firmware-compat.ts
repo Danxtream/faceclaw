@@ -1,14 +1,13 @@
 /**
  * Compatibility check for the glasses firmware. Faceclaw requires the custom
- * firmware: version >= 2.2.4.34 with the "imgz" extension token in the CFW
- * capability string ("EVENCFW/1 img576 imgz ..."). Stock firmware sends no
- * capability string at all.
+ * firmware: version >= 2.2.4.34 with the "img580" and "fbguard" extension tokens
+ * in the CFW capability string. Stock firmware sends no capability string at all.
  */
 
 import { type FirmwareInfo } from "../native/faceclaw-communicator";
 
 const MIN_FIRMWARE_VERSION = [2, 2, 4, 34];
-const REQUIRED_FIRMWARE_EXTENSION = "imgz";
+const REQUIRED_FIRMWARE_EXTENSIONS = ["img580", "fbguard"] as const;
 
 // The stock firmware release Faceclaw's custom image is built from. Stock at or
 // below this can be flashed with our patched image; a newer stock version is
@@ -56,20 +55,26 @@ export function firmwareIncompatibilityMessage(info: FirmwareInfo): string | nul
   }
 
   const tokens = info.capabilities.trim().split(/\s+/);
-  if (!tokens.includes(REQUIRED_FIRMWARE_EXTENSION)) {
+  const missingExtensions = REQUIRED_FIRMWARE_EXTENSIONS.filter(
+    (extension) => !tokens.includes(extension),
+  );
+  if (missingExtensions.length) {
     return (
-      `The glasses firmware (${versionsText}) does not advertise the "${REQUIRED_FIRMWARE_EXTENSION}" extension` +
+      `The glasses firmware (${versionsText}) does not advertise the required ` +
+      `${missingExtensions.map((extension) => `"${extension}"`).join(" and ")} extension` +
+      `${missingExtensions.length === 1 ? "" : "s"}` +
       `${info.capabilities.trim() ? ` (reported: ${info.capabilities.trim()})` : ", which suggests stock firmware"}. ` +
-      `Faceclaw requires the modified firmware with compressed-image support.`
+      `Faceclaw requires the modified firmware with the guarded 580x300 direct-framebuffer path.`
     );
   }
 
   return null;
 }
 
-/** True when the glasses advertise Faceclaw's custom-firmware image extension. */
+/** True when the glasses advertise every custom-firmware extension Faceclaw needs. */
 export function hasCustomFirmware(info: FirmwareInfo): boolean {
-  return info.capabilities.trim().split(/\s+/).includes(REQUIRED_FIRMWARE_EXTENSION);
+  const tokens = info.capabilities.trim().split(/\s+/);
+  return REQUIRED_FIRMWARE_EXTENSIONS.every((extension) => tokens.includes(extension));
 }
 
 /** The higher of the two arms' reported versions, or "" if none reported. */

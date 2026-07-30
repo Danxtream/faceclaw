@@ -28,9 +28,10 @@ import java.util.Map;
 public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final String TAG = "FaceclawComm";
 
-    // A single full-screen image container. Earlier firmware capped image tiles at
-    // 288x144, which forced a 2x2 tile layout; the custom firmware lifts that limit,
-    // so the dashboard is now one 576x288 container.
+    // The EvenHub image container is a transport/reconstruction carrier only.
+    // Its 576x288 allocation remains large enough for the compressed 580x300
+    // logical image and the firmware's packed-4bpp shadow; the CFW presents that
+    // shadow directly instead of asking EvenHub/LVGL to composite this geometry.
     private static final BleProtocol.ImageTileOptions DASHBOARD_TILE =
         new BleProtocol.ImageTileOptions("img00", 10, 0, 0, 576, 288);
 
@@ -79,6 +80,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private long lastFaceclawWakeLeaseQueuedAtMs;
     private int faceclawWakeControlGeneration;
     private int faceclawWakeControlSentCount;
+    private long lastFaceclawFramebufferLeaseQueuedAtMs;
+    private int faceclawFramebufferControlGeneration;
+    private int faceclawFramebufferControlSentCount;
     private int faceclawWakePendingNonce = -1;
 
     private long reconnectAfterMs;
@@ -185,6 +189,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     public void disconnect() {
+        releaseFaceclawFramebufferLease();
         Thread threadToJoin;
         synchronized (lock) {
             userDisconnectRequested = true;
@@ -1098,6 +1103,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 audioCaptureActive = false;
                 faceclawWakePendingNonce = -1;
                 lastFaceclawWakeLeaseQueuedAtMs = 0;
+                lastFaceclawFramebufferLeaseQueuedAtMs = 0;
+                enqueueFaceclawFramebufferControlLocked(
+                    BleProtocol.FACECLAW_FB_OP_ACQUIRE,
+                    true
+                );
                 if (faceclawWakeLeaseEnabled) {
                     enqueueFaceclawWakeControlLocked(
                         BleProtocol.FACECLAW_WAKE_OP_ACQUIRE,
@@ -1295,6 +1305,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             maybeFinishNoChangeDesiredFrame();
 
             synchronized (lock) {
+                if (sessionReady
+                        && now - lastFaceclawFramebufferLeaseQueuedAtMs >= FACECLAW_WAKE_LEASE_RENEW_MS
+                        && !hasPendingOrInflightKindLocked("framebuffer-lease-control")) {
+                    enqueueFaceclawFramebufferControlLocked(
+                        BleProtocol.FACECLAW_FB_OP_ACQUIRE,
+                        false
+                    );
+                }
                 if (faceclawWakeLeaseEnabled
                         && sessionReady
                         && now - lastFaceclawWakeLeaseQueuedAtMs >= FACECLAW_WAKE_LEASE_RENEW_MS
@@ -1787,18 +1805,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void enqueueWarmupLocked() {
-        int width;
-        int height;
-        synchronized (desiredTilesLock) {
-            width = desiredWidth;
-            height = desiredHeight;
-        }
-        // A blank full-size raw BMP: warmup primes the firmware image path with
-        // a frame shaped like the real ones, without flashing stale content.
-        byte[] bmp = (width > 0 && height > 0)
-            ? BmpUtil.build4bppBmpFromPacked(new byte[((width + 1) >> 1) * height], width, height)
-            : new byte[] {0};
         BleProtocol.ImageTileOptions tile = DASHBOARD_TILE;
+        // Warm up the legacy container with a carrier-sized blank BMP. Real
+        // 580x300 frames use mode 6 and are intentionally independent of this
+        // geometry; a mismatched raw BMP would be rejected by the stock loader.
+        byte[] bmp = BmpUtil.build4bppBmpFromPacked(
+            new byte[((tile.width + 1) >> 1) * tile.height], tile.width, tile.height);
         int sessionId = nextMapSessionId();
         List<BleProtocol.ImageFragment> fragments = BleImageOptimizer.planImageFragments(bmp, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
         for (BleProtocol.ImageFragment fragment : fragments) {
@@ -2198,6 +2210,80 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return faceclawWakeControlGeneration == generation
                 && faceclawWakeControlSentCount >= 2;
         }
+    }
+
+    /**
+     * Acquire/renew or release CFW's independent direct-framebuffer repaint
+     * guard on both arms. It is separate from the optional idle-wake lease:
+     * every Faceclaw display session needs this guard while its EvenHub layout
+     * contains swipe-capturing stock widgets.
+     */
+    private int enqueueFaceclawFramebufferControlLocked(int operation, boolean priority) {
+        clearMessagesOfKindLocked("framebuffer-lease-control");
+        final int generation = ++faceclawFramebufferControlGeneration;
+        faceclawFramebufferControlSentCount = 0;
+        if (operation == BleProtocol.FACECLAW_FB_OP_ACQUIRE) {
+            lastFaceclawFramebufferLeaseQueuedAtMs = SystemClock.elapsedRealtime();
+        }
+        Runnable onSent = () -> {
+            if (faceclawFramebufferControlGeneration == generation) {
+                faceclawFramebufferControlSentCount += 1;
+            }
+        };
+        OutboundMessage right = messageBuilder.faceclawFramebufferControl(operation, false);
+        OutboundMessage left = messageBuilder.faceclawFramebufferControl(operation, true);
+        right.onSent = onSent;
+        left.onSent = onSent;
+        if (priority) {
+            pendingMessages.addFirst(left);
+            pendingMessages.addFirst(right);
+        } else {
+            pendingMessages.addLast(right);
+            pendingMessages.addLast(left);
+        }
+        logLine("queue " + right.label + " + L");
+        return generation;
+    }
+
+    private boolean waitForFaceclawFramebufferControlDelivery(int generation, long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + Math.max(0, timeoutMs);
+        synchronized (lock) {
+            while (running
+                    && sessionReady
+                    && faceclawFramebufferControlGeneration == generation
+                    && faceclawFramebufferControlSentCount < 2) {
+                long remaining = deadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) {
+                    break;
+                }
+                try {
+                    lock.wait(Math.min(remaining, 100));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            return faceclawFramebufferControlGeneration == generation
+                && faceclawFramebufferControlSentCount >= 2;
+        }
+    }
+
+    private boolean releaseFaceclawFramebufferLease() {
+        int generation;
+        synchronized (lock) {
+            if (!running || !sessionReady) {
+                return true;
+            }
+            generation = enqueueFaceclawFramebufferControlLocked(
+                BleProtocol.FACECLAW_FB_OP_RELEASE,
+                true
+            );
+        }
+        interruptibleSleep.interrupt();
+        return waitForFaceclawFramebufferControlDelivery(
+            generation,
+            FACECLAW_WAKE_CONTROL_WAIT_MS
+        );
     }
 
     private void clearMessagesOfKindLocked(String kind) {

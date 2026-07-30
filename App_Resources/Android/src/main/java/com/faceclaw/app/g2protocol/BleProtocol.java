@@ -42,6 +42,8 @@ public class BleProtocol {
     public static final int FACECLAW_WAKE_OP_RELEASE = 2;
     public static final int FACECLAW_WAKE_OP_CLAIM = 3;
     public static final int FACECLAW_WAKE_OP_READY = 4;
+    public static final int FACECLAW_FB_OP_ACQUIRE = 5;
+    public static final int FACECLAW_FB_OP_RELEASE = 6;
     private static final int FACECLAW_WAKE_EVENT = 1;
     private static final int FACECLAW_WAKE_PROTOCOL_VERSION = 1;
     // UI_FOREGROUND_EVEN_AI_ID: the stock "Even AI" assistant app. It is a
@@ -399,7 +401,7 @@ public class BleProtocol {
      * Firmware versions and the CFW capability advertisement from a settings
      * READ ack. Versions are fields 5/6 of the deviceReceiveRequestFromApp
      * submessage (field 4); the custom firmware additionally appends top-level
-     * field 100, a string like "EVENCFW/1 img576 imgz xordelta stereo", which
+     * field 100, a string like "EVENCFW/5 img576 img580 ... directfb fbguard", which
      * stock firmware never sends. Returns null when the ack carries none of it.
      */
     public static FirmwareInfo parseSettingsFirmwareInfo(byte[] pb) {

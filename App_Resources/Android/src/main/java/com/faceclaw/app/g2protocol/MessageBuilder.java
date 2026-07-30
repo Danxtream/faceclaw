@@ -210,4 +210,18 @@ public class MessageBuilder {
             leftArm
         );
     }
+
+    public OutboundMessage faceclawFramebufferControl(int operation, boolean leftArm) {
+        return new OutboundMessage(
+            "framebuffer-lease-control",
+            "framebuffer lease op=" + operation + (leftArm ? " L" : " R"),
+            BleProtocol.SID_UI_SETTING,
+            BleProtocol.FLAG_REQUEST,
+            0,
+            BleProtocol.buildFaceclawWakeControl(operation, 0),
+            ACK_TIMEOUT_MS,
+            -1,
+            leftArm
+        );
+    }
 }
