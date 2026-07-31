@@ -24,7 +24,7 @@ import { ShellChromeLayer, type ShellChromeState, type ShellChromeWindow } from 
 import { ShellModalLayer } from "./modal-layer";
 import { ToolDebugMenuLayer } from "./tool-debug-layer";
 import { toolRegistry } from "../../assistant/tool-registry";
-import { SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
+import { minWindowTop, SIDEBAR_WIDTH, TOP_BAR_HEIGHT, type WindowHeightMode } from "./geometry";
 
 /**
  * The shell: owns the window registry, focus, screen on/off, and the shell
@@ -49,6 +49,12 @@ export type ShellWindow = {
   surfaceId: string;
   /** Whether close menu entries (app menu default, shell escape menu) apply (the launcher is pinned). */
   closeable: boolean;
+  /**
+   * Window height: the standard 288px band ("min") or the full screen
+   * ("max", terminal views). Decides the surface rect and where the shell
+   * draws this window's top bar.
+   */
+  heightMode: WindowHeightMode;
   /** App-side cleanup when the shell closes the window (worker notification, surface removal). */
   close?: () => void;
   drawIcon: ShellChromeWindow["drawIcon"];
@@ -97,9 +103,11 @@ const LONG_PRESS_ESCAPE_MENU_MS = 4000;
 /** Shell-surface overlay menu (the escape menu); closing it returns focus to the sidebar. */
 class ShellOverlayMenuLayer extends MenuLayer {
   constructor(items: MenuItem[], private readonly onClosed: () => void) {
+    // Aligned to the min-height window band (like the sidebar), wherever the
+    // vertical position setting currently puts it.
     super(null, items, {
       x: SIDEBAR_WIDTH + 8,
-      y: TOP_BAR_HEIGHT + 8,
+      y: minWindowTop() + TOP_BAR_HEIGHT + 8,
       width: 272,
       minHeight: 0,
     });
@@ -135,13 +143,15 @@ class ShellAlertLayer implements Layer {
   paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
     const image = paintBelow();
     const font = getDefaultSmallFont();
-    image.fillRoundedRect(ALERT_X, ALERT_Y, ALERT_W, ALERT_H, 1, 10);
-    image.drawRoundedRect(ALERT_X, ALERT_Y, ALERT_W, ALERT_H, 90, 10);
-    image.drawText(font, ALERT_X + 16, ALERT_Y + 12, "Assistant", 200);
+    // Positioned within the min-height window band, like the other shell overlays.
+    const alertY = minWindowTop() + ALERT_Y;
+    image.fillRoundedRect(ALERT_X, alertY, ALERT_W, ALERT_H, 1, 10);
+    image.drawRoundedRect(ALERT_X, alertY, ALERT_W, ALERT_H, 90, 10);
+    image.drawText(font, ALERT_X + 16, alertY + 12, "Assistant", 200);
     image.drawTextWrapped({
       font,
       x: ALERT_X + 16,
-      y: ALERT_Y + 34,
+      y: alertY + 34,
       width: ALERT_W - 32,
       text: this.text,
       value: 235,
@@ -911,6 +921,7 @@ class Shell {
       })),
       selectedIndex: this.selectedIndex,
       focus: this.focus,
+      foregroundHeightMode: this.foregroundWindow()?.heightMode ?? "min",
       battery: this.battery,
       trayIcons: Array.from(this.trayIcons.keys())
         .sort()

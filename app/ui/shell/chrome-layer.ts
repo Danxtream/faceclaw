@@ -8,7 +8,15 @@ import { renderIcon, renderIconWithGlyph, type IconName } from "../../graphics/i
 import { batteryDisplayModeSetting, timeFormatSetting } from "../dashboard-settings";
 import { Layer } from "../layers";
 import { scrollToKeepSelectionVisible } from "../menu";
-import { SHELL_OPAQUE_BLACK, SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
+import {
+  MIN_WINDOW_HEIGHT,
+  minWindowTop,
+  SHELL_OPAQUE_BLACK,
+  SIDEBAR_WIDTH,
+  TOP_BAR_HEIGHT,
+  windowTop,
+  type WindowHeightMode,
+} from "./geometry";
 
 const ICON_SIZE = 32;
 const ICON_MARGIN_X = ((SIDEBAR_WIDTH - ICON_SIZE) / 2) | 0;
@@ -30,6 +38,8 @@ export type ShellChromeState = {
   windows: ShellChromeWindow[];
   selectedIndex: number;
   focus: "sidebar" | "window";
+  /** Height mode of the foreground window; decides where its top bar sits. */
+  foregroundHeightMode: WindowHeightMode;
   battery: { headset: number | null; headsetCharging: boolean | null };
   /** App-provided tray images, drawn between notification icons and batteries. */
   trayIcons: GrayImage[];
@@ -103,13 +113,18 @@ export class ShellChromeLayer implements Layer {
   }
 
   private drawSidebar(image: GrayImage, state: ShellChromeState): void {
-    image.fillRect(0, 0, SIDEBAR_WIDTH, G2_LENS_HEIGHT, SHELL_OPAQUE_BLACK);
+    // The sidebar always occupies the min-height window band at the preferred
+    // vertical position: it never moves when the foreground window's height
+    // changes, and it lines up exactly with a min-height window's chrome.
+    const bandTop = minWindowTop();
+    const bandBottom = bandTop + MIN_WINDOW_HEIGHT;
+    image.fillRect(0, bandTop, SIDEBAR_WIDTH, MIN_WINDOW_HEIGHT, SHELL_OPAQUE_BLACK);
 
     // Scroll the icon list to keep the selection visible; chevrons mark
     // windows off-screen above/below.
-    const listTop = TOP_BAR_HEIGHT + 10;
+    const listTop = bandTop + TOP_BAR_HEIGHT + 10;
     const itemStride = ICON_SIZE + ICON_SPACING;
-    const listHeight = G2_LENS_HEIGHT - listTop - 10;
+    const listHeight = bandBottom - listTop - 10;
     const visibleCount = Math.max(1, ((listHeight + ICON_SPACING) / itemStride) | 0);
     const count = state.windows.length;
     this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, state.selectedIndex, visibleCount, count);
@@ -125,10 +140,10 @@ export class ShellChromeLayer implements Layer {
     const selTabTop = selVisible ? listTop + (state.selectedIndex - this.scrollRow) * itemStride - 2 : 0;
     const selTabBottom = selTabTop + ICON_SIZE + 4;
     if (selVisible) {
-      image.drawLine(sep, 0, sep, selTabTop, BORDER_VALUE);
-      image.drawLine(sep, selTabBottom, sep, G2_LENS_HEIGHT - 1, BORDER_VALUE);
+      image.drawLine(sep, bandTop, sep, selTabTop, BORDER_VALUE);
+      image.drawLine(sep, selTabBottom, sep, bandBottom - 1, BORDER_VALUE);
     } else {
-      image.drawLine(sep, 0, sep, G2_LENS_HEIGHT - 1, BORDER_VALUE);
+      image.drawLine(sep, bandTop, sep, bandBottom - 1, BORDER_VALUE);
     }
 
     for (let index = this.scrollRow; index < lastVisible; index++) {
@@ -147,27 +162,31 @@ export class ShellChromeLayer implements Layer {
     }
 
     if (this.scrollRow > 0) {
-      drawChevron(image, SIDEBAR_WIDTH / 2, TOP_BAR_HEIGHT + 6, -1);
+      drawChevron(image, SIDEBAR_WIDTH / 2, bandTop + TOP_BAR_HEIGHT + 6, -1);
     }
     if (lastVisible < count) {
-      drawChevron(image, SIDEBAR_WIDTH / 2, G2_LENS_HEIGHT - 6, 1);
+      drawChevron(image, SIDEBAR_WIDTH / 2, bandBottom - 6, 1);
     }
   }
 
   private drawTopBar(image: GrayImage, state: ShellChromeState): void {
     const font = getDefaultMediumFont();
-    image.fillRect(SIDEBAR_WIDTH, 0, G2_LENS_WIDTH - SIDEBAR_WIDTH, TOP_BAR_HEIGHT, SHELL_OPAQUE_BLACK);
-    image.drawLine(SIDEBAR_WIDTH, TOP_BAR_HEIGHT - 1, G2_LENS_WIDTH - 1, TOP_BAR_HEIGHT - 1, BORDER_VALUE);
+    // The bar sits at the top edge of the foreground window: the screen top
+    // for a max-height window, the min-height band otherwise. It moves when
+    // the foreground switches to a window of a different height.
+    const barTop = windowTop(state.foregroundHeightMode);
+    image.fillRect(SIDEBAR_WIDTH, barTop, G2_LENS_WIDTH - SIDEBAR_WIDTH, TOP_BAR_HEIGHT, SHELL_OPAQUE_BLACK);
+    image.drawLine(SIDEBAR_WIDTH, barTop + TOP_BAR_HEIGHT - 1, G2_LENS_WIDTH - 1, barTop + TOP_BAR_HEIGHT - 1, BORDER_VALUE);
 
     const now = new Date();
     const clock = `${WEEKDAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ` +
       formatClockTime(now);
     const clockX = SIDEBAR_WIDTH + 10;
-    const textY = Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
+    const textY = barTop + Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
     image.drawText(font, clockX, textY, clock, 210);
 
-    const batteryLeft = this.drawTopBarBatteries(image, state);
-    const trayLeft = drawTrayIcons(image, state.trayIcons, batteryLeft);
+    const batteryLeft = this.drawTopBarBatteries(image, state, barTop);
+    const trayLeft = drawTrayIcons(image, state.trayIcons, batteryLeft, barTop);
 
     const iconsX = clockX + font.measureText(clock) + 16;
     const maxIcons = Math.max(0, ((trayLeft - 8 - iconsX) / (NOTIFICATION_ICON_SIZE + 4)) | 0);
@@ -176,7 +195,7 @@ export class ShellChromeLayer implements Layer {
       if (stale) {
         noteStaleDataUsed();
       }
-      const iconY = ((TOP_BAR_HEIGHT - NOTIFICATION_ICON_SIZE) / 2) | 0;
+      const iconY = barTop + (((TOP_BAR_HEIGHT - NOTIFICATION_ICON_SIZE) / 2) | 0);
       for (let index = 0; index < icons.length; index++) {
         image.bitBlt(icons[index]!, iconsX + index * (NOTIFICATION_ICON_SIZE + 4), iconY, {
           transparentZero: true,
@@ -190,7 +209,7 @@ export class ShellChromeLayer implements Layer {
    * the top bar, following the dashboard card's icon/percentage setting.
    * Returns the left edge of the battery block.
    */
-  private drawTopBarBatteries(image: GrayImage, state: ShellChromeState): number {
+  private drawTopBarBatteries(image: GrayImage, state: ShellChromeState, barTop: number): number {
     const font = getDefaultSmallFont();
     const percentageMode = batteryDisplayModeSetting.get() === "percentage";
     type BatteryItem = { label: string; percent: number; charging: boolean };
@@ -206,7 +225,7 @@ export class ShellChromeLayer implements Layer {
 
     const labelGap = 5;
     const itemGap = 12;
-    const textY = Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
+    const textY = barTop + Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
     let x = G2_LENS_WIDTH - 8;
     for (let index = items.length - 1; index >= 0; index--) {
       const item = items[index]!;
@@ -226,7 +245,7 @@ export class ShellChromeLayer implements Layer {
         }
       } else {
         const icon = drawBattery(item.percent, item.charging);
-        image.bitBlt(icon, valueX, Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0), {
+        image.bitBlt(icon, valueX, barTop + Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0), {
           transparentZero: true,
         });
       }
@@ -240,12 +259,12 @@ export class ShellChromeLayer implements Layer {
  * Draw app tray icons right-to-left, ending just left of the battery block;
  * returns the left edge of the tray region.
  */
-function drawTrayIcons(image: GrayImage, trayIcons: GrayImage[], rightEdge: number): number {
+function drawTrayIcons(image: GrayImage, trayIcons: GrayImage[], rightEdge: number, barTop: number): number {
   let x = rightEdge;
   for (let index = trayIcons.length - 1; index >= 0; index--) {
     const icon = trayIcons[index]!;
     x -= icon.width + 10;
-    image.bitBlt(icon, x, Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0), {
+    image.bitBlt(icon, x, barTop + Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0), {
       transparentZero: true,
     });
   }

@@ -41,17 +41,26 @@ import {
   type MenuItem,
 } from "../ui/menu";
 import { defaultWindowMenuItems, WindowMenu } from "../ui/window-menu";
+import { appViewportSize } from "../ui/shell/geometry";
 import type { WorkerAppMessage, WorkerAppReply } from "../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../assistant/tool-registry";
 
 declare const global: any;
 declare const com: any;
 
-// Terminus-12 has a 6x12 cell; the grid size is derived from the viewport at
-// the first open-window and declared in each websocket init handshake.
+// Terminus-12 has a 6x12 cell; each window derives its grid from the
+// viewport in its open-window message (the hub is min-height, session views
+// full-height). The websocket init handshake declares the view grid.
 const terminalFont = getFont("terminus12");
 const CELL_WIDTH = 6;
 const CELL_HEIGHT = 12;
+// Grid of a session view window (full-height); also declared on the control
+// connection so sessions launched from presets come up at view size.
+const VIEW_VIEWPORT = appViewportSize("max");
+const VIEW_GRID = {
+  cols: Math.floor(VIEW_VIEWPORT.width / CELL_WIDTH),
+  rows: Math.floor(VIEW_VIEWPORT.height / CELL_HEIGHT),
+};
 const DEVICE_NAME = "Faceclaw G2";
 const HUB_ROW_HEIGHT = 20;
 const RENDER_COALESCE_MS = 33;
@@ -60,6 +69,11 @@ const HISTORY_PAGE = 200;
 type BaseWindow = {
   windowId: string;
   surfaceId: string;
+  /** Content viewport from the shell's open-window message; grid = viewport / cell. */
+  viewportWidth: number;
+  viewportHeight: number;
+  gridCols: number;
+  gridRows: number;
   foreground: boolean;
   /**
    * Whether this window is the shell's input target (vs. the sidebar having
@@ -174,10 +188,6 @@ const TERMINAL_TOOLS: ToolSpec[] = [
     timeoutMs: 15_000,
   },
 ];
-let viewportWidth = 0;
-let viewportHeight = 0;
-let gridCols = 0;
-let gridRows = 0;
 let screenOn = true;
 
 // Control connection: session listing for the hub, plus unsolicited
@@ -277,21 +287,17 @@ onSettingsStoreChanged((key) => {
   if (!key.startsWith("terminal.")) return;
   // Settings that don't affect the connection; no reconnect needed.
   if (key === "terminal.launchPresets" || key === "terminal.wakeOnBell") return;
-  if (gridCols > 0) {
+  // (Re)start only once the app has actually been opened.
+  if (controlClient || windows.size > 0) {
     startControlClient();
   }
 });
 
 function openWindow(windowId: string, surfaceId: string, viewport: { width: number; height: number }): void {
-  viewportWidth = viewport.width;
-  viewportHeight = viewport.height;
-  gridCols = Math.floor(viewportWidth / CELL_WIDTH);
-  gridRows = Math.floor(viewportHeight / CELL_HEIGHT);
-
   const pendingView = pendingViews.get(windowId);
   if (pendingView) {
     pendingViews.delete(windowId);
-    windows.set(windowId, createViewWindow(windowId, surfaceId, pendingView));
+    windows.set(windowId, createViewWindow(windowId, surfaceId, viewport, pendingView));
     renderHubWindows();
     return;
   }
@@ -299,6 +305,10 @@ function openWindow(windowId: string, surfaceId: string, viewport: { width: numb
     kind: "hub",
     windowId,
     surfaceId,
+    viewportWidth: viewport.width,
+    viewportHeight: viewport.height,
+    gridCols: Math.floor(viewport.width / CELL_WIDTH),
+    gridRows: Math.floor(viewport.height / CELL_HEIGHT),
     foreground: false,
     focused: false,
     renderScheduled: false,
@@ -337,8 +347,8 @@ function clientOptions() {
     port: parseInt(terminalPortSetting.get(), 10) || 8737,
     authToken: terminalAuthTokenSetting.get(),
     deviceName: DEVICE_NAME,
-    cols: gridCols,
-    rows: gridRows,
+    cols: VIEW_GRID.cols,
+    rows: VIEW_GRID.rows,
   };
 }
 
@@ -425,14 +435,21 @@ function renderHubWindows(): void {
 function createViewWindow(
   windowId: string,
   surfaceId: string,
+  viewport: { width: number; height: number },
   view: { socket: string; label: string; glyph: string },
 ): ViewWindow {
   const { socket, label, glyph } = view;
-  const client = new G2MirrorClient(clientOptions());
+  const gridCols = Math.floor(viewport.width / CELL_WIDTH);
+  const gridRows = Math.floor(viewport.height / CELL_HEIGHT);
+  const client = new G2MirrorClient({ ...clientOptions(), cols: gridCols, rows: gridRows });
   const window: ViewWindow = {
     kind: "view",
     windowId,
     surfaceId,
+    viewportWidth: viewport.width,
+    viewportHeight: viewport.height,
+    gridCols,
+    gridRows,
     foreground: false,
     focused: false,
     renderScheduled: false,
@@ -504,7 +521,7 @@ function createViewWindow(
 function windowMenu(window: TerminalWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
-      size: { width: viewportWidth, height: viewportHeight },
+      size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
     });
@@ -603,11 +620,11 @@ function handleInput(window: TerminalWindow, event: DashboardInputEvent, frameId
 
 /** Top visible absolute line index when following the live bottom. */
 function followTop(window: ViewWindow): number {
-  return window.historyNext + window.emulator.bufferLength() - gridRows;
+  return window.historyNext + window.emulator.bufferLength() - window.gridRows;
 }
 
 function handleViewScroll(window: ViewWindow, direction: -1 | 1, frameId: number): void {
-  const page = Math.max(1, gridRows - 1);
+  const page = Math.max(1, window.gridRows - 1);
   const bottomTop = followTop(window);
   const minTop = window.archiveStart;
   const currentTop = window.scrollTop ?? bottomTop;
@@ -623,7 +640,7 @@ function maybePrefetchHistory(window: ViewWindow): void {
   if (window.historyFetchInFlight) return;
   if (window.archiveStart <= window.historyOldest) return; // nothing older retained
   const top = window.scrollTop ?? followTop(window);
-  if (window.archive.length === 0 || top - window.archiveStart <= gridRows) {
+  if (window.archive.length === 0 || top - window.archiveStart <= window.gridRows) {
     window.historyFetchInFlight = true;
     window.client.requestHistory(window.archiveStart, HISTORY_PAGE);
   }
@@ -779,6 +796,9 @@ function openViewWindow(socket: string, label: string): void {
     icon: "terminal",
     iconGlyph: glyph || undefined,
     focus: true,
+    // Terminal views are the one full-height window kind: more rows matter
+    // more than a small on-screen footprint.
+    heightMode: "max",
   });
 }
 
@@ -812,7 +832,7 @@ function paintContent(window: TerminalWindow): GrayImage {
 }
 
 function paintHub(window: HubWindow): GrayImage {
-  const image = new GrayImage(viewportWidth, viewportHeight, 0);
+  const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
   // No border box: the shell chrome (top bar + sidebar) already frames the app.
   image.drawText(terminalFont, 18, 10, "Terminal", 220);
   image.drawText(terminalFont, 24, 30, hubStatusLine(), 170);
@@ -826,7 +846,7 @@ function paintHub(window: HubWindow): GrayImage {
 
   const items = hubItems(window);
   window.selectedIndex = Math.max(0, Math.min(window.selectedIndex, items.length - 1));
-  const visibleRowCount = Math.max(1, ((viewportHeight - 30 - listTop) / HUB_ROW_HEIGHT) | 0);
+  const visibleRowCount = Math.max(1, ((window.viewportHeight - 30 - listTop) / HUB_ROW_HEIGHT) | 0);
   window.scrollRow = scrollToKeepSelectionVisible(window.scrollRow, window.selectedIndex, visibleRowCount, items.length);
   const lastVisibleRow = Math.min(items.length, window.scrollRow + visibleRowCount);
   for (let index = window.scrollRow; index < lastVisibleRow; index++) {
@@ -835,14 +855,14 @@ function paintHub(window: HubWindow): GrayImage {
     if (selected) {
       // Match the shell convention: fill only when this window has focus, so
       // an outline-only selection signals the sidebar owns input.
-      drawSelectionHighlight(image, 20, y - 2, viewportWidth - 40, HUB_ROW_HEIGHT - 1, window.focused, 8);
+      drawSelectionHighlight(image, 20, y - 2, window.viewportWidth - 40, HUB_ROW_HEIGHT - 1, window.focused, 8);
     }
     image.drawText(terminalFont, 32, y + 2, items[index]!.label, selected ? 255 : 200);
   }
   if (items.length > visibleRowCount) {
     drawListScrollbar(
       image,
-      viewportWidth - 10,
+      window.viewportWidth - 10,
       listTop,
       visibleRowCount * HUB_ROW_HEIGHT - 4,
       window.scrollRow,
@@ -851,7 +871,7 @@ function paintHub(window: HubWindow): GrayImage {
     );
   }
 
-  image.drawText(terminalFont, 24, viewportHeight - 24, `${GESTURE_DOUBLE_CLICK} back`, 110);
+  image.drawText(terminalFont, 24, window.viewportHeight - 24, `${GESTURE_DOUBLE_CLICK} back`, 110);
   return image;
 }
 
@@ -863,14 +883,14 @@ function hubStatusLine(): string {
 }
 
 function paintView(window: ViewWindow): GrayImage {
-  const image = new GrayImage(viewportWidth, viewportHeight, 0);
+  const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
   if (!window.receivedData) {
     image.drawText(terminalFont, 24, 110, window.status, 170);
     image.drawText(terminalFont, 24, 130, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 
-  const rows = gridRows;
+  const rows = window.gridRows;
   const historyNext = window.historyNext;
   const bufferLength = window.emulator.bufferLength();
   const bottomTop = historyNext + bufferLength - rows;
@@ -903,11 +923,11 @@ function paintView(window: ViewWindow): GrayImage {
 
 /** Right-edge scrollbar showing the view position within the scrollback. */
 function drawScrollIndicator(image: GrayImage, top: number, minTop: number, maxTop: number): void {
-  const trackX = viewportWidth - 3;
-  image.fillRect(trackX, 0, 3, viewportHeight, 30);
+  const trackX = image.width - 3;
+  image.fillRect(trackX, 0, 3, image.height, 30);
   const fraction = clamp((top - minTop) / Math.max(1, maxTop - minTop), 0, 1);
   const thumbHeight = 24;
-  const thumbY = Math.round((viewportHeight - thumbHeight) * fraction);
+  const thumbY = Math.round((image.height - thumbHeight) * fraction);
   image.fillRect(trackX, thumbY, 3, thumbHeight, 150);
 }
 
@@ -1031,7 +1051,7 @@ function toolReadScreen(): ToolResult {
   const view = resolveActiveView();
   if (!view) return { ok: false, error: "No terminal session is open." };
   const length = view.emulator.bufferLength();
-  const start = Math.max(0, length - gridRows);
+  const start = Math.max(0, length - view.gridRows);
   const lines: string[] = [];
   for (let index = start; index < length; index++) {
     lines.push(view.emulator.lineAt(index));

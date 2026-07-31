@@ -6,7 +6,7 @@ import { type MenuItem } from "../menu";
 import { WindowMenuLayer } from "../window-menu";
 import { windowIcon } from "./chrome-layer";
 import { type IconName } from "../../graphics/icons";
-import { APP_VIEWPORT } from "./geometry";
+import { appViewportSize, type WindowHeightMode } from "./geometry";
 import { shell, type ShellWindow } from "./shell";
 
 /**
@@ -24,6 +24,8 @@ export type InProcessWindowOptions = {
   /** Lucide icon name for the sidebar indicator; falls back to iconLetter. */
   icon?: IconName;
   closeable: boolean;
+  /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
+  heightMode?: WindowHeightMode;
   /**
    * App-specific entries for the window's long-press menu, listed ahead of
    * the default Voice input / Close window entries. Called at open time, so
@@ -60,10 +62,11 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       console.error(`${options.windowId} render failed: ${error}`);
     });
   };
+  const heightMode = options.heightMode ?? "min";
   const stack = new LayerStack(
     options.baseLayer,
     { ...options.actions, requestRender },
-    { width: APP_VIEWPORT.width, height: APP_VIEWPORT.height },
+    appViewportSize(heightMode),
     () => shell.isWindowFocused(options.windowId),
   );
 
@@ -124,6 +127,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     title: options.title,
     surfaceId: `window:${options.windowId}`,
     closeable: options.closeable,
+    heightMode,
     close: () => {
       closed = true;
       // Fire onRemoved for any pushed layers so they release resources (e.g. a

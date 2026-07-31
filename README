@@ -44,6 +44,8 @@ To install, run
    to queries and commands using an Anthropic or OpenAI model (requires an API
    key).
  * Multitasking, with an app-switcher sidebar and app launcher
+ * Supports full-screen apps using the full 640x480 display area (rather than
+   the 576x288 that EvenHub apps can use)
  * Integration with Android notifications: A top-bar that shows the
    same icons your phone does, popups when notifications arrive, and menu
    items to dismiss or use Android-app-provided custom actions like mark as

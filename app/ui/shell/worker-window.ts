@@ -2,6 +2,7 @@ import { GrayImage } from "../../graphics/image";
 import { windowIcon } from "./chrome-layer";
 import { type IconName } from "../../graphics/icons";
 import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/tool-registry";
+import { appViewportSize, type WindowHeightMode } from "./geometry";
 import { shell, type ShellWindow } from "./shell";
 
 /**
@@ -46,6 +47,8 @@ export type WorkerAppReply =
       icon?: IconName;
       iconGlyph?: string;
       focus?: boolean;
+      /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
+      heightMode?: WindowHeightMode;
     }
   | { type: "set-title"; windowId: string; title: string }
   | { type: "set-attention"; windowId: string; attention: boolean }
@@ -100,14 +103,15 @@ export type WorkerWindowSpec = {
   iconGlyph?: string;
   /** Foreground and focus the window once its surface exists. */
   focus?: boolean;
+  /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
+  heightMode?: WindowHeightMode;
 };
 
 export type WorkerAppHostOptions = {
   appId: string;
   worker: Worker;
-  viewport: { width: number; height: number };
   /** Create/refresh a window surface on the compositor (no-op when disconnected). */
-  configureSurface: (surfaceId: string, visible: boolean) => Promise<void>;
+  configureSurface: (surfaceId: string, visible: boolean, heightMode: WindowHeightMode) => Promise<void>;
   setSurfaceVisible: (surfaceId: string, visible: boolean) => void;
   removeSurface: (surfaceId: string) => void;
   requestShellRender: () => void;
@@ -174,6 +178,7 @@ export class WorkerAppHost {
             icon: message.icon,
             iconGlyph: message.iconGlyph,
             focus: message.focus,
+            heightMode: message.heightMode,
           });
           break;
         case "set-attention":
@@ -242,12 +247,13 @@ export class WorkerAppHost {
   /** Open a window of this app and register it with the shell. */
   openWindow(spec: WorkerWindowSpec): ShellWindow {
     const surfaceId = `window:${spec.windowId}`;
+    const heightMode = spec.heightMode ?? "min";
     this.openWindows.add(spec.windowId);
     this.post({
       type: "open-window",
       windowId: spec.windowId,
       surfaceId,
-      viewport: this.options.viewport,
+      viewport: appViewportSize(heightMode),
     });
     const window: ShellWindow = {
       appId: this.options.appId,
@@ -255,6 +261,7 @@ export class WorkerAppHost {
       title: spec.title,
       surfaceId,
       closeable: true,
+      heightMode,
       close: () => {
         this.openWindows.delete(spec.windowId);
         // Withdraw this window's tools and fail any in-flight calls to it.
@@ -301,7 +308,7 @@ export class WorkerAppHost {
     // Configure the surface before any foregrounding so the worker's first
     // frame has somewhere to land.
     void this.options
-      .configureSurface(surfaceId, false)
+      .configureSurface(surfaceId, false, heightMode)
       .then(() => {
         if (spec.focus) {
           shell.focusWindow(spec.windowId);

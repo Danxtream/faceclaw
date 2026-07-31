@@ -192,12 +192,15 @@ export class MenuLayer implements Layer {
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
     const font = getDefaultSmallFont();
+    const image = paintBelow();
     const { x, y, width } = this.layout;
     const chromeTop = (this.title ? MENU_TITLE_HEIGHT : 0) + MENU_BODY_PADDING;
     const minHeight = this.layout.minHeight ?? DEFAULT_MENU_MIN_HEIGHT;
+    // Cap to the surface being painted on: a window's stack image may be much
+    // shorter than the full screen (min-height windows).
     const maxHeight = Math.min(
-      this.layout.maxHeight ?? G2_LENS_HEIGHT - y - DEFAULT_MENU_Y,
-      G2_LENS_HEIGHT - y,
+      this.layout.maxHeight ?? image.height - y - DEFAULT_MENU_Y,
+      image.height - y,
     );
     const contentHeight = chromeTop + this.items.length * MENU_ROW_HEIGHT + MENU_BODY_PADDING;
     const height = clamp(contentHeight, Math.min(minHeight, maxHeight), maxHeight);
@@ -209,7 +212,6 @@ export class MenuLayer implements Layer {
       this.items.length,
     );
 
-    const image = paintBelow();
     // Fill 1, not 0: identical after 4bpp quantization, but 0 is the
     // transparent color key when a menu paints on the shell surface.
     image.fillRoundedRect(x, y, width, height, 1);

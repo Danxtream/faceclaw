@@ -2,7 +2,7 @@ import { MenuLayer } from "../menu";
 import { ScreenTestLayer } from "../apps/screen-test";
 import { BuzzerDemoLayer } from "../apps/buzzer-demo";
 import { AccelerometerDemoLayer } from "../apps/accelerometer-demo";
-import { APP_VIEWPORT } from "./geometry";
+import { appViewportSize } from "./geometry";
 import {
   createInProcessWindow,
   YieldAtRootLayer,
@@ -42,7 +42,7 @@ export function createDebugTestsAppWindow(options: InProcessAppOptions): InProce
       y: 8,
       width: 272,
       minHeight: 0,
-      maxHeight: APP_VIEWPORT.height - 16,
+      maxHeight: appViewportSize("min").height - 16,
     },
   );
   return createInProcessWindow({

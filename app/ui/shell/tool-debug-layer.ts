@@ -1,11 +1,11 @@
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
+import { G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/bdffont";
 import { wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import type { ToolDebugEntry } from "../../assistant/tool-registry";
 import { DashboardInputEvent, Layer, LayerContext, PaintBelow } from "../layers";
 import { MenuLayer, drawListScrollbar, type MenuItem } from "../menu";
-import { SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
+import { MIN_WINDOW_HEIGHT, minWindowTop, SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
 
 /**
  * Shell-overlay debug dialog (escape menu > Debug): lists the voice assistant
@@ -15,10 +15,16 @@ import { SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
  */
 
 const DIALOG_X = SIDEBAR_WIDTH + 8;
-const DIALOG_Y = TOP_BAR_HEIGHT + 8;
 const DIALOG_WIDTH = 420;
 const DETAIL_WIDTH = G2_LENS_WIDTH - DIALOG_X - 8;
-const DETAIL_HEIGHT = G2_LENS_HEIGHT - DIALOG_Y - 8;
+// Shell overlays align to the min-height window band; the detail box fills
+// the band below the top bar with an 8px margin on each side.
+const DETAIL_HEIGHT = MIN_WINDOW_HEIGHT - TOP_BAR_HEIGHT - 16;
+
+/** Dialog top edge, aligned to the min-height band's content area. */
+function dialogY(): number {
+  return minWindowTop() + TOP_BAR_HEIGHT + 8;
+}
 const DETAIL_PADDING = 14;
 const DETAIL_LINE_HEIGHT = 14;
 
@@ -26,7 +32,7 @@ export class ToolDebugMenuLayer extends MenuLayer {
   constructor(appId: string | null, entries: ToolDebugEntry[], private readonly onClosed: () => void) {
     super(appId ? `Assistant tools: ${appId}` : "Assistant tools", buildItems(appId, entries), {
       x: DIALOG_X,
-      y: DIALOG_Y,
+      y: dialogY(),
       width: DIALOG_WIDTH,
       minHeight: 0,
     });
@@ -72,8 +78,9 @@ class ToolDetailLayer implements Layer {
   paint(_ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
     const image = paintBelow();
     const font = getDefaultSmallFont();
-    image.fillRoundedRect(DIALOG_X, DIALOG_Y, DETAIL_WIDTH, DETAIL_HEIGHT, 1, 10);
-    image.drawRoundedRect(DIALOG_X, DIALOG_Y, DETAIL_WIDTH, DETAIL_HEIGHT, 72, 10);
+    const top = dialogY();
+    image.fillRoundedRect(DIALOG_X, top, DETAIL_WIDTH, DETAIL_HEIGHT, 1, 10);
+    image.drawRoundedRect(DIALOG_X, top, DETAIL_WIDTH, DETAIL_HEIGHT, 72, 10);
 
     const textX = DIALOG_X + DETAIL_PADDING;
     const textWidth = DETAIL_WIDTH - 2 * DETAIL_PADDING - 8;
@@ -84,14 +91,14 @@ class ToolDetailLayer implements Layer {
     const lastVisibleRow = Math.min(lines.length, this.scrollRow + visibleRowCount);
     for (let index = this.scrollRow; index < lastVisibleRow; index++) {
       const line = lines[index]!;
-      const y = DIALOG_Y + DETAIL_PADDING + (index - this.scrollRow) * DETAIL_LINE_HEIGHT;
+      const y = top + DETAIL_PADDING + (index - this.scrollRow) * DETAIL_LINE_HEIGHT;
       image.drawText(font, textX, y, line.text, line.value);
     }
     if (lines.length > visibleRowCount) {
       drawListScrollbar(
         image,
         DIALOG_X + DETAIL_WIDTH - 7,
-        DIALOG_Y + DETAIL_PADDING,
+        top + DETAIL_PADDING,
         DETAIL_HEIGHT - 2 * DETAIL_PADDING,
         this.scrollRow,
         visibleRowCount,

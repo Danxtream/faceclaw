@@ -255,6 +255,27 @@ export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>(
   description: "How long the display stays on after the last input before turning itself off. \"Never\" keeps it on until turned off manually.",
 });
 
+export type VerticalPosition = "top" | "upper" | "middle" | "lower" | "bottom";
+
+const VERTICAL_POSITION_LABELS: Record<VerticalPosition, string> = {
+  top: "Top",
+  upper: "Upper",
+  middle: "Middle",
+  lower: "Lower",
+  bottom: "Bottom",
+};
+
+export const verticalPositionSetting = new ConfigSettingEnum<VerticalPosition>({
+  id: "vertical-position",
+  label: "Vertical position",
+  storageKey: "display.verticalPosition",
+  defaultValue: "middle",
+  values: ["top", "upper", "middle", "lower", "bottom"],
+  formatValue: (value) => VERTICAL_POSITION_LABELS[value] ?? value,
+  description:
+    "Where standard (reduced-height) windows sit vertically within the display area, to position them within your field of view. Full-height windows such as terminal views always use the whole screen.",
+});
+
 export const voiceControlEnabledSetting = new ConfigSettingBoolean({
   id: "voice-control-enabled",
   label: "Enable",

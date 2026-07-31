@@ -79,7 +79,7 @@ import {
   TRANSCRIBE_WINDOW_ID,
 } from "../ui/shell/transcribe-app";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
-import { APP_VIEWPORT } from "../ui/shell/geometry";
+import { appViewportRect, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
 import {
   brightnessSetting,
@@ -95,6 +95,7 @@ import {
   screenTimeoutSettingToMs,
   suspendEvenHubWhenScreenOffSetting,
   systemCardNameSetting,
+  verticalPositionSetting,
   voiceProviderSetting,
   wakeWordActionSetting,
   type ConfigSettingString,
@@ -318,6 +319,34 @@ class DashboardController {
       this.pushFirmwareDebugFlags();
       this.pushBrightness();
       this.syncEvenHubScreenOffSetting();
+      this.applyVerticalPositionIfChanged();
+    });
+  }
+
+  // Vertical-position changes move every window surface (and the chrome that
+  // aligns with them); the value is tracked so unrelated setting changes
+  // don't trigger a full reposition.
+  private lastVerticalPosition = verticalPositionSetting.get();
+
+  private applyVerticalPositionIfChanged(): void {
+    const position = verticalPositionSetting.get();
+    if (position === this.lastVerticalPosition) return;
+    this.lastVerticalPosition = position;
+    const foregroundWindowId = shell.foregroundWindow()?.windowId;
+    void (async () => {
+      for (const window of shell.getWindows()) {
+        await this.configureWindowSurface(
+          window.surfaceId,
+          window.windowId === foregroundWindowId,
+          window.heightMode,
+        );
+      }
+      // Repaint after the surfaces have moved: window content is unchanged
+      // but the moved surfaces need a recomposite, and the chrome band moved.
+      shell.foregroundWindow()?.requestRender();
+      this.requestShellRender();
+    })().catch((error) => {
+      this.appendLog(`vertical reposition failed: ${this.formatError(error)}`);
     });
   }
 
@@ -846,7 +875,11 @@ class DashboardController {
       });
       const foregroundWindowId = shell.foregroundWindow()?.windowId;
       for (const window of shell.getWindows()) {
-        await this.configureWindowSurface(window.surfaceId, window.windowId === foregroundWindowId);
+        await this.configureWindowSurface(
+          window.surfaceId,
+          window.windowId === foregroundWindowId,
+          window.heightMode,
+        );
       }
       await communicator.start();
       this.syncEvenHubScreenOffSetting();
@@ -1219,7 +1252,7 @@ class DashboardController {
     shell.registerWindow(settingsApp.window);
     // Configure the surface before foregrounding so the first frame has
     // somewhere to land.
-    await this.configureWindowSurface(SETTINGS_SURFACE_ID, false);
+    await this.configureWindowSurface(SETTINGS_SURFACE_ID, false, settingsApp.window.heightMode);
     shell.focusWindow(SETTINGS_WINDOW_ID);
     this.requestShellRender();
     this.appendLog("launched settings");
@@ -1251,7 +1284,7 @@ class DashboardController {
     });
     this.inProcessApps.set(windowId, app);
     shell.registerWindow(app.window);
-    await this.configureWindowSurface(surfaceId, false);
+    await this.configureWindowSurface(surfaceId, false, app.window.heightMode);
     shell.focusWindow(windowId);
     this.requestShellRender();
     this.appendLog(`launched ${windowId}`);
@@ -1283,8 +1316,8 @@ class DashboardController {
     const host = new WorkerAppHost({
       appId,
       worker,
-      viewport: { width: APP_VIEWPORT.width, height: APP_VIEWPORT.height },
-      configureSurface: (surfaceId, visible) => this.configureWindowSurface(surfaceId, visible),
+      configureSurface: (surfaceId, visible, heightMode) =>
+        this.configureWindowSurface(surfaceId, visible, heightMode),
       setSurfaceVisible: (surfaceId, visible) => this.setWindowSurfaceVisible(surfaceId, visible),
       removeSurface: (surfaceId) => this.removeWindowSurface(surfaceId),
       requestShellRender: () => this.requestShellRender(),
@@ -1464,14 +1497,15 @@ class DashboardController {
   }
 
   /** Create/refresh a window surface on the compositor, if connected. */
-  private async configureWindowSurface(surfaceId: string, visible: boolean): Promise<void> {
+  private async configureWindowSurface(
+    surfaceId: string,
+    visible: boolean,
+    heightMode: WindowHeightMode = "min",
+  ): Promise<void> {
     const communicator = this.communicator;
     if (!communicator) return;
     await communicator.configureSurface(surfaceId, {
-      x: APP_VIEWPORT.x,
-      y: APP_VIEWPORT.y,
-      width: APP_VIEWPORT.width,
-      height: APP_VIEWPORT.height,
+      ...appViewportRect(heightMode),
       zOrder: 0,
       transparency: "opaque",
     });

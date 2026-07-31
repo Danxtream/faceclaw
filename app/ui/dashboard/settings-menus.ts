@@ -24,6 +24,7 @@ import {
   timeFormatSetting,
   toggleSettingMenuItem,
   uiFontSetting,
+  verticalPositionSetting,
   voiceProviderSetting,
   screenTimeoutSetting,
   wakeWordActionSetting,
@@ -48,6 +49,9 @@ function settingsSections(): SettingsSection[] {
             shell.noteUserActivity();
           },
         }),
+        // Where min-height windows (and the sidebar) sit vertically on the
+        // screen; the dashboard controller repositions surfaces on change.
+        enumSettingMenuItem(verticalPositionSetting),
         // Controls the top-bar battery indicators (icon vs percentage).
         enumSettingMenuItem(batteryDisplayModeSetting),
         // Controls the top-bar clock (24-hour vs 12-hour).
