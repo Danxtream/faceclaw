@@ -401,7 +401,7 @@ public class BleProtocol {
      * Firmware versions and the CFW capability advertisement from a settings
      * READ ack. Versions are fields 5/6 of the deviceReceiveRequestFromApp
      * submessage (field 4); the custom firmware additionally appends top-level
-     * field 100, a string like "EVENCFW/5 img576 img580 ... directfb fbguard", which
+     * field 100, a string like "EVENCFW/6 img576 img640 ... directfb fbguard", which
      * stock firmware never sends. Returns null when the ack carries none of it.
      */
     public static FirmwareInfo parseSettingsFirmwareInfo(byte[] pb) {

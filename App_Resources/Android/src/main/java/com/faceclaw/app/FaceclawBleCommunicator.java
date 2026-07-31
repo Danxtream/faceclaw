@@ -28,10 +28,10 @@ import java.util.Map;
 public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final String TAG = "FaceclawComm";
 
-    // The EvenHub image container is a transport/reconstruction carrier only.
-    // Its 576x288 allocation remains large enough for the compressed 580x300
-    // logical image and the firmware's packed-4bpp shadow; the CFW presents that
-    // shadow directly instead of asking EvenHub/LVGL to composite this geometry.
+    // The EvenHub image container is a memory carrier only. Its 576x288 geometry
+    // gives the firmware separate 165888-byte display and reconstruction
+    // allocations: CFW reuses the former for its 640x480 packed-4bpp shadow and
+    // leaves the latter wholly available for compressed incoming messages.
     private static final BleProtocol.ImageTileOptions DASHBOARD_TILE =
         new BleProtocol.ImageTileOptions("img00", 10, 0, 0, 576, 288);
 
@@ -1807,7 +1807,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private void enqueueWarmupLocked() {
         BleProtocol.ImageTileOptions tile = DASHBOARD_TILE;
         // Warm up the legacy container with a carrier-sized blank BMP. Real
-        // 580x300 frames use mode 6 and are intentionally independent of this
+        // 640x480 frames use mode 6 and are intentionally independent of this
         // geometry; a mismatched raw BMP would be rejected by the stock loader.
         byte[] bmp = BmpUtil.build4bppBmpFromPacked(
             new byte[((tile.width + 1) >> 1) * tile.height], tile.width, tile.height);

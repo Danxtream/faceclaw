@@ -1,8 +1,8 @@
 import { BdfFont, Glyph } from "./bdffont";
 import { wrapText } from "./textwrap";
 
-export const G2_LENS_WIDTH = 580;
-export const G2_LENS_HEIGHT = 300;
+export const G2_LENS_WIDTH = 640;
+export const G2_LENS_HEIGHT = 480;
 const DEFAULT_CORNER_RADIUS = 8;
 
 export function imageFromAsciiArt(lines: readonly string[], value = 255): GrayImage {

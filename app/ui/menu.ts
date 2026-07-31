@@ -332,13 +332,15 @@ export class TextPageLayer implements Layer {
     const font = getDefaultSmallFont();
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     image.drawText(font, 18, 14, this.title, 220);
-    image.drawRect(12, 12, 552, 264, 52);
+    image.drawRect(12, 12, G2_LENS_WIDTH - 24, G2_LENS_HEIGHT - 24, 52);
 
-    const wrapped = wrapText(font, this.body, 520);
-    for (let index = 0; index < wrapped.length; index++) {
+    const wrapped = wrapText(font, this.body, G2_LENS_WIDTH - 60);
+    const footerY = G2_LENS_HEIGHT - 48;
+    const maxBodyLines = Math.max(0, Math.floor((footerY - 50) / 14));
+    for (let index = 0; index < Math.min(wrapped.length, maxBodyLines); index++) {
       image.drawText(font, 24, 42 + index * 14, wrapped[index]!, 190);
     }
-    image.drawText(font, 24, 252, `${GESTURE_DOUBLE_CLICK} back`, 110);
+    image.drawText(font, 24, footerY, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 
