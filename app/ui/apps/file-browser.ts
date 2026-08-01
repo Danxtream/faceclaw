@@ -272,8 +272,23 @@ export class FileBrowserLayer implements Layer {
       case "scroll-up":
       case "scroll-down": {
         const delta = event.type === "scroll-down" ? 1 : -1;
-        if (this.iconMode === "item" && row?.kind === "grid") {
-          this.selectedCol = clamp(this.selectedCol + delta, 0, row.items.length - 1);
+        if (this.iconMode === "item") {
+          // Item selection traverses linearly: past a row's edge it continues
+          // onto the adjacent row (a special row counts as a single item).
+          if (row?.kind === "grid") {
+            const next = clamp(this.selectedCol, 0, row.items.length - 1) + delta;
+            if (next >= 0 && next < row.items.length) {
+              this.selectedCol = next;
+              return;
+            }
+          }
+          const adjacentIndex = this.selectedRow + delta;
+          if (adjacentIndex < 0 || adjacentIndex >= iconRows.length) return;
+          this.selectedRow = adjacentIndex;
+          const adjacent = iconRows[adjacentIndex]!;
+          if (adjacent.kind === "grid") {
+            this.selectedCol = delta > 0 ? 0 : adjacent.items.length - 1;
+          }
         } else {
           this.selectedRow = clamp(this.selectedRow + delta, 0, Math.max(0, iconRows.length - 1));
         }

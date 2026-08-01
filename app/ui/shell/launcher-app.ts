@@ -72,7 +72,6 @@ class LauncherGridLayer implements Layer {
   private selectedRow = 0;
   private selectedCol = 1;
   private scrollRow = 0;
-  private wasFocused = false;
   /** Folder whose contents the grid is showing, or null for the top grid. */
   private currentFolder: string | null = null;
 
@@ -135,14 +134,6 @@ class LauncherGridLayer implements Layer {
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const focused = ctx.stack.isFocused();
-    // Re-entering the launcher (focus gained) resets to the top grid's row
-    // selection, so the view never resumes inside a stale folder.
-    if (focused && !this.wasFocused) {
-      this.mode = "row";
-      this.currentFolder = null;
-    }
-    this.wasFocused = focused;
-
     const entries = this.entries();
     const rows = this.rowCount(entries.length);
     this.selectedRow = clamp(this.selectedRow, 0, rows - 1);
@@ -216,11 +207,19 @@ class LauncherGridLayer implements Layer {
         if (this.mode === "row") {
           this.selectedRow = clamp(this.selectedRow + delta, 0, rows - 1);
         } else {
-          this.selectedCol = clamp(
-            this.selectedCol + delta,
-            0,
-            Math.max(0, this.itemsInRow(entries.length, this.selectedRow) - 1),
-          );
+          // Item selection traverses the grid linearly: past a row's edge it
+          // continues onto the adjacent row (stopping at the grid's ends).
+          const itemCount = this.itemsInRow(entries.length, this.selectedRow);
+          const next = clamp(this.selectedCol, 0, itemCount - 1) + delta;
+          if (next >= 0 && next < itemCount) {
+            this.selectedCol = next;
+          } else if (next < 0 && this.selectedRow > 0) {
+            this.selectedRow--;
+            this.selectedCol = this.itemsInRow(entries.length, this.selectedRow) - 1;
+          } else if (next >= itemCount && this.selectedRow < rows - 1) {
+            this.selectedRow++;
+            this.selectedCol = 0;
+          }
         }
         return;
       }
@@ -241,6 +240,10 @@ class LauncherGridLayer implements Layer {
             this.selectedRow = 0;
             this.scrollRow = 0;
           } else {
+            // Return to the top grid before launching, so the launcher never
+            // shows (even briefly) stale folder contents when re-entered.
+            if (this.currentFolder !== null) this.exitFolder();
+            this.mode = "row";
             await this.options.launchApp(entry.appId);
           }
         }
