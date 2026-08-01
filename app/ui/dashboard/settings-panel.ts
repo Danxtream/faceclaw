@@ -9,8 +9,10 @@ import { shell } from "../shell/shell";
 
 /**
  * One left-column entry. `items` are the right-column rows (reusing the shared
- * MenuItem builders). `renderDetail`, when set, replaces the row list with
- * custom informational content (e.g. About) and makes the pane non-interactive.
+ * MenuItem builders). `renderDetail`, when set, draws custom informational
+ * content (e.g. About) at the top of the pane and returns the pixel height it
+ * consumed; the row list renders below it. Returning nothing claims the whole
+ * pane (an info-only section).
  */
 export type SettingsSection = {
   label: string;
@@ -22,7 +24,7 @@ export type SettingsSection = {
     width: number;
     height: number;
     ctx: LayerContext;
-  }) => void;
+  }) => number | void;
 };
 
 const PAD = 8;
@@ -94,9 +96,12 @@ export class SettingsPanelLayer implements Layer {
     // Right column: the highlighted section's contents.
     const rightX = divX + 14;
     const rightW = width - rightX - PAD;
+    let rightTop = top;
     if (section.renderDetail) {
-      section.renderDetail({ image, x: rightX, y: top, width: rightW, height: listBottom - top, ctx });
-    } else if (rightItems.length) {
+      const used = section.renderDetail({ image, x: rightX, y: top, width: rightW, height: listBottom - top, ctx });
+      rightTop = typeof used === "number" ? Math.min(top + used, listBottom) : listBottom;
+    }
+    if (rightItems.length && rightTop < listBottom) {
       // Once focus is in the right column, the bottom of the pane shows the
       // selected item's extended description (when it has one), with the row
       // list shrunk to make room.
@@ -106,11 +111,11 @@ export class SettingsPanelLayer implements Layer {
         : [];
       const descriptionH = descriptionLines.length ? descriptionLines.length * font.lineHeight + 10 : 0;
       const rightListBottom = listBottom - descriptionH;
-      const rightRows = Math.max(1, ((rightListBottom - top) / ROW_H) | 0);
+      const rightRows = Math.max(1, ((rightListBottom - rightTop) / ROW_H) | 0);
       this.rightScroll = clampScroll(this.rightIndex, this.rightScroll, rightRows, rightItems.length);
       for (let i = this.rightScroll; i < Math.min(rightItems.length, this.rightScroll + rightRows); i++) {
         const item = rightItems[i]!;
-        const rowY = top + (i - this.rightScroll) * ROW_H;
+        const rowY = rightTop + (i - this.rightScroll) * ROW_H;
         // A selection only appears once focus is in the right column; before
         // that the pane is a preview of what tapping would open.
         const selected = this.focus === "right" && i === this.rightIndex;

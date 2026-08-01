@@ -9,15 +9,6 @@ glasses. The Android app itself can install and uninstall the custom firmware;
 it downloads the stock firmware from Even and applies patches generated from
 https://github.com/jimrandomh/g2flash.
 
-THIS IS AN UNFINISHED DEVELOPMENT PROTOTYPE; IF YOU DON'T HAVE ANY PROGRAMMING
-EXPERIENCE, OR YOU AREN'T COMFORTABLE EDITING, COMPILING, AND SIDELOADING AN
-ANDROID APPLICATION YOURSELF, OR YOU DON'T HAVE AN ANDROID DEVICE TO RUN IT
-ON, THIS IS NOT FOR YOU.
-
-The name Faceclaw implies plans to integrate this with OpenClaw. These plans
-have not yet been iplemented. If you want to use OpenClaw with Even Realities G2
-smart glasses today, consider using OcuClaw (which is an Even Hub app) instead.
-
 
 ## Installation
 

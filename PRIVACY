@@ -1,0 +1,63 @@
+# Faceclaw Privacy Policy
+
+Faceclaw is a privacy-conscious app.
+
+## Audio
+
+Faceclaw allows users to transcribe audio (for use with the voice assistant,
+the Transcribe app, typing into Terminal, and other apps). The default setting
+is that this is done using an on-device model running on your phone. If an
+on-device model is selected, audio never leaves your device, and is not stored
+after it is processed.
+
+Users can also provide their own API key for a third-party transcription
+service such as OpenAI Whisper or ElevenLabs, which may offer better accuracy.
+Faceclaw never transmits audio to any party other than a user-selected
+transcription service. If a third-party transcription service is selected,
+audio will be sent to that third party, is linked to the account with which
+that API key was created, and is subject to that party's privacy and retention
+policies:
+
+  OpenAI: https://openai.com/policies/row-privacy-policy/
+  ElevenLabs: https://elevenlabs.io/privacy-policy
+
+Third party data retention and privacy policies may differ based on the API
+key provided. API keys are part of a relationship between the user and the API
+provider; Faceclaw does not manage accounts or process billing information.
+
+
+## AI Assistant Transcripts
+
+Faceclaw has a builtin AI voice assistant. Using the voice assistant requires
+providing an API key for a model provider such as Anthropic or OpenAI. Prompts
+and responses are subject to that model provider's privacy policy:
+
+  OpenAI: https://openai.com/policies/row-privacy-policy/
+  Anthropic: https://www.anthropic.com/legal/privacy
+
+AI conversation histories and memory files may be stored on your phone.
+Faceclaw does not transmit voice-assistant prompts or responses to any party
+other than a user-selected AI model provider. The voice assistant is given
+tools with which it is able to access most things on the user's phone,
+including all content displayed on the glasses, location, notifications, and
+content accessible through the Terminal app.
+
+The AI assistant can take actions on the user's behalf, including sharing any
+information it has access to. The user is responsible for any instructions
+they give it.
+
+
+## Location
+
+Faceclaw has a builtin Navigate app, which provides turn-by-turn directions.
+Using the Navigate app requires providing an API key for Mapbox. While the
+Navigate app is active, the user's exact location and selected destination are
+transmitted to Mapbox, and are subject to Mapbox's privacy policy.
+
+  Mapbox: https://www.mapbox.com/legal/privacy
+
+The Weather app will retrieve the user's coarse location, and will use it to
+query a third-party weather information provider.
+
+
+

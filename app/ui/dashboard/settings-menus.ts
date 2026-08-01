@@ -1,6 +1,10 @@
+import { knownFolders } from "@nativescript/core";
 import { getDefaultSmallFont } from "../../graphics/bdffont";
 import type { GrayImage } from "../../graphics/image";
 import { getDashboardLogo } from "../../graphics/logo";
+import { wrapText } from "../../graphics/textwrap";
+import { TextViewerLayer } from "../apps/text-viewer";
+import type { MenuItem } from "../menu";
 import { shell } from "../shell/shell";
 import {
   anthropicApiKeySetting,
@@ -100,7 +104,13 @@ function settingsSections(): SettingsSection[] {
     },
     {
       label: "About",
-      items: [],
+      // The version/license blurb (renderDetail) draws above the bundled
+      // project docs, in both the preview and the focused states.
+      items: [
+        bundledDocMenuItem("README", "README"),
+        bundledDocMenuItem("LICENSE", "License"),
+        bundledDocMenuItem("PRIVACY", "Privacy policy"),
+      ],
       renderDetail: renderAbout,
     },
     {
@@ -119,7 +129,27 @@ function settingsSections(): SettingsSection[] {
   ];
 }
 
-function renderAbout(args: { image: GrayImage; x: number; y: number; width: number }): void {
+/** A row that opens one of the project docs (copied into the bundle under
+ * about/ by webpack.config.js) in the paged text viewer. */
+function bundledDocMenuItem(fileName: string, label: string): MenuItem {
+  return {
+    label,
+    onSelect: (ctx) => {
+      ctx.stack.push(new TextViewerLayer(readBundledDoc(fileName), label));
+    },
+  };
+}
+
+function readBundledDoc(fileName: string): string {
+  try {
+    const text = knownFolders.currentApp().getFile(`about/${fileName}`).readTextSync();
+    return text || `(${fileName} is missing from this build)`;
+  } catch {
+    return `(${fileName} is missing from this build)`;
+  }
+}
+
+function renderAbout(args: { image: GrayImage; x: number; y: number; width: number }): number {
   const { image, x, y, width } = args;
   const font = getDefaultSmallFont();
   const logo = getDashboardLogo();
@@ -128,13 +158,12 @@ function renderAbout(args: { image: GrayImage; x: number; y: number; width: numb
   }
   const textX = logo ? x + logo.width + 12 : x;
   image.drawText(font, textX, y + 8, "Faceclaw", 220);
-  image.drawText(font, textX, y + 24, "v0.2.0", 170);
-  image.drawTextWrapped({
-    font,
-    x,
-    y: y + 64,
-    width,
-    text: "By James Babcock. Distributed under the GNU General Public License, version 3.",
-    value: 170,
-  });
+  image.drawText(font, textX, y + 24, "v0.3.0", 170);
+  const blurb = "By James Babcock. Distributed under the GNU General Public License, version 3.";
+  const blurbY = y + Math.max(64, logo ? logo.height + 12 : 0);
+  const blurbLines = wrapText(font, blurb, width);
+  for (let i = 0; i < blurbLines.length; i++) {
+    image.drawText(font, x, blurbY + i * font.lineHeight, blurbLines[i]!, 170);
+  }
+  return blurbY - y + blurbLines.length * font.lineHeight + 10;
 }
