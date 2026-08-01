@@ -98,6 +98,9 @@ export function loaded(args: EventData) {
   // Automatically connect on reaching the main page (no-op if already
   // connected or if no glasses are configured).
   void model?.autoConnect()
+  // Reopen the apps that were open before the last restart (no-op after the
+  // first load).
+  void dashboardController.restoreOpenApps()
   const scrollViews = [
     page.getViewById<ScrollView>('logScrollView'),
     page.getViewById<ScrollView>('logScrollViewLandscape'),

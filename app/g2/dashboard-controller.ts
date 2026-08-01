@@ -79,6 +79,7 @@ import {
   TRANSCRIBE_WINDOW_ID,
 } from "../ui/shell/transcribe-app";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
+import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
 import {
@@ -252,6 +253,10 @@ class DashboardController {
   private sharedActions!: Omit<LayerActions, "requestRender">;
   private lastForegroundNotificationUpdateAtMs = 0;
   private lastConnectedPreviewUpdateAtMs = 0;
+  // Saving the open-app list is gated until the one-time restore has run, so
+  // the boot-time registry (just the launcher) never clobbers the saved list.
+  private openAppsRestored = false;
+  private suppressOpenAppsPersist = false;
 
   constructor() {
     const sharedActions = {
@@ -285,6 +290,7 @@ class DashboardController {
       },
       getScreenTimeoutMs: () => screenTimeoutSettingToMs(screenTimeoutSetting.get()),
       requestShellRender: () => this.requestShellRender(),
+      onWindowsChanged: () => this.persistOpenApps(),
       onScreenStateChanged: (on) => {
         this.handleScreenStateChanged(on);
         if (on) this.requestShellRender();
@@ -1340,6 +1346,52 @@ class DashboardController {
     });
     this.appHosts.set(appId, host);
     return host;
+  }
+
+  /** Save which apps are open (and which is foreground) for restoreOpenApps. */
+  private persistOpenApps(): void {
+    if (!this.openAppsRestored || this.suppressOpenAppsPersist) return;
+    const open: string[] = [];
+    for (const window of shell.getWindows()) {
+      if (window.appId === "launcher") continue;
+      if (!open.includes(window.appId)) open.push(window.appId);
+    }
+    savePersistedOpenApps({ open, foreground: shell.foregroundWindow()?.appId ?? null });
+  }
+
+  /**
+   * Reopen the apps that were open when the app last ran — a development
+   * convenience so installing a new build restores the working set. Shallow by
+   * design: apps relaunch fresh (no within-app state), and multi-window apps
+   * reopen only their primary window. Runs once, on reaching the main page;
+   * windows opened here get compositor surfaces at connect like any launch.
+   */
+  async restoreOpenApps(): Promise<void> {
+    if (this.openAppsRestored) return;
+    this.openAppsRestored = true;
+    const saved = loadPersistedOpenApps();
+    if (!saved.open.length) return;
+    const known = new Set(LAUNCHER_APPS.map((app) => app.appId));
+    this.suppressOpenAppsPersist = true;
+    try {
+      for (const appId of saved.open) {
+        if (!known.has(appId)) continue;
+        try {
+          await this.launchApp(appId);
+        } catch (error) {
+          this.appendLog(`restore of ${appId} failed: ${this.formatError(error)}`);
+        }
+      }
+      const foreground = saved.foreground
+        ? shell.getWindows().find((window) => window.appId === saved.foreground)
+        : undefined;
+      if (foreground) shell.focusWindow(foreground.windowId);
+    } finally {
+      this.suppressOpenAppsPersist = false;
+    }
+    // Re-save the canonical post-restore state (drops apps that failed to open).
+    this.persistOpenApps();
+    this.requestShellRender();
   }
 
   /**

@@ -84,6 +84,8 @@ export type ShellConfig = {
   requestShellRender: () => void;
   /** Screen on/off changed: the controller blanks/unblanks the compositor. */
   onScreenStateChanged: (on: boolean) => void;
+  /** Window registered/removed or foreground changed (persists the open-app list). */
+  onWindowsChanged?: () => void;
 };
 
 /** Which surfaces need re-rendering after an input event. */
@@ -246,6 +248,7 @@ class Shell {
       this.windows.push(window);
       if (this.windows.length - 1 === this.selectedIndex) this.noteWindowVisible(window.windowId);
     }
+    this.config.onWindowsChanged?.();
   }
 
   /** Move a window to the front of the most-recently-visible order. */
@@ -290,6 +293,7 @@ class Shell {
         next.requestRender();
       }
     }
+    this.config.onWindowsChanged?.();
     this.config.requestShellRender();
   }
 
@@ -619,6 +623,7 @@ class Shell {
     previous?.setForeground?.(false);
     next?.setForeground?.(true);
     next?.requestRender();
+    this.config.onWindowsChanged?.();
   }
 
   private openVoiceDialog(options: {
