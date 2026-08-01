@@ -73,9 +73,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private volatile boolean firmwareDebugFlagsEnabled;
     private int firmwareDebugFlagsLastSent = -1;
     private boolean startupProbePending;
-    // Desired ownership of CFW's fail-open idle-wake lease. This survives a
-    // transport reconnect; the lease itself is volatile firmware state and is
-    // re-acquired once both arms are ready.
+    // Desired ownership of CFW's fail-open stock-wake lease (dashboard launch
+    // and Even AI foreground takeover). This survives a transport reconnect;
+    // the lease itself is volatile firmware state and is re-acquired once both
+    // arms are ready.
     private boolean faceclawWakeLeaseEnabled;
     private long lastFaceclawWakeLeaseQueuedAtMs;
     private int faceclawWakeControlGeneration;
@@ -290,7 +291,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     /**
      * Acquire/renew or release CFW's volatile wake-takeover lease on both
      * arms. Delivery (not a protocol ACK) is awaited so a caller can ensure
-     * the fail-open firmware policy is installed before suspending EvenHub.
+     * the fail-open firmware policy is installed before relying on wakeword
+     * interception or suspending EvenHub.
      */
     public boolean setFaceclawWakeLeaseEnabled(boolean enabled) {
         int generation;

@@ -410,7 +410,14 @@ class DashboardController {
   }
 
   private desiredFaceclawWakeLeaseState(): boolean {
-    return suspendEvenHubWhenScreenOffSetting.get() && this.faceclawWakeLeaseSupported;
+    // The same firmware lease owns two stock wake paths: deferred dashboard
+    // launch while EvenHub is suspended, and suppression of the stock Even AI
+    // foreground app when Faceclaw handles the glasses wakeword. Without the
+    // latter, Even AI displaces EvenHub before our first wake frame can ACK.
+    return (
+      this.faceclawWakeLeaseSupported &&
+      (suspendEvenHubWhenScreenOffSetting.get() || wakeWordActionSetting.get() !== "off")
+    );
   }
 
   private async syncFaceclawWakeLease(
@@ -766,6 +773,10 @@ class DashboardController {
           // A transport reconnect starts with a live EvenHub lifecycle again;
           // if the shell is asleep, begin a fresh five-second grace period.
           this.evenHubSessionSuspended = false;
+          // Firmware leases are volatile, and the Java transport may have been
+          // rebuilt underneath this long-lived controller. Do not let a cached
+          // TypeScript value suppress re-acquisition on the new session.
+          this.faceclawWakeLeaseState = null;
           // Push the CFW firmware-debug-flags overlay preference; Java emits the
           // mode-7 control message once the dashboard container is warmed up.
           this.pushFirmwareDebugFlags();

@@ -514,8 +514,8 @@ export class FaceclawCommunicatorBridge {
   }
 
   /**
-   * Own CFW's fail-open idle-wake policy while the experimental screen-off
-   * suspension mode is enabled. Returns after both arm writes complete.
+   * Own CFW's fail-open stock-wake policy while Faceclaw handles wakewords or
+   * suspends EvenHub with the screen off. Returns after both arm writes complete.
    */
   async setFaceclawWakeLeaseEnabled(enabled: boolean): Promise<boolean> {
     return this.enqueueJavaCall(() =>
