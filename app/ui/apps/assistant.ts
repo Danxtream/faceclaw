@@ -1,17 +1,25 @@
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
+import { G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
 import { GESTURE_DOUBLE_CLICK } from "../gestures";
 import { drawSelectionHighlight } from "../menu";
 import { Layer, type DashboardInputEvent, type LayerActions, type LayerContext } from "../layers";
 import { wrapText, truncateText } from "../../graphics/textwrap";
+import { MIN_WINDOW_HEIGHT, minWindowTop } from "../shell/geometry";
 
 const DIALOG_X = 40;
-const DIALOG_Y = 40;
 const DIALOG_W = G2_LENS_WIDTH - 80;
-const DIALOG_H = G2_LENS_HEIGHT - 80;
+// The dialog fits inside the min-height window band (like the other shell
+// overlays), wherever the vertical position setting puts it.
+const DIALOG_MARGIN_Y = 24;
+const DIALOG_H = MIN_WINDOW_HEIGHT - 2 * DIALOG_MARGIN_Y;
 const TEXT_MAX_WIDTH = DIALOG_W - 32;
 const MENU_ROW_H = 20;
 const MENU_ROWS = 2;
+
+/** Dialog top edge; band-relative, so computed per paint. */
+function dialogY(): number {
+  return minWindowTop() + DIALOG_MARGIN_Y;
+}
 
 /** thinking: turn running; done/error: finished, showing the Follow-up/Done menu. */
 type AssistantPhase = "thinking" | "done" | "error";
@@ -81,22 +89,23 @@ export class AssistantLayer implements Layer {
   paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
     const font = getDefaultSmallFont();
     const image = paintBelow();
+    const top = dialogY();
 
     // Solid dialog box (fill 1, matching the voice dialog: opaque after 4bpp
     // quantization, but not the color-key transparent 0).
-    image.fillRoundedRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, 1, 10);
-    image.drawRoundedRect(DIALOG_X, DIALOG_Y, DIALOG_W, DIALOG_H, 90, 10);
+    image.fillRoundedRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 1, 10);
+    image.drawRoundedRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 90, 10);
 
     const left = DIALOG_X + 16;
-    image.drawText(font, left, DIALOG_Y + 12, this.phase === "thinking" ? "Assistant ●" : "Assistant", 220);
+    image.drawText(font, left, top + 12, this.phase === "thinking" ? "Assistant ●" : "Assistant", 220);
     if (this.status) {
       const statusValue = this.phase === "error" ? 200 : 130;
-      image.drawText(font, left, DIALOG_Y + 30, truncateText(font, this.status, TEXT_MAX_WIDTH), statusValue);
+      image.drawText(font, left, top + 30, truncateText(font, this.status, TEXT_MAX_WIDTH), statusValue);
     }
 
     const inMenu = this.phase !== "thinking";
-    const textBottom = inMenu ? DIALOG_Y + DIALOG_H - MENU_ROWS * MENU_ROW_H - 8 : DIALOG_Y + DIALOG_H - 8;
-    const textTop = DIALOG_Y + 56;
+    const textBottom = inMenu ? top + DIALOG_H - MENU_ROWS * MENU_ROW_H - 8 : top + DIALOG_H - 8;
+    const textTop = top + 56;
     const maxLines = Math.max(1, ((textBottom - textTop) / 16) | 0);
 
     const wrapped = wrapText(font, this.replyText, TEXT_MAX_WIDTH);
@@ -108,7 +117,7 @@ export class AssistantLayer implements Layer {
 
     if (inMenu) {
       const rows = ["Follow-up", "Done"];
-      const menuTop = DIALOG_Y + DIALOG_H - MENU_ROWS * MENU_ROW_H - 2;
+      const menuTop = top + DIALOG_H - MENU_ROWS * MENU_ROW_H - 2;
       for (let i = 0; i < rows.length; i++) {
         const rowY = menuTop + i * MENU_ROW_H;
         const selected = i === this.menuIndex;
@@ -118,7 +127,7 @@ export class AssistantLayer implements Layer {
         image.drawText(font, left + 4, rowY + 2, rows[i]!, selected ? 255 : 200);
       }
     } else {
-      image.drawText(font, left, DIALOG_Y + DIALOG_H - 14, `${GESTURE_DOUBLE_CLICK} cancel`, 110);
+      image.drawText(font, left, top + DIALOG_H - 14, `${GESTURE_DOUBLE_CLICK} cancel`, 110);
     }
     return image;
   }

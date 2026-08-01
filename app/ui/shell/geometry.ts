@@ -3,8 +3,15 @@ import { verticalPositionSetting } from "../dashboard-settings";
 
 /** Top bar: 24px notification icons plus a little padding. */
 export const TOP_BAR_HEIGHT = 28;
-/** Left sidebar: 32px window icons plus a little padding. */
-export const SIDEBAR_WIDTH = 36;
+/** One sidebar column: 32px window icons plus a little padding. */
+export const SIDEBAR_COLUMN_WIDTH = 36;
+/**
+ * Sidebar icon columns. The right column (against the app area) fills first;
+ * windows past that overflow into the left column, so the common few-window
+ * case keeps every icon next to the content it belongs to.
+ */
+export const SIDEBAR_COLUMNS = 2;
+export const SIDEBAR_WIDTH = SIDEBAR_COLUMN_WIDTH * SIDEBAR_COLUMNS;
 
 /**
  * On the color-key shell surface, pixel value 0 is transparent; 1 is the
