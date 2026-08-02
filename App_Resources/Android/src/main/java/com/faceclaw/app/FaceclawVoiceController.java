@@ -45,6 +45,17 @@ public class FaceclawVoiceController {
     private static final int TRANSCRIPT_DECODE_INTERVAL_MS = 700;
     private static final int TRANSCRIPT_MIN_SAMPLES = SAMPLE_RATE / 3;
     private static final int TRANSCRIPT_SEGMENT_MAX_SAMPLES = SAMPLE_RATE * 8;
+    // When a segment fills, cut at the quietest window within the last
+    // TRANSCRIPT_CUT_SEARCH_SAMPLES rather than mid-word at the 8s mark; the
+    // audio after the cut carries over into the next segment.
+    private static final int TRANSCRIPT_CUT_SEARCH_SAMPLES = SAMPLE_RATE * 2;
+    private static final int TRANSCRIPT_CUT_WINDOW_SAMPLES = SAMPLE_RATE * 30 / 1000;
+    // Glasses-mic PCM peaks around 0.1 full scale, and at that level the
+    // quantized Moonshine model often returns empty or garbled text. Boost
+    // each decode window toward this peak, with a gain cap so near-silent
+    // buffers aren't amplified into pure noise.
+    private static final float TRANSCRIPT_NORMALIZE_TARGET_PEAK = 0.9f;
+    private static final float TRANSCRIPT_NORMALIZE_MAX_GAIN = 30f;
     private static final int TRANSCRIPT_LOG_PREVIEW_CHARS = 80;
     private static final String ASSET_ROOT = "faceclaw-voice";
     private static final String MODEL_DIR = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01";
@@ -498,7 +509,7 @@ public class FaceclawVoiceController {
             return;
         }
         int segmentSampleCount = transcriptSampleCount;
-        String segmentText = recognizeTranscriptSegment();
+        String segmentText = recognizeTranscriptSegment(segmentSampleCount);
         if (segmentText.length() > 0) {
             currentSegmentTranscript = segmentText;
         } else {
@@ -516,35 +527,92 @@ public class FaceclawVoiceController {
      * all earlier text in the replace-semantics preview.
      */
     private void commitTranscriptSegment() {
-        int segmentSampleCount = transcriptSampleCount;
-        String segmentText = recognizeTranscriptSegment();
+        int cut = findSegmentCutPoint();
+        String segmentText = recognizeTranscriptSegment(cut);
         if (segmentText.length() == 0) {
+            // Fallback text came from partial decodes of the full buffer, so it
+            // may include words from the carried-over tail; rare now that decode
+            // windows are peak-normalized.
             segmentText = currentSegmentTranscript;
         }
         committedTranscript = joinTranscript(committedTranscript, segmentText);
         currentSegmentTranscript = "";
-        committedTranscriptSampleCount += segmentSampleCount;
-        transcriptSampleCount = 0;
+        committedTranscriptSampleCount += cut;
+        int tail = transcriptSampleCount - cut;
+        System.arraycopy(transcriptSamples, cut, transcriptSamples, 0, tail);
+        transcriptSampleCount = tail;
         lastTranscript = committedTranscript;
         lastTranscriptDecodeAtMs = SystemClock.elapsedRealtime();
-        logTranscriptDecode(false, segmentSampleCount, committedTranscript);
+        logTranscriptDecode(false, cut, committedTranscript);
         emitTranscript(committedTranscript, false);
     }
 
-    private String recognizeTranscriptSegment() {
+    /**
+     * Pick where to end the committed segment: the center of the quietest
+     * window within the search region at the end of the buffer, so the cut
+     * lands between words instead of splitting one.
+     */
+    private int findSegmentCutPoint() {
+        int count = transcriptSampleCount;
+        int searchStart = Math.max(0, count - TRANSCRIPT_CUT_SEARCH_SAMPLES);
+        int win = TRANSCRIPT_CUT_WINDOW_SAMPLES;
+        if (count - searchStart <= win) {
+            return count;
+        }
+        double sum = 0;
+        for (int i = searchStart; i < searchStart + win; i++) {
+            sum += (double) transcriptSamples[i] * transcriptSamples[i];
+        }
+        double best = sum;
+        int bestStart = searchStart;
+        for (int start = searchStart + 1; start + win <= count; start++) {
+            float dropped = transcriptSamples[start - 1];
+            float added = transcriptSamples[start + win - 1];
+            sum += (double) added * added - (double) dropped * dropped;
+            if (sum < best) {
+                best = sum;
+                bestStart = start;
+            }
+        }
+        return bestStart + win / 2;
+    }
+
+    private String recognizeTranscriptSegment(int sampleCount) {
         OfflineRecognizer currentRecognizer = recognizer;
-        if (currentRecognizer == null || transcriptSampleCount <= 0) {
+        if (currentRecognizer == null || sampleCount <= 0) {
             return "";
         }
+        float[] segment = Arrays.copyOf(transcriptSamples, sampleCount);
+        normalizePeak(segment);
         OfflineStream offlineStream = currentRecognizer.createStream();
         try {
-            offlineStream.acceptWaveform(Arrays.copyOf(transcriptSamples, transcriptSampleCount), SAMPLE_RATE);
+            offlineStream.acceptWaveform(segment, SAMPLE_RATE);
             currentRecognizer.decode(offlineStream);
             OfflineRecognizerResult result = currentRecognizer.getResult(offlineStream);
             String raw = result == null ? "" : result.getText();
             return raw == null ? "" : raw.trim();
         } finally {
             offlineStream.release();
+        }
+    }
+
+    private static void normalizePeak(float[] samples) {
+        float peak = 0f;
+        for (float s : samples) {
+            float a = Math.abs(s);
+            if (a > peak) {
+                peak = a;
+            }
+        }
+        if (peak <= 0f) {
+            return;
+        }
+        float gain = Math.min(TRANSCRIPT_NORMALIZE_TARGET_PEAK / peak, TRANSCRIPT_NORMALIZE_MAX_GAIN);
+        if (gain <= 1f) {
+            return;
+        }
+        for (int i = 0; i < samples.length; i++) {
+            samples[i] *= gain;
         }
     }
 
