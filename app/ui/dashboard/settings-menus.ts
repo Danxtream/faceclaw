@@ -8,6 +8,11 @@ import type { MenuItem } from "../menu";
 import { shell } from "../shell/shell";
 import {
   anthropicApiKeySetting,
+  assistantAllowProactiveSetting,
+  assistantBackendSetting,
+  assistantBridgeHostSetting,
+  assistantBridgePortSetting,
+  assistantBridgeTokenSetting,
   assistantModelSetting,
   assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
@@ -69,10 +74,21 @@ function settingsSections(): SettingsSection[] {
       items: [
         enumSettingMenuItem(wakeWordActionSetting),
         enumSettingMenuItem(voiceProviderSetting),
+      ],
+    },
+    {
+      label: "Assistant",
+      items: [
+        // On-phone LLM loop vs the user's own agent via the bridge plugin.
+        enumSettingMenuItem(assistantBackendSetting),
         enumSettingMenuItem(assistantModelSetting),
         // When on, a wakeword utterance goes straight to the assistant with no
         // Send/Type menu step.
         toggleSettingMenuItem(assistantSkipConfirmationSetting),
+        textSettingMenuItem(assistantBridgeHostSetting),
+        textSettingMenuItem(assistantBridgePortSetting),
+        textSettingMenuItem(assistantBridgeTokenSetting),
+        toggleSettingMenuItem(assistantAllowProactiveSetting),
       ],
     },
     {

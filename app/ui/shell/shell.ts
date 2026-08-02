@@ -6,12 +6,16 @@ import { DashboardInputEvent, Layer, LayerActions, LayerContext, LayerStack, noo
 import { MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "../apps/voice-input";
 import { AssistantLayer } from "../apps/assistant";
-import { AssistantSession } from "../../assistant/session";
-import { resolveAssistantModel, type ResolvedAssistantModel } from "../../assistant/models";
+import { AssistantSession, type AssistantBackendConfig } from "../../assistant/session";
+import { resolveAssistantModel } from "../../assistant/models";
 import type { AssistantContext } from "../../assistant/types";
 import { SingleNotificationLayer } from "../notifications";
 import {
   anthropicApiKeySetting,
+  assistantBackendSetting,
+  assistantBridgeHostSetting,
+  assistantBridgePortSetting,
+  assistantBridgeTokenSetting,
   assistantModelSetting,
   assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
@@ -722,24 +726,32 @@ class Shell {
   }
 
   private ensureAssistantSession(): AssistantSession | null {
-    const llm = this.resolveAssistantConfiguration();
-    if (!llm) return null;
+    const config = this.resolveAssistantConfiguration();
+    if (!config) return null;
     if (
       !this.assistantSession ||
       this.assistantSession.isExpired() ||
-      !this.assistantSession.matchesConfiguration(llm)
+      !this.assistantSession.matchesConfiguration(config)
     ) {
       this.assistantSession?.cancel();
-      this.assistantSession = new AssistantSession(llm);
+      this.assistantSession = new AssistantSession(config);
     }
     return this.assistantSession;
   }
 
-  private resolveAssistantConfiguration(): ResolvedAssistantModel | null {
-    return resolveAssistantModel(assistantModelSetting.get(), {
+  private resolveAssistantConfiguration(): AssistantBackendConfig | null {
+    if (assistantBackendSetting.get() === "external") {
+      const host = assistantBridgeHostSetting.get().trim();
+      const token = assistantBridgeTokenSetting.get();
+      if (!host || !token) return null;
+      const port = parseInt(assistantBridgePortSetting.get(), 10) || 8790;
+      return { kind: "external", bridge: { host, port, token } };
+    }
+    const llm = resolveAssistantModel(assistantModelSetting.get(), {
       anthropic: anthropicApiKeySetting.get(),
       openai: openAiApiKeySetting.get(),
     });
+    return llm ? { kind: "direct", llm } : null;
   }
 
   private buildAssistantContext(): AssistantContext {
@@ -761,7 +773,11 @@ class Shell {
   sendToAssistant(text: string): void {
     const session = this.ensureAssistantSession();
     if (!session) {
-      this.showAlert("Set an API key for the selected assistant model in Settings.");
+      this.showAlert(
+        assistantBackendSetting.get() === "external"
+          ? "Configure the agent bridge host and token in Settings."
+          : "Set an API key for the selected assistant model in Settings.",
+      );
       return;
     }
     if (!this.screenOn) this.wake("sidebar");

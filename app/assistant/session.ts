@@ -1,19 +1,32 @@
 import { buildAssistantSystemPrompt } from "../prompts";
+import { assistantBridge } from "./bridge-client";
 import { DirectAssistantBackend } from "./direct-backend";
 import type { LlmMessage, LlmToolDefinition } from "./llm-protocol";
 import type { ResolvedAssistantModel } from "./models";
 import { toolRegistry, type ToolRegistry } from "./tool-registry";
-import type { AssistantContext, AssistantTurnCallbacks, AssistantTurnHandle } from "./types";
+import type {
+  AssistantBridgeConfig,
+  AssistantContext,
+  AssistantTurnCallbacks,
+  AssistantTurnHandle,
+} from "./types";
 
 /**
  * One assistant conversation. Owns the message history and turn state and
- * drives a direct provider backend. The UI talks only to
- * this surface, so swapping in the external-agent backend later doesn't touch
- * AssistantLayer.
+ * drives either the on-phone provider loop (direct) or the external agent
+ * bridge. The UI talks only to this surface, so AssistantLayer is
+ * backend-agnostic.
  *
  * Sessions are cheap and idle-expire (see isExpired): the shell starts a fresh
- * one for a new wakeword and reuses the current one for a follow-up.
+ * one for a new wakeword and reuses the current one for a follow-up. In
+ * external mode the conversation history lives on the agent's machine (one
+ * long-lived session there), so expiry here only affects the overlay UI.
  */
+
+/** Which engine answers utterances, plus what it needs to do so. */
+export type AssistantBackendConfig =
+  | { kind: "direct"; llm: ResolvedAssistantModel }
+  | { kind: "external"; bridge: AssistantBridgeConfig };
 
 /** A new PTT after this much idle starts a fresh conversation. */
 const SESSION_IDLE_MS = 10 * 60 * 1000;
@@ -22,7 +35,7 @@ const SESSION_IDLE_MS = 10 * 60 * 1000;
 const MAX_HISTORY_MESSAGES = 40;
 
 export class AssistantSession {
-  private readonly backend = new DirectAssistantBackend();
+  private readonly directBackend = new DirectAssistantBackend();
   private readonly messages: LlmMessage[] = [];
   private turnHandle: AssistantTurnHandle | null = null;
   private lastActivityMs = Date.now();
@@ -31,16 +44,27 @@ export class AssistantSession {
   private readonly toolNameMap = new Map<string, string>();
 
   constructor(
-    private readonly llm: ResolvedAssistantModel,
+    private readonly config: AssistantBackendConfig,
     private readonly registry: ToolRegistry = toolRegistry,
   ) {}
 
-  matchesConfiguration(llm: ResolvedAssistantModel): boolean {
-    return (
-      this.llm.provider === llm.provider &&
-      this.llm.model === llm.model &&
-      this.llm.apiKey === llm.apiKey
-    );
+  matchesConfiguration(config: AssistantBackendConfig): boolean {
+    if (this.config.kind !== config.kind) return false;
+    if (this.config.kind === "direct" && config.kind === "direct") {
+      return (
+        this.config.llm.provider === config.llm.provider &&
+        this.config.llm.model === config.llm.model &&
+        this.config.llm.apiKey === config.llm.apiKey
+      );
+    }
+    if (this.config.kind === "external" && config.kind === "external") {
+      return (
+        this.config.bridge.host === config.bridge.host &&
+        this.config.bridge.port === config.bridge.port &&
+        this.config.bridge.token === config.bridge.token
+      );
+    }
+    return false;
   }
 
   /** Whether this session has been idle long enough to retire. */
@@ -59,38 +83,45 @@ export class AssistantSession {
       return;
     }
     this.lastActivityMs = Date.now();
-    this.messages.push({ role: "user", content: text });
-    this.trimHistory();
-
-    const system = buildAssistantSystemPrompt(ctx);
 
     const finish = () => {
       this.turnHandle = null;
       this.lastActivityMs = Date.now();
     };
+    const wrappedCallbacks: AssistantTurnCallbacks = {
+      onTextDelta: callbacks.onTextDelta,
+      onToolActivity: callbacks.onToolActivity,
+      onTurnDone: (result) => {
+        finish();
+        callbacks.onTurnDone(result);
+      },
+      onError: (message) => {
+        finish();
+        callbacks.onError(message);
+      },
+    };
 
-    this.turnHandle = this.backend.runTurn({
-      provider: this.llm.provider,
-      apiKey: this.llm.apiKey,
-      model: this.llm.model,
-      effort: this.llm.effort,
-      system,
+    if (this.config.kind === "external") {
+      // History and the agent loop live on the agent's machine; the phone just
+      // streams this turn. The overlay keeps its own display state.
+      this.turnHandle = assistantBridge.sendUtterance(text, ctx, wrappedCallbacks);
+      return;
+    }
+
+    this.messages.push({ role: "user", content: text });
+    this.trimHistory();
+    const llm = this.config.llm;
+    this.turnHandle = this.directBackend.runTurn({
+      provider: llm.provider,
+      apiKey: llm.apiKey,
+      model: llm.model,
+      effort: llm.effort,
+      system: buildAssistantSystemPrompt(ctx),
       messages: this.messages,
       buildTools: () => this.buildToolDefinitions(),
       registry: this.registry,
       resolveToolName: (apiName) => this.toolNameMap.get(apiName) ?? apiName,
-      callbacks: {
-        onTextDelta: callbacks.onTextDelta,
-        onToolActivity: callbacks.onToolActivity,
-        onTurnDone: (result) => {
-          finish();
-          callbacks.onTurnDone(result);
-        },
-        onError: (message) => {
-          finish();
-          callbacks.onError(message);
-        },
-      },
+      callbacks: wrappedCallbacks,
     });
   }
 

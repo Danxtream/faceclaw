@@ -27,6 +27,7 @@ import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
 import { registerSystemTools } from "../assistant/system-tools";
 import { registerNavigateTools } from "../assistant/navigate-tools";
+import { assistantBridge } from "../assistant/bridge-client";
 import { registerWindowTools } from "../assistant/window-tools";
 import { WorkerAppHost } from "../ui/shell/worker-window";
 import {
@@ -83,6 +84,11 @@ import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-a
 import { appViewportRect, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
 import {
+  assistantAllowProactiveSetting,
+  assistantBackendSetting,
+  assistantBridgeHostSetting,
+  assistantBridgePortSetting,
+  assistantBridgeTokenSetting,
   brightnessSetting,
   brightnessSettingToLevel,
   elevenLabsApiKeySetting,
@@ -326,6 +332,46 @@ class DashboardController {
       this.pushBrightness();
       this.syncEvenHubScreenOffSetting();
       this.applyVerticalPositionIfChanged();
+      this.syncAssistantBridgeIfChanged();
+    });
+    // Connect to the external agent bridge at boot if configured; the
+    // connection stays up (with re-dial) so proactive tool calls work
+    // outside voice turns.
+    this.syncAssistantBridge();
+  }
+
+  // Bridge settings changes re-dial the connection; unrelated setting changes
+  // must not, so the config it was last started with is tracked.
+  private lastBridgeConfigKey = "";
+
+  private bridgeConfigKey(): string {
+    return JSON.stringify([
+      assistantBackendSetting.get(),
+      assistantBridgeHostSetting.get().trim(),
+      assistantBridgePortSetting.get().trim(),
+      assistantBridgeTokenSetting.get(),
+    ]);
+  }
+
+  private syncAssistantBridgeIfChanged(): void {
+    if (this.bridgeConfigKey() === this.lastBridgeConfigKey) return;
+    this.syncAssistantBridge();
+  }
+
+  private syncAssistantBridge(): void {
+    this.lastBridgeConfigKey = this.bridgeConfigKey();
+    const host = assistantBridgeHostSetting.get().trim();
+    const token = assistantBridgeTokenSetting.get();
+    if (assistantBackendSetting.get() !== "external" || !host || !token) {
+      assistantBridge.stop();
+      return;
+    }
+    assistantBridge.configure({
+      host,
+      port: parseInt(assistantBridgePortSetting.get(), 10) || 8790,
+      token,
+      deviceName: "faceclaw",
+      allowProactive: () => assistantAllowProactiveSetting.get(),
     });
   }
 

@@ -30,3 +30,10 @@ export type AssistantTurnCallbacks = {
 export type AssistantTurnHandle = {
   cancel(): void;
 };
+
+/** Connection settings for the external agent bridge (assistant.bridge* settings). */
+export type AssistantBridgeConfig = {
+  host: string;
+  port: number;
+  token: string;
+};

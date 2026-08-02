@@ -1,8 +1,20 @@
 # Voice Assistant Architecture
 
 Status: design draft, 2026-07-19; revised 2026-07-24 (tool availability
-ontology, misc fixes). **Phases 1 and 2 are implemented** (see the
-Implementation plan below); phases 3-4 are still design-only.
+ontology, misc fixes); revised 2026-08-01 (external bridge landed).
+**Phases 1 and 2 are implemented**, and **phase 3 + the OpenClaw part of
+phase 4 landed 2026-08-01** with one architecture change: the bridge server
+is not a standalone package — it *is* the OpenClaw plugin
+(`~/repositories/faceclaw-agent-bridge`, installed on the OpenClaw host).
+The plugin hosts the websocket endpoint the phone dials into, runs
+utterances as embedded OpenClaw agent turns (`runEmbeddedAgent` with a
+dedicated session, default key `faceclaw:glasses`), and exposes the
+glasses' MCP-served tools to the agent via two fixed meta-tools
+(`glasses_list_tools` / `glasses_call` — fixed names because OpenClaw's
+manifest `contracts.tools` wants static declarations, while the glasses
+toolset is dynamic). The generic "MCP face for any agent" from the original
+design is unbuilt; the wire protocol is unchanged, so a standalone bridge
+for other agents can be added later without phone changes.
 
 ## Goal
 
@@ -404,17 +416,36 @@ in-process-window tool registration (only worker apps wired); the per-window
 same-name collision handling (the terminal sidesteps it by declaring all tools
 on the single hub window).
 
-**Phase 3 — external bridge.**
-Bridge wire protocol; ExternalAgentBackend (phone side, reusing the
-FaceclawWebSocket plumbing); `faceclaw-agent-bridge` server with the MCP
-face + fallback CLI chat adapter; settings; reconnect/offline behavior.
-*Deliverable: utterances answered by the user's own agent, which can also
-call glasses tools mid-task.*
+**Phase 3 — external bridge.** ✅ Landed 2026-08-01 (see the status note at
+the top for the architecture change: bridge server == OpenClaw plugin).
+Phone side: `app/assistant/bridge-client.ts` (`assistantBridge` singleton —
+dial-out FaceclawWebSocket, hello/token auth, auto-reconnect with 1s→60s
+backoff, started at boot by the dashboard controller when configured),
+`app/assistant/mcp-server.ts` (MCP over the `mcp` channel: initialize /
+tools/list / tools/call from the ToolRegistry, list_changed on
+onToolsChanged, proactive gating + 6/min rate limit enforced on-phone),
+external mode in `AssistantSession` (`AssistantBackendConfig` union selects
+direct vs external; external history lives on the agent's machine), settings
+(`assistant.backend`, `assistant.bridgeHost/Port/Token`,
+`assistant.allowProactive`) in a new Assistant settings section.
+Server side: `~/repositories/faceclaw-agent-bridge` (own repo/package).
+*Verified against the live OpenClaw on serac with a simulated phone
+(`test/fake-phone.js`): auth, streamed turns, and both tool directions
+work; a real model turn needs the OpenClaw instance to have provider auth.*
 
-**Phase 4 — OpenClaw/Hermes adapters + proactive polish.**
-Native chat adapters for both agents; proactive gating + rate limits;
-`tools/list_changed` on foreground swap; session persistence across
-reconnects.
+**Phase 4 — OpenClaw/Hermes adapters + proactive polish.** Partially landed
+2026-08-01: the OpenClaw adapter is the plugin itself (no separate chat
+adapter needed); proactive gating + rate limits and `tools/list_changed`
+are done. Remaining: Hermes (or generic-agent) support — likely a
+standalone bridge speaking the same wire protocol with an MCP face +
+CLI chat adapter; session persistence questions across reconnects
+(currently: OpenClaw session is persistent, phone session is UI-only).
+
+**Hardware-test TODO (external mode):** end-to-end on the real phone +
+glasses against serac — connect status, a streamed turn, cancel, follow-up,
+proactive `glasses.show_alert` from another OpenClaw channel, and behavior
+across phone network transitions (the reconnect backoff is untested on
+device).
 
 ## Open questions (deferred, not blockers):
 

@@ -350,6 +350,65 @@ export const assistantSkipConfirmationSetting = new ConfigSettingBoolean({
   description: "After a wakeword utterance, send the transcript straight to the assistant instead of stopping at the Send/Type confirmation menu.",
 });
 
+export type AssistantBackendKind = "direct" | "external";
+
+const assistantBackendLabels: Record<AssistantBackendKind, string> = {
+  direct: "On-phone (API key)",
+  external: "My own agent (bridge)",
+};
+
+export const assistantBackendSetting = new ConfigSettingEnum<AssistantBackendKind>({
+  id: "assistant-backend",
+  label: "Assistant backend",
+  storageKey: "assistant.backend",
+  defaultValue: "direct",
+  values: ["direct", "external"],
+  formatValue: (value) => assistantBackendLabels[value] ?? value,
+  description:
+    "Who answers assistant queries: an LLM called directly from the phone (needs an API key), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
+});
+
+export const assistantBridgeHostSetting = new ConfigSettingString({
+  id: "assistant-bridge-host",
+  label: "Bridge host",
+  storageKey: "assistant.bridgeHost",
+  defaultValue: "",
+  editorTitle: "Agent bridge host (tailscale IP)",
+  glassesEditTitle: "Edit bridge host",
+  description:
+    "Hostname or IP address (e.g. a Tailscale address) of the machine running the agent bridge.",
+});
+
+export const assistantBridgePortSetting = new ConfigSettingString({
+  id: "assistant-bridge-port",
+  label: "Bridge port",
+  storageKey: "assistant.bridgePort",
+  defaultValue: "8790",
+  editorTitle: "Agent bridge port",
+  glassesEditTitle: "Edit bridge port",
+  description: "TCP port the agent bridge listens on. The default is 8790.",
+});
+
+export const assistantBridgeTokenSetting = new ConfigSettingString({
+  id: "assistant-bridge-token",
+  label: "Bridge token",
+  storageKey: "assistant.bridgeToken",
+  defaultValue: "",
+  editorTitle: "Agent bridge auth token",
+  glassesEditTitle: "Edit bridge token",
+  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+  description: "Shared secret that must match the bridge's configured token.",
+});
+
+export const assistantAllowProactiveSetting = new ConfigSettingBoolean({
+  id: "assistant-allow-proactive",
+  label: "Allow proactive agent actions",
+  storageKey: "assistant.allowProactive",
+  defaultValue: true,
+  description:
+    "Let the external agent use glasses tools outside of a conversation, e.g. showing an alert when a long-running job finishes. Rate-limited; only tools marked proactive-safe are allowed.",
+});
+
 export const elevenLabsApiKeySetting = new ConfigSettingString({
   id: "elevenlabs-api-key",
   label: "ElevenLabs key",
