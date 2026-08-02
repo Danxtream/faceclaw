@@ -1,6 +1,9 @@
 import { Application, Frame, ImageSource, Observable, Screen } from "@nativescript/core";
 import { dashboardController } from "../g2/dashboard-controller";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
+import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../graphics/image";
+
+const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
 
 type LayoutOrientation = "portrait" | "landscape";
 
@@ -107,17 +110,21 @@ export class MainViewModel extends Observable {
   }
 
   get displayPreviewHeight(): number {
-    return Screen.mainScreen.widthDIPs / 2;
+    return Screen.mainScreen.widthDIPs / LENS_ASPECT_RATIO;
   }
 
   get landscapeDisplayPreviewWidth(): number {
-    const screenWidth = Screen.mainScreen.widthDIPs;
-    const sidePanelWidth = 260;
-    return Math.max(240, Math.floor(screenWidth - sidePanelWidth - 56));
+    return Math.floor(this.landscapeDisplayPreviewHeight * LENS_ASPECT_RATIO);
   }
 
   get landscapeDisplayPreviewHeight(): number {
-    return Math.floor(this.landscapeDisplayPreviewWidth / 2);
+    // Height keeps the vertical footprint the preview had at the old 2:1
+    // aspect; the width is derived from it, so a wider lens aspect can't
+    // grow the preview past the side panel.
+    const screenWidth = Screen.mainScreen.widthDIPs;
+    const sidePanelWidth = 260;
+    const availableWidth = Math.max(240, Math.floor(screenWidth - sidePanelWidth - 56));
+    return Math.floor(availableWidth / 2);
   }
 
   get portraitLayoutVisibility(): "visible" | "collapse" {
