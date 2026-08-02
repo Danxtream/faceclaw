@@ -22,6 +22,7 @@ import {
   openAiApiKeySetting,
   enumSettingMenuItem,
   firmwareDebugFlagsSetting,
+  lockScreenEnabledSetting,
   saveVoiceRecordingsSetting,
   suspendEvenHubWhenScreenOffSetting,
   terminalAuthTokenSetting,
@@ -58,6 +59,7 @@ function settingsSections(): SettingsSection[] {
             shell.noteUserActivity();
           },
         }),
+        toggleSettingMenuItem(lockScreenEnabledSetting),
         // Where min-height windows (and the sidebar) sit vertically on the
         // screen; the dashboard controller repositions surfaces on change.
         enumSettingMenuItem(verticalPositionSetting),

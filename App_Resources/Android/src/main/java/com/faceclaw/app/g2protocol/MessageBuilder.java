@@ -137,6 +137,21 @@ public class MessageBuilder {
         );
     }
 
+    public OutboundMessage setWearDetection(boolean enabled) {
+        int magic = magicPool.allocate();
+        return new OutboundMessage(
+            "wear-detection-control",
+            "wear detection " + (enabled ? "enable" : "disable"),
+            BleProtocol.SID_UI_SETTING,
+            BleProtocol.FLAG_REQUEST,
+            magic,
+            BleProtocol.buildSetWearDetection(magic, enabled),
+            ACK_TIMEOUT_MS,
+            -1,
+            false
+        );
+    }
+
     public OutboundMessage createLayout(BleProtocol.ImageTileOptions... tiles) {
         int magic = magicPool.allocate();
         return new OutboundMessage(
@@ -219,6 +234,20 @@ public class MessageBuilder {
             BleProtocol.FLAG_REQUEST,
             0,
             BleProtocol.buildFaceclawWakeControl(operation, 0),
+            ACK_TIMEOUT_MS,
+            -1,
+            leftArm
+        );
+    }
+
+    public OutboundMessage faceclawWearQuery(boolean leftArm) {
+        return new OutboundMessage(
+            "wear-query-control",
+            "wear state query" + (leftArm ? " L" : " R"),
+            BleProtocol.SID_UI_SETTING,
+            BleProtocol.FLAG_REQUEST,
+            0,
+            BleProtocol.buildFaceclawWakeControl(BleProtocol.FACECLAW_WEAR_OP_QUERY, 0),
             ACK_TIMEOUT_MS,
             -1,
             leftArm

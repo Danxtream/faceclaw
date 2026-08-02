@@ -1,13 +1,14 @@
 /**
  * Compatibility check for the glasses firmware. Faceclaw requires the custom
- * firmware: version >= 2.2.4.34 with the "img640" and "fbguard" extension tokens
- * in the CFW capability string. Stock firmware sends no capability string at all.
+ * firmware: version >= 2.2.4.34 with the required direct-framebuffer and wear
+ * notification tokens in the CFW capability string. Stock firmware sends no
+ * capability string at all.
  */
 
 import { type FirmwareInfo } from "../native/faceclaw-communicator";
 
 const MIN_FIRMWARE_VERSION = [2, 2, 4, 34];
-const REQUIRED_FIRMWARE_EXTENSIONS = ["img640", "fbguard"] as const;
+const REQUIRED_FIRMWARE_EXTENSIONS = ["img640", "fbguard", "wearnotify"] as const;
 
 // The stock firmware release Faceclaw's custom image is built from. Stock at or
 // below this can be flashed with our patched image; a newer stock version is
@@ -64,7 +65,7 @@ export function firmwareIncompatibilityMessage(info: FirmwareInfo): string | nul
       `${missingExtensions.map((extension) => `"${extension}"`).join(" and ")} extension` +
       `${missingExtensions.length === 1 ? "" : "s"}` +
       `${info.capabilities.trim() ? ` (reported: ${info.capabilities.trim()})` : ", which suggests stock firmware"}. ` +
-      `Faceclaw requires the modified firmware with the guarded 640x480 direct-framebuffer path.`
+      `Faceclaw requires the modified firmware with the guarded 640x480 direct-framebuffer path and wear notifications.`
     );
   }
 

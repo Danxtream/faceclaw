@@ -255,6 +255,15 @@ export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>(
   description: "How long the display stays on after the last input before turning itself off. \"Never\" keeps it on until turned off manually.",
 });
 
+export const lockScreenEnabledSetting = new ConfigSettingBoolean({
+  id: "lock-screen-enabled",
+  label: "Enable lock screen",
+  storageKey: "display.lockScreenEnabled",
+  defaultValue: true,
+  description:
+    "Lock the glasses after they are taken off while the phone is locked. Unlocking the phone unlocks the glasses.",
+});
+
 export type VerticalPosition = "top" | "upper" | "middle" | "lower" | "bottom";
 
 const VERTICAL_POSITION_LABELS: Record<VerticalPosition, string> = {

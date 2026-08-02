@@ -3,7 +3,11 @@ package com.faceclaw.app;
 import android.annotation.SuppressLint;
 import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCharacteristic;
+import android.app.KeyguardManager;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -41,6 +45,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private final Context appContext;
     private final PowerManager powerManager;
+    private final KeyguardManager keyguardManager;
     private final FaceclawBleManager bleManager;
     private final InterruptibleSleep interruptibleSleep = new InterruptibleSleep();
     private final Object lock = new Object();
@@ -116,6 +121,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int headsetCharging = -1;
     // Silent mode: 1 = on, 0 = off, -1 = not yet known. See updateSilentModeLocked.
     private int silentMode = -1;
+    private int wearState = -1;
+    private int phoneLockState = -1;
+    private long lastPhoneLockCheckAtMs;
+    private boolean phoneLockReceiverRegistered;
     private boolean audioCaptureActive;
     private boolean firmwareInfoQueried;
     // Glasses are in the charging case: nobody is wearing them, so display
@@ -123,6 +132,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private boolean chargingMode;
     private volatile FaceclawAudioPacketListener audioPacketListener;
     private PowerManager.WakeLock g2ScreenWakeLock;
+
+    private final BroadcastReceiver phoneLockReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            emitPhoneLockStateIfChanged(true);
+            interruptibleSleep.interrupt();
+        }
+    };
 
     private String displayedFingerprint = "";
     // The frame the firmware shadow will hold once the current image pipeline
@@ -162,17 +178,25 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         this.appContext = context.getApplicationContext();
         FrameTimings.getInstance().init(appContext);
         this.powerManager = (PowerManager) appContext.getSystemService(Context.POWER_SERVICE);
+        this.keyguardManager = (KeyguardManager) appContext.getSystemService(Context.KEYGUARD_SERVICE);
         this.bleManager = new FaceclawBleManager(appContext);
         this.bleManager.setListener(this);
         this.rightAddress = requireAddress("rightAddress", rightAddress);
         this.leftAddress = requireAddress("leftAddress", leftAddress);
         this.ringAddress = ringAddress == null ? "" : ringAddress.trim();
+        IntentFilter phoneLockFilter = new IntentFilter();
+        phoneLockFilter.addAction(Intent.ACTION_SCREEN_ON);
+        phoneLockFilter.addAction(Intent.ACTION_SCREEN_OFF);
+        phoneLockFilter.addAction(Intent.ACTION_USER_PRESENT);
+        appContext.registerReceiver(phoneLockReceiver, phoneLockFilter);
+        phoneLockReceiverRegistered = true;
     }
 
 
     public void setListener(FaceclawBleCommunicatorListener listener) {
         this.listener = listener;
         emitState();
+        emitPhoneLockStateIfChanged(true);
     }
 
     public void start() {
@@ -231,6 +255,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             activeInstance = null;
         }
         disconnect();
+        if (phoneLockReceiverRegistered) {
+            phoneLockReceiverRegistered = false;
+            appContext.unregisterReceiver(phoneLockReceiver);
+        }
     }
 
     public void setG2ScreenOn(boolean screenOn) {
@@ -403,6 +431,31 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             message.onTimeout = () -> logLine("brightness control ack timeout");
             pendingMessages.addFirst(message);
             logLine("queue brightness " + (autoAdjust ? "auto" : "level=" + brightnessLevel));
+        }
+        interruptibleSleep.interrupt();
+    }
+
+    /**
+     * Enable the stock wear detector, then ask CFW to emit its current cached
+     * state. The queue order matters: the query must run after the setting is
+     * applied, including on a fresh install where wear detection was disabled.
+     */
+    public void enableWearDetectionAndRequestState() {
+        synchronized (lock) {
+            if (!running || !sessionReady) {
+                logLine("skip wear detector setup; session not ready");
+                return;
+            }
+            clearMessagesOfKindLocked("wear-detection-control");
+            clearMessagesOfKindLocked("wear-query-control");
+            OutboundMessage queryLeft = messageBuilder.faceclawWearQuery(true);
+            OutboundMessage queryRight = messageBuilder.faceclawWearQuery(false);
+            OutboundMessage enable = messageBuilder.setWearDetection(true);
+            enable.onTimeout = () -> logLine("wear detection enable ack timeout");
+            pendingMessages.addFirst(queryLeft);
+            pendingMessages.addFirst(queryRight);
+            pendingMessages.addFirst(enable);
+            logLine("queue wear detection enable + current-state query");
         }
         interruptibleSleep.interrupt();
     }
@@ -829,6 +882,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     Log.w(TAG, "Exiting event looop");
                     break;
                 }
+                emitPhoneLockStateIfChanged(false);
                 if (!sessionReady) {
                     long now = SystemClock.elapsedRealtime();
                     if (now < reconnectAfterMs) {
@@ -875,9 +929,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         Log.d(TAG, "onNotification: address=" + address + " characteristicUuid=" + characteristicUuid + " data.length=" + data.length);
         BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(data);
+        int decodedWearState = BleProtocol.parseWearState(frame);
+        boolean emitWearState = false;
         G2Event event = null;
         synchronized (lock) {
             lastIncomingAtMs = SystemClock.elapsedRealtime();
+            if (decodedWearState >= 0 && decodedWearState != wearState) {
+                wearState = decodedWearState;
+                emitWearState = true;
+            }
             boolean faceclawWakeNotification = false;
             if (shutdownRequested
                     && frame.ok
@@ -920,6 +980,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 );
             }
             if (!faceclawWakeNotification
+                    && decodedWearState < 0
                     && frame.ok
                     && frame.sid == BleProtocol.SID_UI_SETTING) {
                 // Device-initiated settings push. It carries a magic the glasses
@@ -932,6 +993,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
             }
             if (!faceclawWakeNotification
+                    && decodedWearState < 0
                     && frame.ok
                     && frame.msgSeq >= 0
                     && frame.flag != BleProtocol.FLAG_NOTIFY
@@ -974,6 +1036,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
         }
         interruptibleSleep.interrupt();
+        if (emitWearState) {
+            logLine(decodedWearState > 0 ? "wear state ON_HEAD" : "wear state OFF_HEAD");
+            emitWearState(decodedWearState > 0);
+        }
         if (event != null) {
             if (event.hasImu) {
                 emitImuData(event.imuX, event.imuY, event.imuZ, event.eventSource);
@@ -2470,6 +2536,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         faceclawWakePendingNonce = -1;
         lastFaceclawWakeLeaseQueuedAtMs = 0;
         faceclawWakeControlSentCount = 0;
+        wearState = -1;
         displayedFingerprint = "";
         // Deliberately not clearing silentMode: it is a property of the glasses,
         // not of our session, and silent mode blocks app launches, so it can be
@@ -2538,6 +2605,40 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 current.onSilentMode(silent);
             } catch (Throwable t) {
                 Log.w(TAG, "listener onSilentMode failed", t);
+            }
+        });
+    }
+
+    private void emitWearState(boolean wearing) {
+        final FaceclawBleCommunicatorListener current = listener;
+        if (current == null) return;
+        mainHandler.post(() -> {
+            try {
+                current.onWearState(wearing);
+            } catch (Throwable t) {
+                Log.w(TAG, "listener onWearState failed", t);
+            }
+        });
+    }
+
+    private void emitPhoneLockStateIfChanged(boolean force) {
+        final boolean locked;
+        synchronized (lock) {
+            long now = SystemClock.elapsedRealtime();
+            if (!force && now - lastPhoneLockCheckAtMs < 1_000) return;
+            lastPhoneLockCheckAtMs = now;
+            locked = keyguardManager != null && keyguardManager.isDeviceLocked();
+            int value = locked ? 1 : 0;
+            if (!force && value == phoneLockState) return;
+            phoneLockState = value;
+        }
+        final FaceclawBleCommunicatorListener current = listener;
+        if (current == null) return;
+        mainHandler.post(() -> {
+            try {
+                current.onPhoneLockState(locked);
+            } catch (Throwable t) {
+                Log.w(TAG, "listener onPhoneLockState failed", t);
             }
         });
     }

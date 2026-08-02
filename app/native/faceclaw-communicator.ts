@@ -121,6 +121,10 @@ export class FaceclawCommunicatorBridge {
   private readonly ringListeners = new Set<(event: RawInputEvent) => void>();
   private readonly batteryListeners = new Set<(state: HeadsetBatteryState) => void>();
   private readonly silentModeListeners = new Set<(silent: boolean) => void>();
+  private readonly wearStateListeners = new Set<(wearing: boolean) => void>();
+  private readonly phoneLockStateListeners = new Set<(locked: boolean) => void>();
+  private latestWearState: boolean | null = null;
+  private latestPhoneLockState: boolean | null = null;
   private readonly evenAppConflictListeners = new Set<(message: string) => void>();
   private readonly frameMetricsListeners = new Set<(metrics: FrameMetrics) => void>();
   private readonly firmwareInfoListeners = new Set<(info: FirmwareInfo) => void>();
@@ -174,6 +178,14 @@ export class FaceclawCommunicatorBridge {
       },
       onSilentMode: (silent: boolean) => {
         this.emitAsync(this.silentModeListeners, Boolean(silent));
+      },
+      onWearState: (wearing: boolean) => {
+        this.latestWearState = Boolean(wearing);
+        this.emitAsync(this.wearStateListeners, this.latestWearState);
+      },
+      onPhoneLockState: (locked: boolean) => {
+        this.latestPhoneLockState = Boolean(locked);
+        this.emitAsync(this.phoneLockStateListeners, this.latestPhoneLockState);
       },
       onEvenAppConflict: (message: string) => {
         this.emitAsync(this.evenAppConflictListeners, String(message));
@@ -262,6 +274,28 @@ export class FaceclawCommunicatorBridge {
   onSilentMode(listener: (silent: boolean) => void): () => void {
     this.silentModeListeners.add(listener);
     return () => this.silentModeListeners.delete(listener);
+  }
+
+  onWearState(listener: (wearing: boolean) => void): () => void {
+    this.wearStateListeners.add(listener);
+    if (this.latestWearState !== null) {
+      const wearing = this.latestWearState;
+      setTimeout(() => {
+        if (this.wearStateListeners.has(listener)) listener(wearing);
+      }, 0);
+    }
+    return () => this.wearStateListeners.delete(listener);
+  }
+
+  onPhoneLockState(listener: (locked: boolean) => void): () => void {
+    this.phoneLockStateListeners.add(listener);
+    if (this.latestPhoneLockState !== null) {
+      const locked = this.latestPhoneLockState;
+      setTimeout(() => {
+        if (this.phoneLockStateListeners.has(listener)) listener(locked);
+      }, 0);
+    }
+    return () => this.phoneLockStateListeners.delete(listener);
   }
 
   onEvenAppConflict(listener: (message: string) => void): () => void {
@@ -374,6 +408,10 @@ export class FaceclawCommunicatorBridge {
   /** Set lens brightness: auto (ambient sensor) or an explicit 0-100 level. */
   async setBrightness(autoAdjust: boolean, level: number): Promise<void> {
     await this.enqueueJavaCall(() => this.communicator.setBrightness(Boolean(autoAdjust), Math.round(level)));
+  }
+
+  async enableWearDetectionAndRequestState(): Promise<void> {
+    await this.enqueueJavaCall(() => this.communicator.enableWearDetectionAndRequestState());
   }
 
   /** Set the compositor's output frame size. Call before configuring surfaces. */

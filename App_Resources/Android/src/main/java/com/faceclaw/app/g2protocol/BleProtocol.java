@@ -32,6 +32,7 @@ public class BleProtocol {
     public static final int SID_EVENHUB = 0xe0;
     public static final int SID_UI_SETTING = 0x09;
     public static final int SID_STATE_CHANGE = 0x0d;
+    public static final int SID_ONBOARDING = 0x10;
     /** G2SettingPackage.commandId for device-initiated pushes (vs. 2 = app read). */
     public static final int SETTINGS_CMD_DEVICE_SEND_TO_APP = 3;
     // Private Faceclaw/CFW wake-takeover protocol. Both payloads are unknown
@@ -44,6 +45,7 @@ public class BleProtocol {
     public static final int FACECLAW_WAKE_OP_READY = 4;
     public static final int FACECLAW_FB_OP_ACQUIRE = 5;
     public static final int FACECLAW_FB_OP_RELEASE = 6;
+    public static final int FACECLAW_WEAR_OP_QUERY = 7;
     private static final int FACECLAW_WAKE_EVENT = 1;
     private static final int FACECLAW_WAKE_PROTOCOL_VERSION = 1;
     // UI_FOREGROUND_EVEN_AI_ID: the stock "Even AI" assistant app. It is a
@@ -306,6 +308,16 @@ public class BleProtocol {
         ));
     }
 
+    /** Enable the firmware's wear detector (DeviceReceiveInfoFromAPP field 5). */
+    public static byte[] buildSetWearDetection(int magic, boolean enabled) {
+        byte[] wear = encodeVarintField(1, enabled ? 1 : 0);
+        return concat(CollectionUtils.listOf(
+            encodeVarintField(1, 1),
+            encodeVarintField(2, magic),
+            encodeMessageField(3, encodeMessageField(5, wear))
+        ));
+    }
+
     public static byte[] buildSettingsQuery(int magic) {
         byte[] request = encodeVarintField(1, 1);
         return concat(CollectionUtils.listOf(
@@ -354,6 +366,28 @@ public class BleProtocol {
             return -1;
         }
         return (event[4] & 0xff) | ((event[5] & 0xff) << 8);
+    }
+
+    /**
+     * Decode OnboardingDataPackage EVENT/GLS_WEAR_STATUS. Unlike most async
+     * G2 traffic, stock firmware sends this event with flag 0x00, so callers
+     * must recognize it by sid and protobuf shape rather than notify flag.
+     * Returns 0/1, or -1 when the frame is not a wear event.
+     */
+    public static int parseWearState(ParsedFrame frame) {
+        if (frame == null || !frame.ok || frame.sid != SID_ONBOARDING) {
+            return -1;
+        }
+        byte[] root = stripTrailingCrc(frame.pb);
+        if (readVarintFieldValue(root, 1, -1) != 3) {
+            return -1;
+        }
+        byte[] event = readFieldBytes(root, 5);
+        if (event == null || readVarintFieldValue(event, 1, -1) != 1) {
+            return -1;
+        }
+        int wearStatus = readVarintFieldValue(event, 2, -1);
+        return wearStatus == 0 || wearStatus == 1 ? wearStatus : -1;
     }
 
     public static BatterySnapshot parseSettingsBattery(byte[] pb) {

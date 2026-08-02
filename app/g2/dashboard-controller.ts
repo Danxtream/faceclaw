@@ -24,6 +24,8 @@ import { isWelcomeSoundPending, setWelcomeSoundPending } from "../phone-ui/onboa
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
+import { getDefaultMediumFont } from "../graphics/bdffont";
+import { wrapText } from "../graphics/textwrap";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
 import { registerSystemTools } from "../assistant/system-tools";
 import { registerNavigateTools } from "../assistant/navigate-tools";
@@ -95,6 +97,7 @@ import {
   openAiApiKeySetting,
   nightscoutApiTokenSetting,
   firmwareDebugFlagsSetting,
+  lockScreenEnabledSetting,
   nightscoutSiteUrlSetting,
   onAnySettingChanged,
   saveVoiceRecordingsSetting,
@@ -138,6 +141,8 @@ type DashboardListener = (snapshot: DashboardSnapshot) => void;
 // The shell chrome (sidebar + top bar + overlays) composites above all app
 // window surfaces with color-key transparency.
 const SHELL_SURFACE_ID = "shell";
+const LOCK_SCREEN_SURFACE_ID = "lock-screen";
+const LOCK_SCREEN_MESSAGE = "Glasses locked; unlock the phone to unlock the glasses.";
 // Top-bar clock refresh; the phone-side preview polls the Java composite so
 // it reflects every app (including worker apps the TS side never renders).
 const SHELL_REFRESH_INTERVAL_MS = 60_000;
@@ -175,6 +180,24 @@ const LAUNCHER_APPS: LauncherAppEntry[] = [
 
 function createInitialDisplayPreview(): ImageSource | null {
   return grayImageToPreviewSource(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
+}
+
+function createLockScreenImage(): GrayImage {
+  const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+  const font = getDefaultMediumFont();
+  const boxWidth = 480;
+  const boxHeight = 150;
+  const boxX = Math.round((G2_LENS_WIDTH - boxWidth) / 2);
+  const boxY = Math.round((G2_LENS_HEIGHT - boxHeight) / 2);
+  image.drawRoundedRect(boxX, boxY, boxWidth, boxHeight, 150, 12);
+  const lines = wrapText(font, LOCK_SCREEN_MESSAGE, boxWidth - 64);
+  const textHeight = lines.length * font.lineHeight;
+  const firstY = boxY + Math.round((boxHeight - textHeight) / 2);
+  lines.forEach((line, index) => {
+    const x = Math.round((G2_LENS_WIDTH - font.measureText(line)) / 2);
+    image.drawText(font, x, firstY + index * font.lineHeight, line, 230);
+  });
+  return image;
 }
 
 function formatTimestamp(date: Date): string {
@@ -232,11 +255,19 @@ class DashboardController {
   private evenHubResumePromise: Promise<boolean> | null = null;
   private faceclawWakeLeaseSupported = false;
   private faceclawWakeLeaseState: boolean | null = null;
+  private wearNotifySupported = false;
+  private glassesWorn: boolean | null = null;
+  private phoneLocked = false;
+  private glassesLocked = false;
+  private lockSurfaceConfigured = false;
+  private lastLockScreenEnabled = lockScreenEnabledSetting.get();
   private offState: (() => void) | null = null;
   private offLog: (() => void) | null = null;
   private offRing: (() => void) | null = null;
   private offBattery: (() => void) | null = null;
   private offSilentMode: (() => void) | null = null;
+  private offWearState: (() => void) | null = null;
+  private offPhoneLockState: (() => void) | null = null;
   private offEvenAppConflict: (() => void) | null = null;
   private offFrameMetrics: (() => void) | null = null;
   private offFirmwareInfo: (() => void) | null = null;
@@ -333,6 +364,7 @@ class DashboardController {
       this.syncEvenHubScreenOffSetting();
       this.applyVerticalPositionIfChanged();
       this.syncAssistantBridgeIfChanged();
+      this.syncLockScreenSettingIfChanged();
     });
     // Connect to the external agent bridge at boot if configured; the
     // connection stays up (with re-dial) so proactive tool calls work
@@ -422,6 +454,92 @@ class DashboardController {
       this.appendLog(`screen sleep failed: ${this.formatError(error)}`);
     });
     this.scheduleEvenHubSuspend();
+  }
+
+  private syncLockScreenSettingIfChanged(): void {
+    const enabled = lockScreenEnabledSetting.get();
+    if (enabled === this.lastLockScreenEnabled) return;
+    this.lastLockScreenEnabled = enabled;
+    if (!enabled) {
+      this.setGlassesLocked(false, "lock screen disabled");
+      return;
+    }
+    if (this.phoneLocked && this.glassesWorn === false) {
+      this.setGlassesLocked(true, "lock screen enabled while glasses are off-head");
+    }
+    this.ensureWearStateTracking();
+  }
+
+  private handleWearState(wearing: boolean): void {
+    this.glassesWorn = wearing;
+    this.appendLog(wearing ? "glasses wear state: ON_HEAD" : "glasses wear state: OFF_HEAD");
+    if (!wearing && this.phoneLocked && lockScreenEnabledSetting.get()) {
+      this.setGlassesLocked(true, "glasses removed while phone locked");
+    }
+  }
+
+  private handlePhoneLockState(locked: boolean): void {
+    if (locked === this.phoneLocked) return;
+    this.phoneLocked = locked;
+    this.appendLog(`phone lock state: ${locked ? "locked" : "unlocked"}`);
+    if (!locked) {
+      this.setGlassesLocked(false, "phone unlocked");
+    } else if (this.glassesWorn === false && lockScreenEnabledSetting.get()) {
+      this.setGlassesLocked(true, "phone locked while glasses are off-head");
+    }
+  }
+
+  private setGlassesLocked(locked: boolean, reason: string): void {
+    if (locked === this.glassesLocked) return;
+    this.glassesLocked = locked;
+    this.appendLog(`glasses ${locked ? "locked" : "unlocked"}: ${reason}`);
+    void this.syncLockSurface().catch((error) => {
+      this.appendLog(`lock screen update failed: ${this.formatError(error)}`);
+    });
+  }
+
+  private ensureWearStateTracking(): void {
+    const communicator = this.communicator;
+    if (
+      !lockScreenEnabledSetting.get() ||
+      !this.wearNotifySupported ||
+      this.phase !== "connected" ||
+      !communicator
+    ) {
+      return;
+    }
+    void communicator.enableWearDetectionAndRequestState().catch((error) => {
+      this.appendLog(`wear detector setup failed: ${this.formatError(error)}`);
+    });
+  }
+
+  private async configureLockSurface(communicator: FaceclawCommunicatorBridge): Promise<void> {
+    await communicator.configureSurface(LOCK_SCREEN_SURFACE_ID, {
+      x: 0,
+      y: 0,
+      width: G2_LENS_WIDTH,
+      height: G2_LENS_HEIGHT,
+      zOrder: 1000,
+      transparency: "opaque",
+    });
+    await communicator.setSurfaceVisible(LOCK_SCREEN_SURFACE_ID, false);
+    const image = createLockScreenImage();
+    await communicator.submitSurfaceFrame(
+      LOCK_SCREEN_SURFACE_ID,
+      image.to8bppBuffer(),
+      { x: 0, y: 0, width: image.width, height: image.height },
+      image.fingerprint(),
+    );
+    if (this.communicator === communicator) {
+      this.lockSurfaceConfigured = true;
+    }
+  }
+
+  private async syncLockSurface(): Promise<void> {
+    const communicator = this.communicator;
+    if (!communicator || !this.lockSurfaceConfigured) return;
+    await communicator.setSurfaceVisible(LOCK_SCREEN_SURFACE_ID, this.glassesLocked);
+    this.updateCompositePreview();
   }
 
   /**
@@ -780,6 +898,8 @@ class DashboardController {
     this.lastSys = "none yet";
     this.welcomeSoundArmed = isWelcomeSoundPending();
     this.firmwareWarningMessage = "";
+    this.glassesWorn = null;
+    this.glassesLocked = false;
     this.refreshBatteryOptimizationStatus();
     this.refreshEvenAppStatus();
     this.setPhase("connecting");
@@ -791,6 +911,8 @@ class DashboardController {
     let communicator: FaceclawCommunicatorBridge | null = null;
     this.faceclawWakeLeaseSupported = false;
     this.faceclawWakeLeaseState = null;
+    this.wearNotifySupported = false;
+    this.lockSurfaceConfigured = false;
     this.evenHubResumePromise = null;
 
     try {
@@ -834,10 +956,17 @@ class DashboardController {
           this.pushFirmwareDebugFlags();
           this.pushBrightness(true);
         }
+        if (mappedPhase !== "connected") {
+          // A wear snapshot is session-scoped. CFW reports a fresh value when
+          // the transport comes back, so do not make lock decisions from a
+          // stale pre-disconnect value in the meantime.
+          this.glassesWorn = null;
+        }
         this.setPhase(mappedPhase);
         this.setStatus(state.status);
         if (mappedPhase === "connected") {
           this.syncEvenHubScreenOffSetting();
+          this.ensureWearStateTracking();
         } else if (mappedPhase !== "charging") {
           this.cancelEvenHubSuspendTimer();
           this.evenHubSessionSuspended = false;
@@ -853,6 +982,12 @@ class DashboardController {
         if (this.silentMode === silent) return;
         this.silentMode = silent;
         this.emit();
+      });
+      this.offWearState = communicator.onWearState((wearing) => {
+        this.handleWearState(wearing);
+      });
+      this.offPhoneLockState = communicator.onPhoneLockState((locked) => {
+        this.handlePhoneLockState(locked);
       });
       this.offBattery = communicator.onBatteryState((state) => {
         this.lastHeadsetBattery = state.battery >= 0 ? state.battery : null;
@@ -897,12 +1032,20 @@ class DashboardController {
           .trim()
           .split(/\s+/)
           .includes("wakelease");
+        const wearNotifySupported = info.capabilities
+          .trim()
+          .split(/\s+/)
+          .includes("wearnotify");
         if (wakeLeaseSupported !== this.faceclawWakeLeaseSupported) {
           this.faceclawWakeLeaseSupported = wakeLeaseSupported;
           this.faceclawWakeLeaseState = null;
           void this.syncFaceclawWakeLease().catch((error) => {
             this.appendLog(`wake takeover lease sync failed: ${this.formatError(error)}`);
           });
+        }
+        if (wearNotifySupported !== this.wearNotifySupported) {
+          this.wearNotifySupported = wearNotifySupported;
+          this.ensureWearStateTracking();
         }
         if (warning !== this.firmwareWarningMessage) {
           this.firmwareWarningMessage = warning;
@@ -936,6 +1079,7 @@ class DashboardController {
         zOrder: 1,
         transparency: "color-key",
       });
+      await this.configureLockSurface(communicator);
       const foregroundWindowId = shell.foregroundWindow()?.windowId;
       for (const window of shell.getWindows()) {
         await this.configureWindowSurface(
@@ -945,6 +1089,7 @@ class DashboardController {
         );
       }
       await communicator.start();
+      await this.syncLockSurface();
       this.syncEvenHubScreenOffSetting();
       shell.foregroundWindow()?.requestRender();
       this.requestShellRender();
@@ -974,6 +1119,10 @@ class DashboardController {
       this.offBattery = null;
       this.offSilentMode?.();
       this.offSilentMode = null;
+      this.offWearState?.();
+      this.offWearState = null;
+      this.offPhoneLockState?.();
+      this.offPhoneLockState = null;
       this.offEvenAppConflict?.();
       this.offEvenAppConflict = null;
       this.offFrameMetrics?.();
@@ -992,6 +1141,8 @@ class DashboardController {
         await communicator.close().catch(() => {});
       }
       this.communicator = null;
+      this.lockSurfaceConfigured = false;
+      this.wearNotifySupported = false;
       this.faceclawWakeLeaseSupported = false;
       this.faceclawWakeLeaseState = null;
       this.evenHubResumePromise = null;
@@ -1020,6 +1171,10 @@ class DashboardController {
     this.offBattery = null;
     this.offSilentMode?.();
     this.offSilentMode = null;
+    this.offWearState?.();
+    this.offWearState = null;
+    this.offPhoneLockState?.();
+    this.offPhoneLockState = null;
     this.offEvenAppConflict?.();
     this.offEvenAppConflict = null;
     this.offFrameMetrics?.();
@@ -1033,6 +1188,7 @@ class DashboardController {
 
     const communicator = this.communicator;
     this.communicator = null;
+    this.lockSurfaceConfigured = false;
     this.evenHubSessionSuspended = false;
     this.evenHubResumePromise = null;
 
@@ -1073,6 +1229,7 @@ class DashboardController {
       stopForegroundNotification();
       this.faceclawWakeLeaseSupported = false;
       this.faceclawWakeLeaseState = null;
+      this.wearNotifySupported = false;
       this.setPhase("disconnected");
       this.setStatus("Disconnected.");
       this.appendLog("Disconnected from the glasses.");
@@ -1225,6 +1382,28 @@ class DashboardController {
     let frameOwned = false;
     try {
       const inputEvent = rawInputEventToInputEvent(event);
+      if (this.glassesLocked) {
+        const ringDoubleTap =
+          inputEvent.type === "double-click" &&
+          event.eventSource === EventSourceType.TOUCH_EVENT_FROM_RING;
+        const suspendedDisplayWake = inputEvent.type === "display-wake";
+        if (ringDoubleTap || suspendedDisplayWake) {
+          if (shell.isScreenOn()) {
+            // A normal ring double-tap still turns the locked display off.
+            // display-wake is directional and can only turn an off display on.
+            if (ringDoubleTap) shell.sleep();
+          } else {
+            shell.wake("sidebar");
+            const ready = await this.ensureEvenHubSessionActive();
+            if (!ready) {
+              this.appendLog("EvenHub wake barrier timed out for locked display");
+            }
+          }
+          frameTimings.finishFrame(frameId, "locked display toggled");
+          frameOwned = true;
+        }
+        return;
+      }
       const wakewordShouldWake =
         event.kind === "even-ai" &&
         event.eventType === EvenAIStatus.EVEN_AI_WAKE_UP &&
