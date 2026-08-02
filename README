@@ -33,7 +33,8 @@ To install, run
  * A voice assistant that wakes up when you say "Hey Even", transcribes text
    with an on-device model, OpenAI Whisper, or ElevenLabs API, and responds
    to queries and commands using an Anthropic or OpenAI model (requires an API
-   key).
+   key), or using your own long-running OpenClaw agent (see "Connecting an
+   external agent" below).
  * Multitasking, with an app-switcher sidebar and app launcher
  * Supports full-screen apps using the full 640x480 display area (rather than
    the 576x288 that EvenHub apps can use)
@@ -58,6 +59,25 @@ To install, run
  * Dual-language NativeScript architecture with Java for the multithreaded
    Android API and bluetooth stack bits, Typescript for the bits you want to
    hack on
+
+## Connecting an external agent (OpenClaw)
+
+Instead of calling an LLM API directly from the phone, the voice assistant
+can route queries to your own long-running agent, which also gets access to
+the glasses' tools (show alerts, read notifications, control media, type
+into apps including terminals) both during conversations and proactively. This
+works through the faceclaw-agent-bridge OpenClaw plugin
+(https://github.com/jimrandomh/faceclaw-agent-bridge): the phone dials out to
+it over a websocket (typically across a tailnet).
+
+Setup lives in the faceclaw-agent-bridge repository's README. It covers
+both the OpenClaw-host side (plugin install and configuration) and the
+phone side, which can be configured either by hand in Settings > Assistant
+on the glasses, or over adb using scripts/pull_config.sh and
+scripts/push_config.sh from this repo; the instructions are written so an
+OpenClaw agent with the phone plugged into its host can perform the whole
+setup itself. Note that a pulled settings file contains your API keys, so
+treat it as a secret (the default output path is gitignored here).
 
 ## Additional Caveats
 

@@ -29,3 +29,6 @@ App_Resources/Android/src/main/assets/faceclaw-voice-asr/
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
+
+# pull_config.sh output: the phone's live settings, including API keys
+faceclaw_settings.xml
