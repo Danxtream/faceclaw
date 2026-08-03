@@ -19,7 +19,7 @@ import { isNotificationListenerEnabled, requestNotificationListenerAccess } from
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage } from "./firmware-compat";
-import { findSoundEffect, playSoundEffect } from "../ui/apps/sound-effects";
+import { findSoundEffect, playSoundEffect } from "../ui/sound-effects";
 import { isWelcomeSoundPending, setWelcomeSoundPending } from "../phone-ui/onboarding-state";
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
@@ -36,51 +36,51 @@ import {
   createLauncherWindow,
   LAUNCHER_SURFACE_ID,
   type LauncherAppEntry,
-} from "../ui/shell/launcher-app";
+} from "../apps/launcher/launcher-app";
 import {
   createSettingsAppWindow,
   SETTINGS_SURFACE_ID,
   SETTINGS_WINDOW_ID,
   type SettingsAppWindow,
-} from "../ui/shell/settings-app";
+} from "../apps/settings/settings-app";
 import {
   createNotificationsAppWindow,
   NOTIFICATIONS_SURFACE_ID,
   NOTIFICATIONS_WINDOW_ID,
-} from "../ui/shell/notifications-app";
+} from "../apps/notifications/notifications-app";
 import {
   createCalendarAppWindow,
   CALENDAR_SURFACE_ID,
   CALENDAR_WINDOW_ID,
-} from "../ui/shell/calendar-app";
+} from "../apps/calendar/calendar-app";
 import {
   createWeatherAppWindow,
   WEATHER_SURFACE_ID,
   WEATHER_WINDOW_ID,
-} from "../ui/shell/weather-app";
+} from "../apps/weather/weather-app";
 import {
   createDebugTestsAppWindow,
   DEBUG_TESTS_SURFACE_ID,
   DEBUG_TESTS_WINDOW_ID,
-} from "../ui/shell/debug-tests-app";
+} from "../apps/debug-tests/debug-tests-app";
 import {
   createFilesAppWindow,
   createImageDocumentWindow,
   createTextDocumentWindow,
   FILES_SURFACE_ID,
   FILES_WINDOW_ID,
-} from "../ui/shell/files-app";
+} from "../apps/files/files-app";
 import {
   createNightscoutAppWindow,
   NIGHTSCOUT_SURFACE_ID,
   NIGHTSCOUT_WINDOW_ID,
-} from "../ui/shell/nightscout-app";
-import { createMusicAppWindow, MUSIC_SURFACE_ID, MUSIC_WINDOW_ID } from "../ui/shell/music-app";
+} from "../apps/nightscout/nightscout-app";
+import { createMusicAppWindow, MUSIC_SURFACE_ID, MUSIC_WINDOW_ID } from "../apps/music/music-app";
 import {
   createTranscribeAppWindow,
   TRANSCRIBE_SURFACE_ID,
   TRANSCRIBE_WINDOW_ID,
-} from "../ui/shell/transcribe-app";
+} from "../apps/transcribe/transcribe-app";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, type WindowHeightMode } from "../ui/shell/geometry";
@@ -1539,19 +1539,19 @@ class DashboardController {
     // Worker paths must be string literals for the webpack worker loader.
     let worker: Worker;
     if (appId === "timer") {
-      worker = new Worker("../workers/timer-app.worker");
+      worker = new Worker("../apps/timer/timer-app.worker");
     } else if (appId === "terminal") {
-      worker = new Worker("../workers/terminal-app.worker");
+      worker = new Worker("../apps/terminal/terminal-app.worker");
     } else if (appId === "navigate") {
-      worker = new Worker("../workers/navigate-app.worker");
+      worker = new Worker("../apps/navigate/navigate-app.worker");
     } else if (appId === "blocks") {
-      worker = new Worker("../workers/blocks-app.worker");
+      worker = new Worker("../apps/blocks/blocks-app.worker");
     } else if (appId === "minesweeper") {
-      worker = new Worker("../workers/minesweeper-app.worker");
+      worker = new Worker("../apps/minesweeper/minesweeper-app.worker");
     } else if (appId === "freecell") {
-      worker = new Worker("../workers/freecell-app.worker");
+      worker = new Worker("../apps/freecell/freecell-app.worker");
     } else if (appId === "pinball") {
-      worker = new Worker("../workers/pinball-app.worker");
+      worker = new Worker("../apps/pinball/pinball-app.worker");
     } else {
       return null;
     }

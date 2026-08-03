@@ -4,8 +4,8 @@ import { EvenAIStatus, EventSourceType, OsEventTypeList } from "../../g2/events"
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
 import { DashboardInputEvent, Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
 import { MenuLayer, type MenuItem } from "../menu";
-import { VoiceInputLayer, type VoiceSendTarget } from "../apps/voice-input";
-import { AssistantLayer } from "../apps/assistant";
+import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
+import { AssistantLayer } from "./assistant";
 import { AssistantSession, type AssistantBackendConfig } from "../../assistant/session";
 import { resolveAssistantModel } from "../../assistant/models";
 import type { AssistantContext } from "../../assistant/types";

@@ -5,7 +5,7 @@
  * mirrors what the user can do from the launcher grid and the sidebar.
  */
 import { shell, type ShellWindow } from "../ui/shell/shell";
-import type { LauncherAppEntry } from "../ui/shell/launcher-app";
+import type { LauncherAppEntry } from "../apps/launcher/launcher-app";
 import {
   disbandFolder,
   FOLDER_NAME_MAX_LENGTH,
@@ -13,7 +13,7 @@ import {
   getFolders,
   resolveFolderName,
   setAppFolder,
-} from "../ui/shell/launcher-folders";
+} from "../apps/launcher/launcher-folders";
 import { toolRegistry, type ToolRegistry, type ToolResult } from "./tool-registry";
 
 export type WindowToolsOptions = {

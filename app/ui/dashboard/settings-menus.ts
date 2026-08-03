@@ -3,7 +3,7 @@ import { getDefaultSmallFont } from "../../graphics/bdffont";
 import type { GrayImage } from "../../graphics/image";
 import { getDashboardLogo } from "../../graphics/logo";
 import { wrapText } from "../../graphics/textwrap";
-import { TextViewerLayer } from "../apps/text-viewer";
+import { TextViewerLayer } from "../../apps/files/text-viewer";
 import type { MenuItem } from "../menu";
 import { shell } from "../shell/shell";
 import {
