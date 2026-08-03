@@ -15,6 +15,7 @@ import {
 import type { DashboardInputEvent } from "../ui/layers";
 import { defaultWindowMenuItems, WindowMenu } from "../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../ui/shell/worker-window";
+import type { ToolResult, ToolSpec } from "../assistant/tool-registry";
 import {
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
@@ -66,6 +67,45 @@ type CountdownTimer = {
   expiryTimeout: ReturnType<typeof setTimeout> | null;
 };
 
+const TIMER_TOOLS: ToolSpec[] = [
+  {
+    name: "set_timer",
+    description:
+      "Start a new countdown timer. Give the duration as hours/minutes/seconds; at least one must be nonzero. Returns the timer's number and when it will finish.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        hours: { type: "number", description: "Hours component of the duration (default 0)." },
+        minutes: { type: "number", description: "Minutes component of the duration (default 0)." },
+        seconds: { type: "number", description: "Seconds component of the duration (default 0)." },
+      },
+      additionalProperties: false,
+    },
+    availability: "open",
+  },
+  {
+    name: "list_timers",
+    description:
+      "List the countdown timers: each timer's number, its original duration, and the time remaining (or that it has finished).",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    availability: "open",
+  },
+  {
+    name: "cancel_timer",
+    description:
+      "Cancel a running countdown timer, or dismiss a finished one. Give the timer number from list_timers; it may be omitted when only one timer exists. Pass all=true to clear every timer.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        timer: { type: "number", description: "1-based timer number, as shown in the timer list." },
+        all: { type: "boolean", description: "Clear all timers instead of a single one." },
+      },
+      additionalProperties: false,
+    },
+    availability: "open",
+  },
+];
+
 const windows = new Map<string, TimerWindow>();
 const timers: CountdownTimer[] = [];
 let screenOn = true;
@@ -100,6 +140,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         renderTimer: null,
         lastSubmittedFingerprint: "",
       });
+      post({ type: "set-tools", windowId: message.windowId, tools: TIMER_TOOLS });
       syncExpiredTimers();
       break;
     case "close-window": {
@@ -138,8 +179,107 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       screenOn = message.on;
       for (const window of windows.values()) updateRenderTimer(window);
       break;
+    case "tool-call": {
+      let result: ToolResult;
+      try {
+        result = handleTimerTool(message.name, message.args);
+      } catch (error) {
+        result = { ok: false, error: String((error as Error)?.message ?? error) };
+      }
+      post({ type: "tool-result", callId: message.callId, result });
+      break;
+    }
   }
 };
+
+// ---------------------------------------------------------------------------
+// Tools
+
+function handleTimerTool(name: string, args: any): ToolResult {
+  syncExpiredTimers();
+  switch (name) {
+    case "set_timer": {
+      const hours = toolDurationField(args?.hours, "hours");
+      const minutes = toolDurationField(args?.minutes, "minutes");
+      const seconds = toolDurationField(args?.seconds, "seconds");
+      const durationMs = Math.round(((hours * 60 + minutes) * 60 + seconds) * 1000);
+      if (durationMs <= 0) return { ok: false, error: "set_timer requires a duration longer than zero" };
+      addTimer(durationMs);
+      const timer = timers[timers.length - 1]!;
+      refreshWindowsAfterToolChange();
+      return {
+        ok: true,
+        content:
+          `Started a ${formatDuration(durationMs)} timer (timer ${timers.length}), ` +
+          `finishing at ${formatClock(timer.endAtMs)}.`,
+      };
+    }
+    case "list_timers": {
+      if (timers.length === 0) return { ok: true, content: "No timers are set." };
+      return { ok: true, content: timers.map(describeTimer).join("\n") };
+    }
+    case "cancel_timer": {
+      if (args?.all === true) {
+        if (timers.length === 0) return { ok: true, content: "No timers are set." };
+        const count = timers.length;
+        for (const timer of [...timers]) removeTimer(timer);
+        refreshWindowsAfterToolChange();
+        return { ok: true, content: count === 1 ? "Cleared the timer." : `Cleared ${count} timers.` };
+      }
+      if (timers.length === 0) return { ok: true, content: "No timers are set." };
+      let timer: CountdownTimer;
+      if (args?.timer === undefined || args?.timer === null) {
+        if (timers.length > 1) {
+          return {
+            ok: false,
+            error: `There are ${timers.length} timers; give the timer number.\n${timers.map(describeTimer).join("\n")}`,
+          };
+        }
+        timer = timers[0]!;
+      } else {
+        const index = Math.floor(Number(args.timer));
+        if (!Number.isFinite(index) || index < 1 || index > timers.length) {
+          return { ok: false, error: `No timer ${args.timer}; there are ${timers.length} timers.` };
+        }
+        timer = timers[index - 1]!;
+      }
+      const description = describeTimer(timer);
+      removeTimer(timer);
+      refreshWindowsAfterToolChange();
+      return { ok: true, content: `${timer.expired ? "Dismissed" : "Canceled"}: ${description}` };
+    }
+    default:
+      return { ok: false, error: `Unknown timer tool: ${name}` };
+  }
+}
+
+function toolDurationField(value: unknown, label: string): number {
+  if (value === undefined || value === null) return 0;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`Invalid ${label} value: ${value}`);
+  }
+  return parsed;
+}
+
+function describeTimer(timer: CountdownTimer): string {
+  const number = timers.indexOf(timer) + 1;
+  const duration = formatDuration(timer.durationMs);
+  if (timer.expired) return `Timer ${number}: ${duration} timer, finished.`;
+  return (
+    `Timer ${number}: ${duration} timer, ${formatCountdown(timer.endAtMs - Date.now())} remaining ` +
+    `(finishes at ${formatClock(timer.endAtMs)}).`
+  );
+}
+
+/** Repaint and re-gate every window after a tool call changed the timer list. */
+function refreshWindowsAfterToolChange(): void {
+  for (const window of windows.values()) {
+    window.timerSelection = clamp(window.timerSelection, 0, timers.length + 1);
+    updateRenderTimer(window);
+    if (window.foreground && screenOn) renderAndSubmit(window, 0);
+  }
+}
 
 /** The window's long-press menu (default entries only), created lazily. */
 function windowMenu(window: TimerWindow): WindowMenu {
@@ -567,6 +707,16 @@ function formatCountdown(remainingMs: number): string {
   const minutes = totalMinutes % 60;
   const hours = Math.floor(totalMinutes / 60);
   return hours > 0 ? `${hours}:${pad2(minutes)}:${pad2(seconds)}` : `${pad2(minutes)}:${pad2(seconds)}`;
+}
+
+function formatClock(timestampMs: number): string {
+  const date = new Date(timestampMs);
+  let hours = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const meridiem = hours >= 12 ? "PM" : "AM";
+  hours = hours % 12;
+  if (hours === 0) hours = 12;
+  return `${hours}:${minutes} ${meridiem}`;
 }
 
 function formatDuration(durationMs: number): string {
