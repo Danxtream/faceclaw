@@ -10,6 +10,13 @@ it downloads the stock firmware from Even and applies patches generated from
 https://github.com/jimrandomh/g2flash.
 
 
+## Screenshots
+
+![App launcher](screenshots/launcher.png)
+![Music player](screenshots/music-player.png)
+![Assistant settings](screenshots/settings-assistant.png)
+![Display settings](screenshots/settings-display.png)
+
 ## Installation
 
 To compile, you will need an Android SDK environment with SDK version 35
