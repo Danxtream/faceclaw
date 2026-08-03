@@ -8,14 +8,13 @@ import {
   OsEventTypeName,
 } from "./events";
 import { loadDeviceAddresses } from "./device-addresses";
-import { ensureBlePermissions, ensureFineLocationPermission, ensureVoicePermissions } from "./android-permissions";
+import { ensureBlePermissions, ensureVoicePermissions } from "./android-permissions";
 import { FaceclawCommunicatorBridge, type RawInputEvent } from "../native/faceclaw-communicator";
 import * as frameTimings from "../native/frame-timings";
 import { startForegroundNotification, stopForegroundNotification, updateForegroundNotification } from "../native/foreground-service";
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
 import { onAndroidNotificationPosted } from "../native/notification-icons";
-import { isNotificationListenerEnabled, requestNotificationListenerAccess } from "../native/notification-access";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage } from "./firmware-compat";
@@ -32,55 +31,13 @@ import { registerNavigateTools } from "../assistant/navigate-tools";
 import { assistantBridge } from "../assistant/bridge-client";
 import { registerWindowTools } from "../assistant/window-tools";
 import { WorkerAppHost } from "../ui/shell/worker-window";
+import { ALL_APPS } from "../apps/all-apps";
 import {
-  createLauncherWindow,
-  LAUNCHER_SURFACE_ID,
-  type LauncherAppEntry,
-} from "../apps/launcher/launcher-app";
-import {
-  createSettingsAppWindow,
-  SETTINGS_SURFACE_ID,
-  SETTINGS_WINDOW_ID,
-  type SettingsAppWindow,
-} from "../apps/settings/settings-app";
-import {
-  createNotificationsAppWindow,
-  NOTIFICATIONS_SURFACE_ID,
-  NOTIFICATIONS_WINDOW_ID,
-} from "../apps/notifications/notifications-app";
-import {
-  createCalendarAppWindow,
-  CALENDAR_SURFACE_ID,
-  CALENDAR_WINDOW_ID,
-} from "../apps/calendar/calendar-app";
-import {
-  createWeatherAppWindow,
-  WEATHER_SURFACE_ID,
-  WEATHER_WINDOW_ID,
-} from "../apps/weather/weather-app";
-import {
-  createDebugTestsAppWindow,
-  DEBUG_TESTS_SURFACE_ID,
-  DEBUG_TESTS_WINDOW_ID,
-} from "../apps/debug-tests/debug-tests-app";
-import {
-  createFilesAppWindow,
-  createImageDocumentWindow,
-  createTextDocumentWindow,
-  FILES_SURFACE_ID,
-  FILES_WINDOW_ID,
-} from "../apps/files/files-app";
-import {
-  createNightscoutAppWindow,
-  NIGHTSCOUT_SURFACE_ID,
-  NIGHTSCOUT_WINDOW_ID,
-} from "../apps/nightscout/nightscout-app";
-import { createMusicAppWindow, MUSIC_SURFACE_ID, MUSIC_WINDOW_ID } from "../apps/music/music-app";
-import {
-  createTranscribeAppWindow,
-  TRANSCRIBE_SURFACE_ID,
-  TRANSCRIBE_WINDOW_ID,
-} from "../apps/transcribe/transcribe-app";
+  type AppContext,
+  type AppDefinition,
+  type AppLaunchParams,
+  type TextEditorHost,
+} from "../apps/app-definition";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, type WindowHeightMode } from "../ui/shell/geometry";
@@ -159,24 +116,7 @@ const EVEN_APP_DETECTED_MESSAGE =
   "The Even Realities app appears to be running. If Faceclaw has trouble connecting, open its app settings and force stop it.";
 
 // The launcher grid's app list; also fixes the app ids apps.launch accepts.
-const LAUNCHER_APPS: LauncherAppEntry[] = [
-  { appId: "timer", label: "Timer", icon: "timer" },
-  { appId: "terminal", label: "Terminal", icon: "terminal" },
-  { appId: "files", label: "Files", icon: "folder" },
-  { appId: "music", label: "Music", icon: "music" },
-  { appId: "nightscout", label: "Nightscout", icon: "nightscout" },
-  { appId: "transcribe", label: "Transcribe", icon: "mic" },
-  { appId: "notifications", label: "Notifications", icon: "bell" },
-  { appId: "calendar", label: "Calendar", icon: "calendar" },
-  { appId: "weather", label: "Weather", icon: "cloud-sun" },
-  { appId: "navigate", label: "Navigate", icon: "map" },
-  { appId: "blocks", label: "Blocks", icon: "l-piece" },
-  { appId: "minesweeper", label: "Minesweeper", icon: "bomb" },
-  { appId: "freecell", label: "Freecell", icon: "spade" },
-  { appId: "pinball", label: "Pinball", icon: "pinball" },
-  { appId: "debug-tests", label: "Debug tests", icon: "flask-conical" },
-  { appId: "settings", label: "Settings", icon: "settings" },
-];
+const LAUNCHABLE_APPS = ALL_APPS.filter((app) => app.showInLauncher !== false);
 
 function createInitialDisplayPreview(): ImageSource | null {
   return grayImageToPreviewSource(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
@@ -281,10 +221,9 @@ class DashboardController {
   private nextShellRenderWantsFreshData = false;
   // One shared worker per app hosts all its windows; spawned on first launch.
   private readonly appHosts = new Map<string, WorkerAppHost>();
-  private nextWindowSerial = 1;
-  // The Settings app is in-process (its text editor syncs with the phone UI
-  // through this controller); tracked so edit flows reach its window.
-  private settingsApp: SettingsAppWindow | null = null;
+  // The window hosting the on-glasses text-setting editor (the Settings app
+  // registers itself); edit flows from the phone UI reach it through this.
+  private textEditorHost: TextEditorHost | null = null;
   // Other in-process singleton apps, keyed by windowId.
   private readonly inProcessApps = new Map<string, InProcessWindow>();
   private sharedActions!: Omit<LayerActions, "requestRender">;
@@ -314,7 +253,7 @@ class DashboardController {
     registerNavigateTools((appId) => this.launchApp(appId));
     // apps.* tools mirror the launcher grid and sidebar (launch, focus, close).
     registerWindowTools({
-      apps: LAUNCHER_APPS,
+      apps: LAUNCHABLE_APPS,
       launchApp: (appId) => this.launchApp(appId),
       requestShellRender: () => this.requestShellRender(),
     });
@@ -333,22 +272,11 @@ class DashboardController {
         if (on) this.requestShellRender();
       },
     });
-    // The launcher is pinned first in the sidebar and is the boot foreground.
-    shell.registerWindow(
-      createLauncherWindow({
-        actions: {
-          ...sharedActions,
-          requestRender: () => shell.foregroundWindow()?.requestRender(),
-        },
-        apps: LAUNCHER_APPS,
-        launchApp: (appId) => this.launchApp(appId),
-        submitFrame: (image, paintMs, frameId) =>
-          this.submitWindowFrame(LAUNCHER_SURFACE_ID, image, paintMs, frameId),
-        setSurfaceVisible: (visible) => {
-          this.setWindowSurfaceVisible(LAUNCHER_SURFACE_ID, visible);
-        },
-      }),
-    );
+    // Boot hooks register windows that exist from startup (the launcher,
+    // pinned first in the sidebar and the boot foreground).
+    for (const app of ALL_APPS) {
+      app.boot?.(this.buildAppContext(app));
+    }
     this.offAndroidNotification = onAndroidNotificationPosted((notificationKey) => {
       void this.handleAndroidNotificationPosted(notificationKey).catch((error) => {
         this.appendLog(`notification wake failed: ${this.formatError(error)}`);
@@ -1256,27 +1184,12 @@ class DashboardController {
     if (!shell.isScreenOn()) {
       shell.wake("sidebar");
     }
-    this.openTextDocumentWindow("Shared text", text);
-  }
-
-  /** Open a text document as its own (closeable, non-singleton) window. */
-  private openTextDocumentWindow(title: string, text: string): void {
-    const windowId = `files:doc:${this.nextWindowSerial++}`;
-    void this.launchInProcessApp(windowId, `window:${windowId}`, (options) =>
-      createTextDocumentWindow(windowId, title, text, options),
-    ).catch((error) => {
-      this.appendLog(`text document window failed: ${this.formatError(error)}`);
-    });
-  }
-
-  /** Open an image file as its own (closeable, non-singleton) window. */
-  private openImageDocumentWindow(title: string, path: string): void {
-    const windowId = `files:doc:${this.nextWindowSerial++}`;
-    void this.launchInProcessApp(windowId, `window:${windowId}`, (options) =>
-      createImageDocumentWindow(windowId, title, path, options),
-    ).catch((error) => {
-      this.appendLog(`image window failed: ${this.formatError(error)}`);
-    });
+    const handler = ALL_APPS.find((app) => app.openSharedText);
+    if (!handler?.openSharedText) {
+      this.appendLog("no app handles shared text");
+      return;
+    }
+    handler.openSharedText(this.buildAppContext(handler), "Shared text", text);
   }
 
   private startTextSettingEdit(setting: ConfigSettingString): void {
@@ -1349,8 +1262,8 @@ class DashboardController {
   finishActiveTextSettingEdit(): void {
     if (!this.activeTextSetting) return;
     this.endTextSettingEdit();
-    if (this.settingsApp?.closeTextEditor()) {
-      this.settingsApp.requestRender();
+    if (this.textEditorHost?.closeTextEditor()) {
+      this.textEditorHost.requestRender();
     }
   }
 
@@ -1370,8 +1283,8 @@ class DashboardController {
 
   private previewOrRenderAfterTextSettingChange(): void {
     // Echo phone-side keystrokes into the Settings app's glasses editor.
-    if (this.settingsApp?.isTextEditorOnTop()) {
-      this.settingsApp.requestRender();
+    if (this.textEditorHost?.isTextEditorOnTop()) {
+      this.textEditorHost.requestRender();
     }
   }
 
@@ -1466,40 +1379,6 @@ class DashboardController {
     }
   }
 
-  /** Launch or focus the (in-process, singleton) Settings app, optionally on a section. */
-  private async launchSettingsApp(section?: string): Promise<void> {
-    if (this.settingsApp) {
-      if (section) this.settingsApp.focusSection(section);
-      shell.focusWindow(SETTINGS_WINDOW_ID);
-      this.requestShellRender();
-      return;
-    }
-    const settingsApp = createSettingsAppWindow({
-      actions: {
-        ...this.sharedActions,
-        requestRender: () => {}, // rebound by createInProcessWindow
-      },
-      submitFrame: (image, paintMs, frameId) =>
-        this.submitWindowFrame(SETTINGS_SURFACE_ID, image, paintMs, frameId),
-      setSurfaceVisible: (visible) => this.setWindowSurfaceVisible(SETTINGS_SURFACE_ID, visible),
-      removeSurface: () => this.removeWindowSurface(SETTINGS_SURFACE_ID),
-      onClosed: () => {
-        // Closing mid-edit must not leave the phone-side editor dangling.
-        this.endTextSettingEdit();
-        this.settingsApp = null;
-      },
-    });
-    this.settingsApp = settingsApp;
-    if (section) settingsApp.focusSection(section);
-    shell.registerWindow(settingsApp.window);
-    // Configure the surface before foregrounding so the first frame has
-    // somewhere to land.
-    await this.configureWindowSurface(SETTINGS_SURFACE_ID, false, settingsApp.window.heightMode);
-    shell.focusWindow(SETTINGS_WINDOW_ID);
-    this.requestShellRender();
-    this.appendLog("launched settings");
-  }
-
   /** Launch or focus an in-process singleton app (notifications, debug tests). */
   private async launchInProcessApp(
     windowId: string,
@@ -1533,44 +1412,45 @@ class DashboardController {
   }
 
   /** Get or spawn the worker host for an app. */
-  private ensureAppHost(appId: string): WorkerAppHost | null {
+  private ensureWorkerHost(appId: string, createWorker: () => Worker): WorkerAppHost {
     const existing = this.appHosts.get(appId);
     if (existing) return existing;
-    // Worker paths must be string literals for the webpack worker loader.
-    let worker: Worker;
-    if (appId === "timer") {
-      worker = new Worker("../apps/timer/timer-app.worker");
-    } else if (appId === "terminal") {
-      worker = new Worker("../apps/terminal/terminal-app.worker");
-    } else if (appId === "navigate") {
-      worker = new Worker("../apps/navigate/navigate-app.worker");
-    } else if (appId === "blocks") {
-      worker = new Worker("../apps/blocks/blocks-app.worker");
-    } else if (appId === "minesweeper") {
-      worker = new Worker("../apps/minesweeper/minesweeper-app.worker");
-    } else if (appId === "freecell") {
-      worker = new Worker("../apps/freecell/freecell-app.worker");
-    } else if (appId === "pinball") {
-      worker = new Worker("../apps/pinball/pinball-app.worker");
-    } else {
-      return null;
-    }
     const host = new WorkerAppHost({
       appId,
-      worker,
+      worker: createWorker(),
       configureSurface: (surfaceId, visible, heightMode) =>
         this.configureWindowSurface(surfaceId, visible, heightMode),
       setSurfaceVisible: (surfaceId, visible) => this.setWindowSurfaceVisible(surfaceId, visible),
       removeSurface: (surfaceId) => this.removeWindowSurface(surfaceId),
       requestShellRender: () => this.requestShellRender(),
       openSettings: (section) => {
-        void this.launchSettingsApp(section).catch((error) => {
+        void this.launchApp("settings", { section }).catch((error) => {
           this.appendLog(`settings launch failed: ${this.formatError(error)}`);
         });
       },
     });
     this.appHosts.set(appId, host);
     return host;
+  }
+
+  /** The services an app's launch/boot callbacks may use; see AppContext. */
+  private buildAppContext(app: AppDefinition): AppContext {
+    return {
+      appId: app.appId,
+      apps: ALL_APPS,
+      actions: this.sharedActions,
+      launchApp: (appId, params) => this.launchApp(appId, params),
+      launchInProcessApp: (windowId, surfaceId, create) => this.launchInProcessApp(windowId, surfaceId, create),
+      ensureWorkerHost: (createWorker) => this.ensureWorkerHost(app.appId, createWorker),
+      submitWindowFrame: (surfaceId, image, paintMs, frameId) =>
+        this.submitWindowFrame(surfaceId, image, paintMs, frameId),
+      setWindowSurfaceVisible: (surfaceId, visible) => this.setWindowSurfaceVisible(surfaceId, visible),
+      requestShellRender: () => this.requestShellRender(),
+      appendLog: (message) => this.appendLog(message),
+      setTextEditorHost: (host) => {
+        this.textEditorHost = host;
+      },
+    };
   }
 
   /** Save which apps are open (and which is foreground) for restoreOpenApps. */
@@ -1596,7 +1476,7 @@ class DashboardController {
     this.openAppsRestored = true;
     const saved = loadPersistedOpenApps();
     if (!saved.open.length) return;
-    const known = new Set(LAUNCHER_APPS.map((app) => app.appId));
+    const known = new Set(ALL_APPS.map((app) => app.appId));
     this.suppressOpenAppsPersist = true;
     try {
       for (const appId of saved.open) {
@@ -1620,168 +1500,17 @@ class DashboardController {
   }
 
   /**
-   * Launch an app from the launcher: open a window in the app's shared
-   * worker (spawned on first launch) and foreground it. Launching an app
-   * with an open singleton window (the terminal hub, settings) focuses it.
+   * Launch an app by id: the launcher grid, assistant tools, window-menu
+   * Settings item, and open-apps restore all come through here. Apps with an
+   * open window focus it instead of opening another.
    */
-  private async launchApp(appId: string): Promise<void> {
-    if (appId === "settings") {
-      await this.launchSettingsApp();
-      return;
-    }
-    if (appId === "notifications") {
-      // Without notification-listener access the tray reads as empty; prompt
-      // the user on the phone so the on-glasses "grant permission" message is
-      // actionable. The app still opens to show that message.
-      if (!isNotificationListenerEnabled()) {
-        requestNotificationListenerAccess();
-      }
-      await this.launchInProcessApp(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID, createNotificationsAppWindow);
-      return;
-    }
-    if (appId === "calendar") {
-      await this.launchInProcessApp(CALENDAR_WINDOW_ID, CALENDAR_SURFACE_ID, createCalendarAppWindow);
-      return;
-    }
-    if (appId === "weather") {
-      await this.launchInProcessApp(WEATHER_WINDOW_ID, WEATHER_SURFACE_ID, createWeatherAppWindow);
-      return;
-    }
-    if (appId === "debug-tests") {
-      await this.launchInProcessApp(DEBUG_TESTS_WINDOW_ID, DEBUG_TESTS_SURFACE_ID, createDebugTestsAppWindow);
-      return;
-    }
-    if (appId === "nightscout") {
-      await this.launchInProcessApp(NIGHTSCOUT_WINDOW_ID, NIGHTSCOUT_SURFACE_ID, createNightscoutAppWindow);
-      return;
-    }
-    if (appId === "music") {
-      await this.launchInProcessApp(MUSIC_WINDOW_ID, MUSIC_SURFACE_ID, createMusicAppWindow);
-      return;
-    }
-    if (appId === "transcribe") {
-      await this.launchInProcessApp(TRANSCRIBE_WINDOW_ID, TRANSCRIBE_SURFACE_ID, (options) =>
-        createTranscribeAppWindow({
-          ...options,
-          startContinuousVoiceCapture: () => this.startContinuousVoiceCapture(),
-          stopContinuousVoiceCapture: () => this.stopContinuousVoiceCapture(),
-        }),
-      );
-      return;
-    }
-    if (appId === "files") {
-      await this.launchInProcessApp(FILES_WINDOW_ID, FILES_SURFACE_ID, (options) =>
-        createFilesAppWindow({
-          ...options,
-          openDocumentWindow: (title, text) => this.openTextDocumentWindow(title, text),
-          openImageWindow: (title, path) => this.openImageDocumentWindow(title, path),
-        }),
-      );
-      return;
-    }
-    const host = this.ensureAppHost(appId);
-    if (!host) {
+  private async launchApp(appId: string, params?: AppLaunchParams): Promise<void> {
+    const app = ALL_APPS.find((entry) => entry.appId === appId);
+    if (!app) {
       this.appendLog(`unknown app: ${appId}`);
       return;
     }
-    if (appId === "terminal") {
-      const existingHub = shell.getWindows().find((w) => w.windowId === "terminal:hub");
-      if (existingHub) {
-        shell.focusWindow(existingHub.windowId);
-        this.requestShellRender();
-        return;
-      }
-      host.openWindow({ windowId: "terminal:hub", title: "Terminal", iconLetter: "T", icon: "terminal", focus: true });
-      this.appendLog("launched terminal:hub");
-      return;
-    }
-    if (appId === "timer") {
-      const existing = shell.getWindows().find((window) => window.appId === "timer");
-      if (existing) {
-        shell.focusWindow(existing.windowId);
-        this.requestShellRender();
-        return;
-      }
-      host.openWindow({ windowId: "timer:main", title: "Timer", iconLetter: "T", icon: "timer", focus: true });
-      this.appendLog("launched timer:main");
-      return;
-    }
-    if (appId === "blocks") {
-      const existing = shell.getWindows().find((window) => window.appId === "blocks");
-      if (existing) {
-        shell.focusWindow(existing.windowId);
-        this.requestShellRender();
-        return;
-      }
-      host.openWindow({ windowId: "blocks:main", title: "Blocks", iconLetter: "B", icon: "l-piece", focus: true });
-      this.appendLog("launched blocks:main");
-      return;
-    }
-    if (appId === "minesweeper") {
-      const existing = shell.getWindows().find((window) => window.appId === "minesweeper");
-      if (existing) {
-        shell.focusWindow(existing.windowId);
-        this.requestShellRender();
-        return;
-      }
-      host.openWindow({
-        windowId: "minesweeper:main",
-        title: "Minesweeper",
-        iconLetter: "M",
-        icon: "bomb",
-        focus: true,
-      });
-      this.appendLog("launched minesweeper:main");
-      return;
-    }
-    if (appId === "freecell") {
-      const existing = shell.getWindows().find((window) => window.appId === "freecell");
-      if (existing) {
-        shell.focusWindow(existing.windowId);
-        this.requestShellRender();
-        return;
-      }
-      host.openWindow({
-        windowId: "freecell:main",
-        title: "Freecell",
-        iconLetter: "F",
-        icon: "spade",
-        focus: true,
-      });
-      this.appendLog("launched freecell:main");
-      return;
-    }
-    if (appId === "pinball") {
-      const existing = shell.getWindows().find((window) => window.appId === "pinball");
-      if (existing) {
-        shell.focusWindow(existing.windowId);
-        this.requestShellRender();
-        return;
-      }
-      host.openWindow({
-        windowId: "pinball:main",
-        title: "Pinball",
-        iconLetter: "P",
-        icon: "pinball",
-        focus: true,
-      });
-      this.appendLog("launched pinball:main");
-      return;
-    }
-    if (appId === "navigate") {
-      // Navigation needs precise location; prompt on the phone while the
-      // window opens (the worker can't show permission dialogs).
-      void ensureFineLocationPermission().catch(() => {});
-      const existing = shell.getWindows().find((window) => window.appId === "navigate");
-      if (existing) {
-        shell.focusWindow(existing.windowId);
-        this.requestShellRender();
-        return;
-      }
-      host.openWindow({ windowId: "navigate:main", title: "Navigate", iconLetter: "N", icon: "map", focus: true });
-      this.appendLog("launched navigate:main");
-      return;
-    }
+    await app.launch(this.buildAppContext(app), params);
   }
 
   /** Create/refresh a window surface on the compositor, if connected. */
@@ -1911,8 +1640,6 @@ class DashboardController {
   }
 
   private async handleAndroidNotificationPosted(notificationKey: string): Promise<void> {
-    // Keep the Notifications app's list fresh if it is open.
-    this.inProcessApps.get(NOTIFICATIONS_WINDOW_ID)?.requestRender();
     if (!notificationKey) {
       this.requestShellRender();
       return;

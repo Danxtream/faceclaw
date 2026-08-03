@@ -2,7 +2,7 @@ import { GrayImage } from "../../graphics/image";
 import { LayerActions } from "../../ui/layers";
 import { EditTextSettingLayer } from "../../ui/dashboard-settings";
 import { createSettingsPanelLayer } from "../../ui/dashboard/settings-menus";
-import { createInProcessWindow } from "../../ui/shell/in-process-window";
+import { createInProcessWindow, type InProcessWindow } from "../../ui/shell/in-process-window";
 import { type ShellWindow } from "../../ui/shell/shell";
 
 export const SETTINGS_WINDOW_ID = "settings";
@@ -18,6 +18,8 @@ export type SettingsAppOptions = {
 
 export type SettingsAppWindow = {
   window: ShellWindow;
+  /** The full in-process window record, for hosts that manage window lifecycle. */
+  inProcess: InProcessWindow;
   requestRender: () => void;
   /** Select a section in the left column by label (e.g. "Terminal"). */
   focusSection: (label: string) => void;
@@ -35,7 +37,7 @@ export type SettingsAppWindow = {
  */
 export function createSettingsAppWindow(options: SettingsAppOptions): SettingsAppWindow {
   const panel = createSettingsPanelLayer();
-  const { window, stack, requestRender } = createInProcessWindow({
+  const inProcess = createInProcessWindow({
     appId: "settings",
     windowId: SETTINGS_WINDOW_ID,
     title: "Settings",
@@ -51,8 +53,10 @@ export function createSettingsAppWindow(options: SettingsAppOptions): SettingsAp
     removeSurface: options.removeSurface,
     onClosed: options.onClosed,
   });
+  const { window, stack, requestRender } = inProcess;
   return {
     window,
+    inProcess,
     requestRender,
     focusSection: (label) => {
       panel.focusSection(label);

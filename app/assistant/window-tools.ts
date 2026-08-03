@@ -5,7 +5,7 @@
  * mirrors what the user can do from the launcher grid and the sidebar.
  */
 import { shell, type ShellWindow } from "../ui/shell/shell";
-import type { LauncherAppEntry } from "../apps/launcher/launcher-app";
+import type { AppDefinition } from "../apps/app-definition";
 import {
   disbandFolder,
   FOLDER_NAME_MAX_LENGTH,
@@ -18,7 +18,7 @@ import { toolRegistry, type ToolRegistry, type ToolResult } from "./tool-registr
 
 export type WindowToolsOptions = {
   /** The launcher's app list; fixes the ids apps.launch accepts. */
-  apps: LauncherAppEntry[];
+  apps: readonly AppDefinition[];
   /** Launch (or focus) an app exactly as the launcher grid would. */
   launchApp: (appId: string) => Promise<void> | void;
   /** Repaint the shell surface so the sidebar reflects a focus change. */
