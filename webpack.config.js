@@ -9,7 +9,7 @@ module.exports = (env) => {
 
 	// Bundle the top-level project docs so the Settings app's About section
 	// can display them (see app/ui/dashboard/settings-menus.ts).
-	for (const doc of ["README", "LICENSE", "PRIVACY"]) {
+	for (const doc of ["README.md", "LICENSE", "PRIVACY"]) {
 		webpack.Utils.addCopyRule({
 			from: resolve(__dirname, doc),
 			to: "about/",

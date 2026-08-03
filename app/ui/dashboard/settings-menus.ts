@@ -125,7 +125,7 @@ function settingsSections(): SettingsSection[] {
       // The version/license blurb (renderDetail) draws above the bundled
       // project docs, in both the preview and the focused states.
       items: [
-        bundledDocMenuItem("README", "README"),
+        bundledDocMenuItem("README.md", "README"),
         bundledDocMenuItem("LICENSE", "License"),
         bundledDocMenuItem("PRIVACY", "Privacy policy"),
       ],
