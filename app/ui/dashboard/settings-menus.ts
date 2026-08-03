@@ -20,6 +20,8 @@ import {
   elevenLabsApiKeySetting,
   mapboxApiKeySetting,
   openAiApiKeySetting,
+  roamApiTokenSetting,
+  roamGraphNameSetting,
   enumSettingMenuItem,
   firmwareDebugFlagsSetting,
   lockScreenEnabledSetting,
@@ -110,6 +112,13 @@ function settingsSections(): SettingsSection[] {
         textSettingMenuItem(terminalAuthTokenSetting),
         textSettingMenuItem(terminalLaunchPresetsSetting),
         toggleSettingMenuItem(terminalWakeOnBellSetting),
+      ],
+    },
+    {
+      label: "Roam",
+      items: [
+        textSettingMenuItem(roamGraphNameSetting),
+        textSettingMenuItem(roamApiTokenSetting),
       ],
     },
     {

@@ -21,6 +21,7 @@ import { wrapText } from "../graphics/textwrap";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
 import { registerSystemTools } from "../assistant/system-tools";
 import { registerNavigateTools } from "../assistant/navigate-tools";
+import { registerRoamTools } from "../assistant/roam-tools";
 import { assistantBridge } from "../assistant/bridge-client";
 import { registerWindowTools } from "../assistant/window-tools";
 import { WorkerAppHost } from "../ui/shell/worker-window";
@@ -215,6 +216,8 @@ class DashboardController {
     registerSystemTools();
     // nav.* tools launch the Navigate app on demand, so they need launchApp.
     registerNavigateTools((appId) => this.launchApp(appId));
+    // roam.* tools launch the Roam app on demand likewise.
+    registerRoamTools((appId) => this.launchApp(appId));
     // apps.* tools mirror the launcher grid and sidebar (launch, focus, close).
     registerWindowTools({
       apps: LAUNCHABLE_APPS,

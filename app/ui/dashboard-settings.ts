@@ -516,6 +516,30 @@ export const terminalWakeOnBellSetting = new ConfigSettingBoolean({
     "When a terminal rings its bell while the glasses are asleep, wake them and focus that terminal's window (or the terminals list if it has no window open).",
 });
 
+export const roamGraphNameSetting = new ConfigSettingString({
+  id: "roam-graph-name",
+  label: "Roam graph name",
+  storageKey: "integrations.roam.graphName",
+  defaultValue: "",
+  editorTitle: "Roam graph name",
+  glassesEditTitle: "Edit Roam graph",
+  normalize: (value) => (value ?? "").replace(/[\x00-\x1f]+/g, "").trim(),
+  formatValue: emptySettingDisplay,
+  description: "Name of the Roam Research graph the Roam app reads and writes (as shown in Roam's graph switcher).",
+});
+
+export const roamApiTokenSetting = new ConfigSettingString({
+  id: "roam-api-token",
+  label: "Roam API token",
+  storageKey: "integrations.roam.apiToken",
+  defaultValue: "",
+  editorTitle: "Roam API token (roam-graph-token-...)",
+  glassesEditTitle: "Edit Roam token",
+  normalize: (value) => (value ?? "").replace(/[\x00-\x1f]+/g, "").trim(),
+  formatValue: maskToken,
+  description: "API token for the graph, created in Roam under Settings > Graph > API tokens. Needs edit access for checking off todos.",
+});
+
 export const nightscoutSiteUrlSetting = new ConfigSettingString({
   id: "nightscout-site-url",
   label: "Nightscout site URL",
