@@ -422,10 +422,6 @@ export class MainViewModel extends Observable {
     this.showLog = !this.showLog;
   }
 
-  onSystemCardNameTextChange(args: { value?: string; object?: { text?: string } }): void {
-    dashboardController.setSystemCardName(args.object?.text ?? args.value ?? "");
-  }
-
   onTextSettingTextChange(args: { value?: string; object?: { text?: string } }): void {
     dashboardController.setActiveTextSettingValue(args.object?.text ?? args.value ?? "");
   }

@@ -1,12 +1,5 @@
 import { ImageSource } from "@nativescript/core";
-import {
-  EvenAIStatus,
-  EvenAIStatusName,
-  EventSourceType,
-  EventSourceTypeName,
-  OsEventTypeList,
-  OsEventTypeName,
-} from "./events";
+import { EvenAIStatus, EvenAIStatusName, EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName } from "./events";
 import { loadDeviceAddresses } from "./device-addresses";
 import { ensureBlePermissions, ensureVoicePermissions } from "./android-permissions";
 import { FaceclawCommunicatorBridge, type RawInputEvent } from "../native/faceclaw-communicator";
@@ -32,41 +25,12 @@ import { assistantBridge } from "../assistant/bridge-client";
 import { registerWindowTools } from "../assistant/window-tools";
 import { WorkerAppHost } from "../ui/shell/worker-window";
 import { ALL_APPS } from "../apps/all-apps";
-import {
-  type AppContext,
-  type AppDefinition,
-  type AppLaunchParams,
-  type TextEditorHost,
-} from "../apps/app-definition";
+import { type AppContext, type AppDefinition, type AppLaunchParams, type TextEditorHost } from "../apps/app-definition";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions } from "../ui/layers";
-import {
-  assistantAllowProactiveSetting,
-  assistantBackendSetting,
-  assistantBridgeHostSetting,
-  assistantBridgePortSetting,
-  assistantBridgeTokenSetting,
-  brightnessSetting,
-  brightnessSettingToLevel,
-  elevenLabsApiKeySetting,
-  openAiApiKeySetting,
-  nightscoutApiTokenSetting,
-  firmwareDebugFlagsSetting,
-  lockScreenEnabledSetting,
-  nightscoutSiteUrlSetting,
-  onAnySettingChanged,
-  saveVoiceRecordingsSetting,
-  screenTimeoutSetting,
-  screenTimeoutSettingToMs,
-  suspendEvenHubWhenScreenOffSetting,
-  systemCardNameSetting,
-  verticalPositionSetting,
-  voiceProviderSetting,
-  wakeWordActionSetting,
-  type ConfigSettingString,
-} from "../ui/dashboard-settings";
+import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, elevenLabsApiKeySetting, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, saveVoiceRecordingsSetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 
 type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" | "disconnecting";
@@ -791,10 +755,6 @@ class DashboardController {
 
   openEvenAppSettings(): void {
     openEvenAppSettings();
-  }
-
-  setSystemCardName(name: string): void {
-    this.updateTextSetting(systemCardNameSetting, name);
   }
 
   setActiveTextSettingValue(value: string): void {

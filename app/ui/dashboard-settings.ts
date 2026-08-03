@@ -193,18 +193,6 @@ export class ConfigSettingString<TId extends string = string> extends ConfigSett
 }
 
 
-export const systemCardNameSetting = new ConfigSettingString({
-  id: "dashboard-name",
-  label: "Dashboard name",
-  storageKey: "dashboard.systemCardName",
-  defaultValue: "Faceclaw",
-  editorTitle: "Dashboard name",
-  glassesEditTitle: "Edit dashboard name",
-  normalize: normalizeSystemCardName,
-  formatValue: (value) => value || "Faceclaw",
-  description: "Title text shown on the dashboard's system card.",
-});
-
 export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMode>({
   id: "batteryDisplayMode",
   label: "Battery display",
