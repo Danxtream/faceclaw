@@ -25,6 +25,24 @@ const ICON_MARGIN_X = ((SIDEBAR_COLUMN_WIDTH - ICON_SIZE) / 2) | 0;
 /** Column index of the rightmost sidebar column (the one that fills first). */
 const FIRST_COLUMN = SIDEBAR_COLUMNS - 1;
 const ICON_SPACING = 8;
+const ICON_STRIDE = ICON_SIZE + ICON_SPACING;
+/** Icon list top/bottom margins within the sidebar band, below the top bar. */
+const LIST_MARGIN = 10;
+/** Icon rows that fit in one sidebar column. */
+const ROWS_PER_COLUMN = Math.max(
+  1,
+  ((MIN_WINDOW_HEIGHT - TOP_BAR_HEIGHT - 2 * LIST_MARGIN + ICON_SPACING) / ICON_STRIDE) | 0,
+);
+
+/**
+ * Whether the sidebar's left (overflow) column holds any icons. Icons fill
+ * the right column first; scrolling never shows fewer than a full right
+ * column, so the left column is populated exactly when there are more
+ * windows than one column holds.
+ */
+export function sidebarLeftColumnUsed(windowCount: number): boolean {
+  return windowCount > ROWS_PER_COLUMN;
+}
 const NOTIFICATION_ICON_SIZE = 24;
 const BORDER_VALUE = 40;
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -128,10 +146,9 @@ export class ShellChromeLayer implements Layer {
     // windows off-screen above/below. Icons fill the right column top to
     // bottom, then overflow into the left one, so a visible slot's column is
     // decided by its position within the scrolled window.
-    const listTop = bandTop + TOP_BAR_HEIGHT + 10;
-    const itemStride = ICON_SIZE + ICON_SPACING;
-    const listHeight = bandBottom - listTop - 10;
-    const rowsPerColumn = Math.max(1, ((listHeight + ICON_SPACING) / itemStride) | 0);
+    const listTop = bandTop + TOP_BAR_HEIGHT + LIST_MARGIN;
+    const itemStride = ICON_STRIDE;
+    const rowsPerColumn = ROWS_PER_COLUMN;
     const visibleCount = rowsPerColumn * SIDEBAR_COLUMNS;
     const count = state.windows.length;
     this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, state.selectedIndex, visibleCount, count);

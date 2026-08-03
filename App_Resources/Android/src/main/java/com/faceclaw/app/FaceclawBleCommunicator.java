@@ -511,6 +511,31 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         return ScreenshotUtil.savePngScreenshot(appContext, composite.gray, composite.width, composite.height);
     }
 
+    /**
+     * Save the current composite cropped to the given screen rect (the region
+     * the shell says is actually occupied). The rect is clamped to the screen;
+     * a degenerate rect falls back to the full screen.
+     */
+    public String saveCompositePngScreenshot(int cropX, int cropY, int cropWidth, int cropHeight)
+            throws java.io.IOException {
+        SurfaceCompositor.Composite composite = compositor.previewComposite();
+        if (composite == null) {
+            return "";
+        }
+        int x = Math.max(0, cropX);
+        int y = Math.max(0, cropY);
+        int width = Math.min(composite.width - x, cropWidth - (x - cropX));
+        int height = Math.min(composite.height - y, cropHeight - (y - cropY));
+        if (width <= 0 || height <= 0 || (x == 0 && y == 0 && width == composite.width && height == composite.height)) {
+            return ScreenshotUtil.savePngScreenshot(appContext, composite.gray, composite.width, composite.height);
+        }
+        byte[] cropped = new byte[width * height];
+        for (int row = 0; row < height; row++) {
+            System.arraycopy(composite.gray, (y + row) * composite.width + x, cropped, row * width, width);
+        }
+        return ScreenshotUtil.savePngScreenshot(appContext, cropped, width, height);
+    }
+
     // Active animated-GIF screen recording, or null when idle. Frames are
     // pushed by recordScreenFrame(), which the TS side calls at each
     // phone-preview flush.

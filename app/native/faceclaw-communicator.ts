@@ -429,9 +429,17 @@ export class FaceclawCommunicatorBridge {
   }
 
   /** Save the current composite as a 4-bit grayscale PNG; returns the path (empty if none). */
-  saveScreenshot(): string {
+  saveScreenshot(crop?: { x: number; y: number; width: number; height: number }): string {
     if (!global.isAndroid) return "";
-    return String(this.communicator.saveCompositePngScreenshot());
+    if (!crop) return String(this.communicator.saveCompositePngScreenshot());
+    return String(
+      this.communicator.saveCompositePngScreenshot(
+        Math.round(crop.x),
+        Math.round(crop.y),
+        Math.round(crop.width),
+        Math.round(crop.height),
+      ),
+    );
   }
 
   /** Begin collecting composite frames for an animated-GIF screen recording. */

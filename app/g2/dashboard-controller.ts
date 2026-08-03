@@ -726,9 +726,9 @@ class DashboardController {
     void this.communicator.setBrightness(level === null, level ?? 0).catch(() => {});
   }
 
-  /** Save the current composited screen as a 4-bit grayscale PNG. */
+  /** Save the occupied part of the composited screen as a 4-bit grayscale PNG. */
   saveScreenshot(): string {
-    const path = this.communicator?.saveScreenshot() ?? "";
+    const path = this.communicator?.saveScreenshot(shell.screenshotCropRect()) ?? "";
     this.appendLog(path ? `screenshot saved: ${path}` : "screenshot skipped: not connected");
     return path;
   }
