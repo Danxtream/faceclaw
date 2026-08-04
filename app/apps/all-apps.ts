@@ -10,6 +10,7 @@ import notificationsApp from "./notifications";
 import calendarApp from "./calendar";
 import weatherApp from "./weather";
 import navigateApp from "./navigate";
+import compassApp from "./compass";
 import roamApp from "./roam";
 import blocksApp from "./blocks";
 import minesweeperApp from "./minesweeper";
@@ -35,6 +36,7 @@ export const ALL_APPS: readonly AppDefinition[] = [
   calendarApp,
   weatherApp,
   navigateApp,
+  compassApp,
   roamApp,
   blocksApp,
   minesweeperApp,

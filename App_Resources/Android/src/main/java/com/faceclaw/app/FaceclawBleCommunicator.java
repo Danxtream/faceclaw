@@ -57,6 +57,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private volatile FaceclawBleCommunicatorListener listener;
     private final java.util.List<FaceclawImuListener> imuListeners =
         new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final java.util.List<FaceclawCompassListener> compassListeners =
+        new java.util.concurrent.CopyOnWriteArrayList<>();
     private volatile Thread workerThread;
     private volatile boolean running;
     private volatile boolean userDisconnectRequested;
@@ -77,6 +79,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     // overlay state is re-asserted on every reconnect and whenever the value changes.
     private volatile boolean firmwareDebugFlagsEnabled;
     private int firmwareDebugFlagsLastSent = -1;
+    // Desired CFW mode-10 compass state. It survives reconnects; lastSent is
+    // reset with each session so an open Compass window is re-asserted.
+    private boolean compassEnabled;
+    private int compassControlLastSent = -1;
     private boolean startupProbePending;
     // Desired ownership of CFW's fail-open stock-wake lease (dashboard launch
     // and Even AI foreground takeover). This survives a transport reconnect;
@@ -414,6 +420,25 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
+     * Enable/disable the stock compass through CFW image-handler mode 10. The
+     * desired state is retained across reconnects; headings arrive through
+     * stock sid-0x08 navigation notifications and FaceclawCompassListeners.
+     */
+    public void setCompassEnabled(boolean enable) {
+        synchronized (lock) {
+            compassEnabled = enable;
+            compassControlLastSent = -1;
+            clearMessagesOfKindLocked("compass-control");
+            if (running && sessionReady && !shutdownRequested && fixedLayoutCreated && warmedUp) {
+                enqueueCompassControlLocked(true);
+            } else {
+                logLine("defer compass " + (enable ? "enable" : "disable") + "; display path not ready");
+            }
+        }
+        interruptibleSleep.interrupt();
+    }
+
+    /**
      * Set the lens brightness. Fire-and-forget, like the IMU control: the
      * message is queued ahead of other traffic and any not-yet-sent brightness
      * message is superseded. When autoAdjust is true the ambient-light sensor
@@ -469,6 +494,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     public void removeImuListener(FaceclawImuListener listener) {
         if (listener != null) {
             imuListeners.remove(listener);
+        }
+    }
+
+    public void addCompassListener(FaceclawCompassListener listener) {
+        if (listener != null) {
+            compassListeners.add(listener);
+        }
+    }
+
+    public void removeCompassListener(FaceclawCompassListener listener) {
+        if (listener != null) {
+            compassListeners.remove(listener);
         }
     }
 
@@ -955,6 +992,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         Log.d(TAG, "onNotification: address=" + address + " characteristicUuid=" + characteristicUuid + " data.length=" + data.length);
         BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(data);
         int decodedWearState = BleProtocol.parseWearState(frame);
+        BleProtocol.CompassEvent compassEvent = address.equalsIgnoreCase(rightAddress)
+            ? BleProtocol.parseCompassEvent(frame)
+            : null;
         boolean emitWearState = false;
         G2Event event = null;
         synchronized (lock) {
@@ -1064,6 +1104,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (emitWearState) {
             logLine(decodedWearState > 0 ? "wear state ON_HEAD" : "wear state OFF_HEAD");
             emitWearState(decodedWearState > 0);
+        }
+        if (compassEvent != null) {
+            emitCompassEvent(compassEvent.command, compassEvent.headingDegrees);
         }
         if (event != null) {
             if (event.hasImu) {
@@ -1475,6 +1518,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                             && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                         Log.i(TAG, "enqueueing firmware debug flags " + (firmwareDebugFlagsEnabled ? "show" : "hide"));
                         enqueueFirmwareDebugFlagsLocked();
+                    }
+
+                    if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && warmedUp
+                            && (compassEnabled ? 1 : 0) != compassControlLastSent
+                            && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
+                        Log.i(TAG, "enqueueing compass " + (compassEnabled ? "enable" : "disable"));
+                        enqueueCompassControlLocked(false);
                     }
 
                     // Up to WINDOW_SIZE messages may be in flight at once (full
@@ -1944,6 +1994,28 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         pendingMessages.addLast(message);
         firmwareDebugFlagsLastSent = sub;
         logLine("queue firmware debug flags " + (show ? "show" : "hide"));
+    }
+
+    /** Send CFW image-handler mode 10: [10][1] start, [10][0] stop. */
+    private void enqueueCompassControlLocked(boolean priority) {
+        boolean enable = compassEnabled;
+        int sentState = enable ? 1 : 0;
+        byte[] payload = new byte[] { (byte) 10, (byte) sentState };
+        OutboundMessage message = messageBuilder.imagePayload(
+            "compass-control",
+            DASHBOARD_TILE,
+            nextMapSessionId(),
+            payload,
+            "compass " + (enable ? "enable" : "disable"),
+            connectionOptions.sendImagesToLeft);
+        message.onTimeout = () -> {
+            compassControlLastSent = -1;
+            logLine("compass control ack timeout");
+        };
+        if (priority) pendingMessages.addFirst(message);
+        else pendingMessages.addLast(message);
+        compassControlLastSent = sentState;
+        logLine("queue " + message.label);
     }
 
     private void enqueueDesiredImageLocked() {
@@ -2558,6 +2630,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         lastAudioControlAckMagic = 0;
         audioCaptureActive = false;
         audioPacketListener = null;
+        compassControlLastSent = -1;
         faceclawWakePendingNonce = -1;
         lastFaceclawWakeLeaseQueuedAtMs = 0;
         faceclawWakeControlSentCount = 0;
@@ -2615,6 +2688,21 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     imuListener.onImuData(x, y, z, eventSource);
                 } catch (Throwable t) {
                     Log.w(TAG, "listener onImuData failed", t);
+                }
+            }
+        });
+    }
+
+    private void emitCompassEvent(int command, int headingDegrees) {
+        if (compassListeners.isEmpty()) {
+            return;
+        }
+        mainHandler.post(() -> {
+            for (FaceclawCompassListener compassListener : compassListeners) {
+                try {
+                    compassListener.onCompassEvent(command, headingDegrees);
+                } catch (Throwable t) {
+                    Log.w(TAG, "listener onCompassEvent failed", t);
                 }
             }
         });

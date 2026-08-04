@@ -61,11 +61,22 @@ public class MessageBuilder {
         String label,
         boolean leftArm
     ) {
+        return imagePayload("sound", tile, sessionId, payload, label, leftArm);
+    }
+
+    public OutboundMessage imagePayload(
+        String kind,
+        BleProtocol.ImageTileOptions tile,
+        int sessionId,
+        byte[] payload,
+        String label,
+        boolean leftArm
+    ) {
         BleProtocol.ImageFragment fragment =
             new BleProtocol.ImageFragment(0, payload, payload.length);
         int magic = magicPool.allocate();
         return new OutboundMessage(
-            "sound",
+            kind,
             label,
             BleProtocol.SID_EVENHUB,
             BleProtocol.FLAG_REQUEST,

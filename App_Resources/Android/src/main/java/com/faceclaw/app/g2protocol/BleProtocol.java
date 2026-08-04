@@ -54,6 +54,10 @@ public class BleProtocol {
     // Payload is g2.even_ai.EvenAIDataPackage (see
     // g2-kit-unofficial/ble/gen/even_ai_pb.ts).
     public static final int SID_EVEN_AI = 0x07;
+    public static final int SID_NAVIGATION = 0x08;
+    public static final int NAV_CMD_COMPASS_CHANGED = 15;
+    public static final int NAV_CMD_COMPASS_CALIBRATION_STARTED = 16;
+    public static final int NAV_CMD_COMPASS_CALIBRATION_COMPLETE = 17;
     // eEvenAICommandId
     public static final int EVEN_AI_CMD_CTRL = 1;
     // eEvenAIStatus, carried in EvenAIDataPackage.ctrl.status (field 3, sub 1).
@@ -602,6 +606,29 @@ public class BleProtocol {
         return Arrays.copyOf(pb, pb.length - 2);
     }
 
+    /** Decode the stock firmware's compass navigation notifications (sid 0x08). */
+    public static CompassEvent parseCompassEvent(ParsedFrame frame) {
+        if (frame == null
+                || !frame.ok
+                || frame.sid != SID_NAVIGATION
+                || (frame.flag != FLAG_NOTIFY && frame.flag != FLAG_NOTIFY_ALT)) {
+            return null;
+        }
+        byte[] root = stripTrailingCrc(frame.pb);
+        int command = readVarintFieldValue(root, 1, -1);
+        if (command == NAV_CMD_COMPASS_CHANGED) {
+            byte[] compass = readFieldBytes(root, 10);
+            if (compass == null) return null;
+            int heading = readVarintFieldValue(compass, 1, -1);
+            return heading >= 0 ? new CompassEvent(command, heading) : null;
+        }
+        if (command == NAV_CMD_COMPASS_CALIBRATION_STARTED
+                || command == NAV_CMD_COMPASS_CALIBRATION_COMPLETE) {
+            return new CompassEvent(command, -1);
+        }
+        return null;
+    }
+
     /**
      * Display wake notification observed after a ring or right-arm double tap
      * while no EvenHub page is running:
@@ -829,6 +856,16 @@ public class BleProtocol {
             this.itemName = itemName == null ? "" : itemName;
             this.itemIndex = itemIndex;
             this.eventType = eventType;
+        }
+    }
+
+    public static final class CompassEvent {
+        public final int command;
+        public final int headingDegrees;
+
+        CompassEvent(int command, int headingDegrees) {
+            this.command = command;
+            this.headingDegrees = headingDegrees;
         }
     }
 
