@@ -22,6 +22,7 @@ import {
   openAiApiKeySetting,
   roamApiTokenSetting,
   roamGraphNameSetting,
+  sonioxApiKeySetting,
   enumSettingMenuItem,
   firmwareDebugFlagsSetting,
   lockScreenEnabledSetting,
@@ -100,6 +101,7 @@ function settingsSections(): SettingsSection[] {
       items: [
         textSettingMenuItem(elevenLabsApiKeySetting),
         textSettingMenuItem(openAiApiKeySetting),
+        textSettingMenuItem(sonioxApiKeySetting),
         textSettingMenuItem(anthropicApiKeySetting),
         textSettingMenuItem(mapboxApiKeySetting),
       ],

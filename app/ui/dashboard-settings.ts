@@ -297,12 +297,13 @@ export const suspendEvenHubWhenScreenOffSetting = new ConfigSettingBoolean({
   description: "Suspend the EvenHub session while the display is off. This significantly improves battery life, but increases the latency of waking the screen.",
 });
 
-export type VoiceProvider = "onboard" | "elevenlabs" | "whisper";
+export type VoiceProvider = "onboard" | "elevenlabs" | "whisper" | "soniox";
 
 const voiceProviderLabels: Record<VoiceProvider, string> = {
   onboard: "On-device",
   elevenlabs: "ElevenLabs",
   whisper: "Whisper",
+  soniox: "Soniox",
 };
 
 export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
@@ -310,9 +311,15 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   label: "Transcription Provider",
   storageKey: "voice.provider",
   defaultValue: "onboard",
-  values: ["onboard", "elevenlabs", "whisper"],
+  values: ["onboard", "elevenlabs", "whisper", "soniox"],
   formatValue: (value) => voiceProviderLabels[value] ?? value,
-  description: "Speech-to-text engine for voice input. ElevenLabs and Whisper are cloud services that need an API key, with significantly better accuracy than on-device transcription.",
+  isDisabled: (value) => {
+    if (value === "elevenlabs") return elevenLabsApiKeySetting.get().trim().length === 0;
+    if (value === "whisper") return openAiApiKeySetting.get().trim().length === 0;
+    if (value === "soniox") return sonioxApiKeySetting.get().trim().length === 0;
+    return false;
+  },
+  description: "Speech-to-text engine for voice input. ElevenLabs, Whisper, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription.",
 });
 
 const wakeWordActionLabels: Record<WakeWordAction, string> = {
@@ -426,6 +433,17 @@ export const openAiApiKeySetting = new ConfigSettingString({
   glassesEditTitle: "Edit OpenAI key",
   formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
   description: "OpenAI API key, used when Whisper is the transcription provider or an OpenAI model is selected for the voice assistant.",
+});
+
+export const sonioxApiKeySetting = new ConfigSettingString({
+  id: "soniox-api-key",
+  label: "Soniox key",
+  storageKey: "voice.sonioxApiKey",
+  defaultValue: "",
+  editorTitle: "Soniox API key",
+  glassesEditTitle: "Edit Soniox key",
+  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+  description: "Soniox API key, used when Soniox is the transcription provider.",
 });
 
 export const anthropicApiKeySetting = new ConfigSettingString({

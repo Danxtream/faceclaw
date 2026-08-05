@@ -3,6 +3,7 @@ import { Utils } from "@nativescript/core";
 import { CloudSttClient } from "./cloud-stt";
 import { ElevenLabsSttClient } from "./elevenlabs-stt";
 import { OpenAiRealtimeSttClient } from "./openai-stt";
+import { SonioxSttClient } from "./soniox-stt";
 import { toUint8Array } from "../util/array-util";
 
 declare const com: any;
@@ -11,7 +12,7 @@ export type VoiceControlState = {
   status: string;
 };
 
-export type VoiceProviderKind = "onboard" | "elevenlabs" | "whisper";
+export type VoiceProviderKind = "onboard" | "elevenlabs" | "whisper" | "soniox";
 
 export type VoiceTranscriptEvent = {
   /**
@@ -27,6 +28,7 @@ export type PushToTalkOptions = {
   provider: VoiceProviderKind;
   elevenLabsApiKey: string;
   openAiApiKey: string;
+  sonioxApiKey: string;
   saveRecording: boolean;
   /**
    * Watch the mic and fire onSpeechEnd when the speaker stops. For hands-free
@@ -149,6 +151,14 @@ export class FaceclawVoiceControlBridge {
         return null;
       }
       return new ElevenLabsSttClient({ ...sttOptions, apiKey });
+    }
+    if (options.provider === "soniox") {
+      const apiKey = options.sonioxApiKey.trim();
+      if (!apiKey) {
+        this.setStatus("No Soniox key set; using on-device voice.");
+        return null;
+      }
+      return new SonioxSttClient({ ...sttOptions, apiKey });
     }
     const apiKey = options.openAiApiKey.trim();
     if (!apiKey) {

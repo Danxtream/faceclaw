@@ -11,7 +11,8 @@ on-device model is selected, audio never leaves your device, and is not stored
 after it is processed.
 
 Users can also provide their own API key for a third-party transcription
-service such as OpenAI Whisper or ElevenLabs, which may offer better accuracy.
+service such as OpenAI Whisper, ElevenLabs, or Soniox, which may offer better
+accuracy.
 Faceclaw never transmits audio to any party other than a user-selected
 transcription service. If a third-party transcription service is selected,
 audio will be sent to that third party, is linked to the account with which
@@ -20,6 +21,7 @@ policies:
 
   OpenAI: https://openai.com/policies/row-privacy-policy/
   ElevenLabs: https://elevenlabs.io/privacy-policy
+  Soniox: https://soniox.com/policies/privacy-policy
 
 Third party data retention and privacy policies may differ based on the API
 key provided. API keys are part of a relationship between the user and the API

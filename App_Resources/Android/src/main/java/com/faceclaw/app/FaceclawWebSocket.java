@@ -11,10 +11,11 @@ import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
+import okio.ByteString;
 
 /**
- * Thin okhttp WebSocket wrapper for the TypeScript side. Text frames only
- * (the g2mirror protocol is JSON-in-text-frames). Listener callbacks are
+ * Thin okhttp WebSocket wrapper for the TypeScript side. Sends text frames
+ * (JSON protocols) and binary frames (raw audio for Soniox). Listener callbacks are
  * posted to the Looper of the thread that constructed this object, so a JS
  * isolate (main thread or app worker) always receives them on its own
  * thread; a Looper-less constructing thread falls back to the main thread.
@@ -130,6 +131,10 @@ public class FaceclawWebSocket {
 
     public boolean sendText(String message) {
         return socket.send(message == null ? "" : message);
+    }
+
+    public boolean sendBinary(byte[] bytes) {
+        return socket.send(ByteString.of(bytes == null ? new byte[0] : bytes));
     }
 
     public void close(int code, String reason) {
