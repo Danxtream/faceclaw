@@ -83,6 +83,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     // reset with each session so an open Compass window is re-asserted.
     private boolean compassEnabled;
     private int compassControlLastSent = -1;
+    // Whether the glasses-side compass may still be running: set when an enable
+    // is enqueued, cleared only when a disable is acked. Drives the forced
+    // disable sent ahead of an EvenHub shutdown/suspend, since a pending
+    // disable can be wiped by the shutdown's queue flush and the retry loop
+    // does not run while shutdownRequested (magnetometer left on = battery drain).
+    private boolean compassMaybeOn;
     private boolean startupProbePending;
     // Desired ownership of CFW's fail-open stock-wake lease (dashboard launch
     // and Even AI foreground takeover). This survives a transport reconnect;
@@ -430,7 +436,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             compassControlLastSent = -1;
             clearMessagesOfKindLocked("compass-control");
             if (running && sessionReady && !shutdownRequested && fixedLayoutCreated && warmedUp) {
-                enqueueCompassControlLocked(true);
+                enqueueCompassControlLocked(true, compassEnabled);
             } else {
                 logLine("defer compass " + (enable ? "enable" : "disable") + "; display path not ready");
             }
@@ -867,6 +873,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             };
             pendingMessages.addFirst(message);
             logLine("queue shutdown");
+            // The stock compass keeps the magnetometer sampling independently of
+            // the plugin task, so ending the page does not stop it. Force a
+            // disable ahead of the shutdown command whenever it may be running:
+            // this also covers a disable that was wiped by the queue flush above
+            // or whose ack was lost, and the charging-mode/exit paths where the
+            // Compass window never got a chance to release it.
+            if (compassMaybeOn && fixedLayoutCreated && warmedUp) {
+                enqueueCompassControlLocked(true, false);
+            }
         }
         interruptibleSleep.interrupt();
 
@@ -1524,7 +1539,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                             && (compassEnabled ? 1 : 0) != compassControlLastSent
                             && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                         Log.i(TAG, "enqueueing compass " + (compassEnabled ? "enable" : "disable"));
-                        enqueueCompassControlLocked(false);
+                        enqueueCompassControlLocked(false, compassEnabled);
                     }
 
                     // Up to WINDOW_SIZE messages may be in flight at once (full
@@ -1997,8 +2012,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /** Send CFW image-handler mode 10: [10][1] start, [10][0] stop. */
-    private void enqueueCompassControlLocked(boolean priority) {
-        boolean enable = compassEnabled;
+    private void enqueueCompassControlLocked(boolean priority, boolean enable) {
         int sentState = enable ? 1 : 0;
         byte[] payload = new byte[] { (byte) 10, (byte) sentState };
         OutboundMessage message = messageBuilder.imagePayload(
@@ -2012,6 +2026,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             compassControlLastSent = -1;
             logLine("compass control ack timeout");
         };
+        if (enable) {
+            compassMaybeOn = true;
+        } else {
+            message.onAck = () -> compassMaybeOn = false;
+        }
         if (priority) pendingMessages.addFirst(message);
         else pendingMessages.addLast(message);
         compassControlLastSent = sentState;
@@ -2631,6 +2650,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         audioCaptureActive = false;
         audioPacketListener = null;
         compassControlLastSent = -1;
+        // A dead transport orphans any glasses-side compass state; the fresh
+        // session re-asserts the desired state after warmup (lastSent = -1).
+        compassMaybeOn = false;
         faceclawWakePendingNonce = -1;
         lastFaceclawWakeLeaseQueuedAtMs = 0;
         faceclawWakeControlSentCount = 0;
