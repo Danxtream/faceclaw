@@ -1,0 +1,15 @@
+Building and verifying custom firmware in /c/Users/danxt/StudioProjects/faceclaw/../g2flash...
+[1;34m==>[0m skipping venv setup (--skip-venv)
+[1;34m==>[0m stock image already present and verified (g2_2.2.6.10.bin)
+[1;34m==>[0m clang found ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â regenerating patch set to check reproducibility
+[1;32m  ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“[0m clang reproduces the committed patch set exactly
+[1;34m==>[0m applying committed patch set -> g2_2.2.6.10_cfw.bin
+  base verified (g2_2.2.6.10.bin)
+  applied 25 patches -> g2_2.2.6.10_cfw.bin (4467023 bytes)
+[1;32m  ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“[0m patched image verified (g2_2.2.6.10_cfw.bin)
+
+[1;34m==>[0m done. Custom firmware: g2_2.2.6.10_cfw.bin
+    Flash it (voids warranty, can brick the device) with, e.g.:
+      ./venv/bin/python g2flash.py -c g2://local -f g2_2.2.6.10_cfw.bin
+    See README.md for connection options and safety notes.
+Embedded patch set is already current (25 patches).

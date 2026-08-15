@@ -1,0 +1,51 @@
+Preparing project...
+assets by path [1m[32mfonts/[39m[22m 5.3 MiB
+  assets by path [1m[32mfonts/terminus/*.bdf[39m[22m 5.25 MiB 20 assets
+  assets by path [1m[32mfonts/terminusv/[39m[22m 35.5 KiB 3 assets
+  + 5 assets
+assets by path [1m[32m*.mjs[39m[22m 11.3 MiB
+  asset [1m[32mvendor.mjs[39m[22m 3.68 MiB [1m[33m[compared for emit][39m[22m [javascript module] (name: vendor) (id hint: vendor) 1 related asset
+  asset [1m[32mbundle.mjs[39m[22m 1.71 MiB [1m[32m[emitted][39m[22m [javascript module] (name: bundle) 1 related asset
+  asset [1m[32mapp_apps_terminal_terminal-app_worker_ts.mjs[39m[22m 968 KiB [1m[33m[compared for emit][39m[22m [javascript module] 1 related asset
+  + 8 assets
+assets by path [1m[32mabout/[39m[22m 42.5 KiB
+  asset [1m[32mabout/LICENSE[39m[22m 35 KiB [1m[33m[compared for emit][39m[22m [from: LICENSE] [1m[32m[copied][39m[22m
+  asset [1m[32mabout/README.md[39m[22m 4.83 KiB [1m[33m[compared for emit][39m[22m [from: README.md] [1m[32m[copied][39m[22m
+  asset [1m[32mabout/PRIVACY[39m[22m 2.72 KiB [1m[33m[compared for emit][39m[22m [from: PRIVACY] [1m[32m[copied][39m[22m
+asset [1m[32mimages/faceclaw-logo-dashboard.png[39m[22m 1.97 KiB [1m[33m[compared for emit][39m[22m [from: app/images/faceclaw-logo-dashboard.png] [1m[32m[copied][39m[22m
+asset [1m[32mtns_modules/inspector_modules.mjs[39m[22m 655 bytes [1m[33m[compared for emit][39m[22m [javascript module] (name: tns_modules/inspector_modules)
+Entrypoint [1mbundle[39m[22m 5.39 MiB (6.21 MiB) = [1m[32mruntime.mjs[39m[22m 5.99 KiB [1m[32mvendor.mjs[39m[22m 3.68 MiB [1m[32mbundle.mjs[39m[22m 1.71 MiB 3 auxiliary assets
+Entrypoint [1mtns_modules/inspector_modules[39m[22m 3.68 MiB (3.58 MiB) = [1m[32mruntime.mjs[39m[22m 5.99 KiB [1m[32mvendor.mjs[39m[22m 3.68 MiB [1m[32mtns_modules/inspector_modules.mjs[39m[22m 655 bytes 2 auxiliary assets
+runtime modules 8.35 KiB 31 modules
+orphan modules 71.7 KiB [1m[33m[orphan][39m[22m 22 modules
+modules by path [1m./node_modules/[39m[22m 2.98 MiB
+  modules by path [1m./node_modules/@nativescript/[39m[22m 1.7 MiB 233 modules
+  modules by path [1m./node_modules/css-tree/[39m[22m 365 KiB 125 modules
+  modules by path [1m./node_modules/pako/[39m[22m 220 KiB 16 modules
+  modules by path [1m./node_modules/source-map-js/[39m[22m 104 KiB 11 modules
+  modules by path [1m./node_modules/@csstools/[39m[22m 132 KiB 5 modules
+  modules by path [1m./node_modules/css-what/dist/esm/*.js[39m[22m 24.9 KiB
+    [1m./node_modules/css-what/dist/esm/index.js[39m[22m 121 bytes [1m[33m[built][39m[22m [1m[33m[code generated][39m[22m
+    + 3 modules
+  + 5 modules
+modules by path [1m./app/[39m[22m 1.53 MiB 177 modules
+[1mexternal "~/package.json"[39m[22m 42 bytes [1m[33m[built][39m[22m [1m[33m[code generated][39m[22m
+webpack 5.106.2 compiled [1m[32msuccessfully[39m[22m in 26296 ms
+Webpack compilation complete.
+Updating runtime package.json with configuration values...
+Project successfully prepared (android)
+Building project...
+Gradle build...
+(node:30540) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+	 + applying user-defined configuration from C:\Users\danxt\StudioProjects\faceclaw\App_Resources\Android\before-plugins.gradle
+	 + applying user-defined configuration from C:\Users\danxt\StudioProjects\faceclaw\App_Resources\Android\before-plugins.gradle
+	 + setting applicationId
+	 + applying user-defined configuration from C:\Users\danxt\StudioProjects\faceclaw\App_Resources\Android\app.gradle
+	 + adding nativescript runtime package dependency: nativescript-optimized-with-inspector
+	 + adding aar plugin dependency: C:\Users\danxt\StudioProjects\faceclaw\node_modules\@nativescript\core\platforms\android\core.aar
+	 + adding aar plugin dependency: C:\Users\danxt\StudioProjects\faceclaw\node_modules\@nativescript\core\platforms\android\widgets-release.aar
+	 + adding aar plugin dependency: C:\Users\danxt\StudioProjects\faceclaw\node_modules\@nativescript\core\platforms\android\winter_tc-release.aar
+Project successfully built.
+Build time: 70.261 s.
+The build result is located at: C:\Users\danxt\StudioProjects\faceclaw\platforms\android\app\build\outputs\apk\debug\app-debug.apk
