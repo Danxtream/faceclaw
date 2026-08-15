@@ -62,6 +62,8 @@ export type AppContext = {
   submitWindowFrame: (surfaceId: string, image: GrayImage, paintMs: number, frameId: number) => Promise<void>;
   setWindowSurfaceVisible: (surfaceId: string, visible: boolean) => void;
   requestShellRender: () => void;
+  /** Hold the glasses screen on until the returned idempotent callback is released. */
+  acquireScreenAwakeLease: () => () => void;
   appendLog: (message: string) => void;
   /**
    * Register (or clear, with null) the window hosting the on-glasses

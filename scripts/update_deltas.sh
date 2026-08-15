@@ -24,8 +24,16 @@ if [ ! -f "$PATCH_JSON" ]; then
   echo "error: g2flash patch set not found: $PATCH_JSON" >&2
   exit 1
 fi
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "error: python3 is required" >&2
+PYTHON_BIN=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 &&
+     "$candidate" --version >/dev/null 2>&1; then
+    PYTHON_BIN="$candidate"
+    break
+  fi
+done
+if [ -z "$PYTHON_BIN" ]; then
+  echo "error: Python 3 is required" >&2
   exit 1
 fi
 
@@ -35,7 +43,7 @@ echo "Building and verifying custom firmware in $G2FLASH_DIR..."
   ./build_cfw.sh --skip-venv
 )
 
-python3 - "$PATCH_JSON" "$OUTPUT_TS" <<'PY'
+"$PYTHON_BIN" - "$PATCH_JSON" "$OUTPUT_TS" <<'PY'
 import json
 import os
 from pathlib import Path

@@ -117,10 +117,18 @@ tasks.register("prepareFaceclawNativeLibs") {
     if (ndkRoot == null || !ndkRoot.exists()) {
       throw new GradleException("Android NDK is required to build libfaceclaw_lc3.so")
     }
-    def clang = file("$ndkRoot/toolchains/llvm/prebuilt/${faceclawNdkHostTag()}/bin/aarch64-linux-android24-clang")
+    def clangBinDir = file("$ndkRoot/toolchains/llvm/prebuilt/${faceclawNdkHostTag()}/bin")
+    def clang = Os.isFamily(Os.FAMILY_WINDOWS)
+      ? file("$clangBinDir/clang.exe")
+      : file("$clangBinDir/aarch64-linux-android24-clang")
+
     if (!clang.exists()) {
       throw new GradleException("Could not find Android clang at $clang")
     }
+
+    def clangTargetArgs = Os.isFamily(Os.FAMILY_WINDOWS)
+      ? ["--target=aarch64-linux-android24"]
+      : []
 
     def lc3Root = file("$lc3ExtractDir/liblc3-${faceclawLibLc3Version}")
     def lc3Sources = [
@@ -130,7 +138,8 @@ tasks.register("prepareFaceclawNativeLibs") {
 
     exec {
       commandLine([
-        clang.absolutePath,
+        clang.absolutePath
+      ] + clangTargetArgs + [
         "-shared",
         "-fPIC",
         "-O3",

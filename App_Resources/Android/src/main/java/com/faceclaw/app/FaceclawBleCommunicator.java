@@ -117,6 +117,139 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int consecutiveAckTimeouts;
     private int lastAudioControlAckMagic = 0;
 
+    // With serialized physical BLE delivery, keep four logical NALs prepared.
+    // Three reduced throughput without improving presentation gaps or lens skew.
+    private static final int H264_LOGICAL_WINDOW = 4;
+    private static final int H264_STARTUP_WINDOW = 1;
+    private static final int H264_PAYLOAD_BUDGET_BYTES = 16 * 1024;
+    // A V11 firmware snapshot is 4096 bytes. Keep one ordinary encoded NAL in a
+    // single image message while leaving room for the mode-11 sequence header.
+    private static final int H264_FRAGMENT_SIZE = 3800;
+    private static final long H264_WAIT_TIMEOUT_MS = 30_000L;
+    private static final long H264_ASYNC_TIMEOUT_MS = 5_000L;
+    private static final long H264_DECODER_CONFIRM_MS = 1_200L;
+    private static final int H264_MAX_RETRIES = 1;
+    private static final int H264_RESULT_CACHE_SIZE = 64;
+
+    /**
+     * Completion state for one logical mode-11 payload.  This deliberately
+     * outlives movement of its fragments between pending/writing/in-flight;
+     * queue membership is not a reliable lifecycle signal while a BLE write
+     * is being prepared.
+     */
+    private static final class H264Transfer {
+        final int id;
+        final byte[] payload;
+        final int streamId;
+        final int sequence;
+        int fragmentCount;
+        int acknowledgedFragments;
+        int sentFragments;
+        int wireGeneration;
+        int retryCount;
+        long confirmationDeadlineMs;
+        boolean transportAcked;
+        boolean decoderConfirmed;
+        boolean leftDecoderConfirmed;
+        boolean rightDecoderConfirmed;
+        boolean retryPending;
+        boolean recoveryInProgress;
+        boolean terminal;
+        boolean failed;
+
+        H264Transfer(int id, byte[] payload, int streamId, int sequence) {
+            this.id = id;
+            this.payload = Arrays.copyOf(payload, payload.length);
+            this.streamId = streamId;
+            this.sequence = sequence;
+        }
+    }
+
+    private final ArrayDeque<H264Transfer> h264Transfers = new ArrayDeque<>();
+    private final Map<Integer, Integer> h264TransferResults = new HashMap<>();
+    private final ArrayDeque<Integer> h264TransferResultOrder = new ArrayDeque<>();
+    private int nextH264TransferId = 1;
+    private boolean h264Streaming;
+    private boolean h264StreamFailed;
+    private boolean h264Ending;
+    private int h264EndResult;
+    private long h264EndDeadlineMs;
+    private H264Transfer h264EndTransfer;
+    private int h264StreamId;
+    private int h264HighestQueuedSeq;
+    private int h264DecodedSeq;
+    private int h264PresentedSeq;
+    private int h264RetryCount;
+    private int h264MaxFirmwareQueueDepth;
+    private int h264MaxOutstanding;
+    private int h264MaxOutstandingBytes;
+    private int h264FirmwareQueueCapacity;
+    private int h264FirmwareQueuedBytes;
+    private int h264FirmwareFrames;
+    private int h264TelemetryVersion;
+    private long h264FirstPresentationAtMs;
+    private long h264LastPresentationAtMs;
+    private long h264PresentationIntervals;
+    private long h264MaxPresentationGapMs;
+    private int h264LeftPresentedSeq;
+    private int h264RightPresentedSeq;
+    private long h264MaxLensSequenceSkew;
+    private int h264LeftDecodedSeq;
+    private int h264RightDecodedSeq;
+    private int h264LeftQueueDepth;
+    private int h264RightQueueDepth;
+    private boolean h264LeftTelemetrySeen;
+    private boolean h264RightTelemetrySeen;
+    private boolean h264AdmissionPaused;
+    private String h264AdmissionPauseReason = "";
+    private long h264AdmissionPauseStartedAtMs;
+    private long h264AdmissionPauseTotalMs;
+    private long h264AdmissionPauseMaxMs;
+    private int h264AdmissionPauseCount;
+    private int h264FirmwareEmptyDeferredCallbacks;
+    private int h264FirmwareBacklogDeferredCallbacks;
+    private int h264FirmwarePaceScheduled;
+    private int h264FirmwarePaceFired;
+    private int h264FirmwarePaceDirect;
+    private int h264FirmwarePaceLate;
+    private int h264FirmwarePaceMaxLateMs;
+    private long h264DisplayTimingSamples;
+    private long h264DisplayGateWaitTotalUs;
+    private long h264DisplayGateWaitMaxUs;
+    private long h264DisplayPresentTotalUs;
+    private long h264DisplayPresentMaxUs;
+
+    private static final class H264Telemetry {
+        int version;
+        int side;
+        int flags;
+        int queueDepth;
+        int nalType;
+        int result;
+        int streamId;
+        int receivedSeq;
+        int decodedSeq;
+        int presentedSeq;
+        int frames;
+        int decodeUs;
+        int expectedSeq;
+        int queueCapacity;
+        int queuedBytes;
+        int diagStage;
+        int diagMbEntered;
+        int diagMbCompleted;
+        int diagBitOffset;
+        int emptyDeferredCallbacks;
+        int backlogDeferredCallbacks;
+        int paceScheduled;
+        int paceFired;
+        int paceDirect;
+        int paceLate;
+        int paceMaxLateMs;
+        int displayGateWaitUs;
+        int displayPresentUs;
+    }
+
     private ConnectionOptions connectionOptions = new ConnectionOptions();
     private final BleMagicPool magicPool = new BleMagicPool();
     private MessageBuilder messageBuilder = new MessageBuilder(magicPool);
@@ -619,7 +752,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * Show or hide a compositor surface, immediately submitting the resulting
      * frame. Recompositing here (rather than waiting for the next surface
      * update) is what makes a just-foregrounded window's retained frame
-     * actually appear — otherwise a static window (e.g. the terminal hub) whose
+     * actually appear ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â otherwise a static window (e.g. the terminal hub) whose
      * frame landed while briefly hidden would stay blank until its next repaint.
      */
     public void setSurfaceVisible(String id, boolean visible) {
@@ -754,6 +887,778 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             logLine("queue " + message.label);
         }
         interruptibleSleep.interrupt();
+    }
+
+    /** Enter exclusive video transport mode and pause ordinary compositor images. */
+    public boolean beginH264Stream(int streamId) {
+        synchronized (lock) {
+            if (!running || !sessionReady || !fixedLayoutCreated || !warmedUp) {
+                logLine("skip H264 stream; display path not ready");
+                return false;
+            }
+            if (streamId == 0) {
+                logLine("skip H264 stream; invalid session id");
+                return false;
+            }
+            clearMessagesOfKindLocked("image");
+            h264Transfers.clear();
+            h264TransferResults.clear();
+            h264TransferResultOrder.clear();
+            h264StreamFailed = false;
+            h264Streaming = true;
+            h264Ending = false;
+            h264EndResult = 0;
+            h264EndDeadlineMs = 0;
+            h264EndTransfer = null;
+            h264StreamId = streamId;
+            h264HighestQueuedSeq = 0;
+            h264DecodedSeq = 0;
+            h264PresentedSeq = 0;
+            h264RetryCount = 0;
+            h264MaxFirmwareQueueDepth = 0;
+            h264MaxOutstanding = 0;
+            h264MaxOutstandingBytes = 0;
+            h264FirmwareQueueCapacity = H264_STARTUP_WINDOW;
+            h264FirmwareQueuedBytes = 0;
+            h264FirmwareFrames = 0;
+            h264TelemetryVersion = 0;
+            h264FirstPresentationAtMs = 0;
+            h264LastPresentationAtMs = 0;
+            h264PresentationIntervals = 0;
+            h264MaxPresentationGapMs = 0;
+            h264LeftPresentedSeq = 0;
+            h264RightPresentedSeq = 0;
+            h264MaxLensSequenceSkew = 0;
+            h264LeftDecodedSeq = 0;
+            h264RightDecodedSeq = 0;
+            h264LeftQueueDepth = 0;
+            h264RightQueueDepth = 0;
+            h264LeftTelemetrySeen = false;
+            h264RightTelemetrySeen = false;
+            h264AdmissionPaused = false;
+            h264AdmissionPauseReason = "";
+            h264AdmissionPauseStartedAtMs = 0;
+            h264AdmissionPauseTotalMs = 0;
+            h264AdmissionPauseMaxMs = 0;
+            h264AdmissionPauseCount = 0;
+            h264FirmwareEmptyDeferredCallbacks = 0;
+            h264FirmwareBacklogDeferredCallbacks = 0;
+            h264FirmwarePaceScheduled = 0;
+            h264FirmwarePaceFired = 0;
+            h264FirmwarePaceDirect = 0;
+            h264FirmwarePaceLate = 0;
+            h264FirmwarePaceMaxLateMs = 0;
+            h264DisplayTimingSamples = 0;
+            h264DisplayGateWaitTotalUs = 0;
+            h264DisplayGateWaitMaxUs = 0;
+            h264DisplayPresentTotalUs = 0;
+            h264DisplayPresentMaxUs = 0;
+            enableWearDetectionAndRequestState();
+            logLine("H264 stream transport begin session=" + unsignedInt(streamId)
+                + " startupWindow=" + H264_STARTUP_WINDOW
+                + " decoderWindow=" + H264_LOGICAL_WINDOW
+                + " bleWindow=1"
+                + " byteBudget=" + H264_PAYLOAD_BUDGET_BYTES);
+        }
+        interruptibleSleep.interrupt();
+        return true;
+    }
+
+    /**
+     * Enqueue a mode-11 control without waiting on the caller's thread.
+     * Returns a positive transfer id, or -1 when the display path is unavailable.
+     */
+    public int enqueueH264Control(java.nio.ByteBuffer payload) {
+        byte[] bytes = copyH264Payload(payload);
+        if (bytes == null || (bytes[1] & 0xff) == 6) return -1;
+
+        H264Transfer transfer;
+        synchronized (lock) {
+            if (h264Ending) return -1;
+            transfer = enqueueH264PayloadLocked(bytes, false);
+        }
+        if (transfer == null) return -1;
+        interruptibleSleep.interrupt();
+        return transfer.id;
+    }
+
+    /** Poll a transfer created by enqueueH264Control: 1=success, 0=pending, -1=failed. */
+    public int pollH264Transfer(int transferId) {
+        synchronized (lock) {
+            Integer cached = h264TransferResults.remove(transferId);
+            if (cached != null) {
+                h264TransferResultOrder.remove(transferId);
+                return cached;
+            }
+            for (H264Transfer transfer : h264Transfers) {
+                if (transfer.id != transferId) continue;
+                if (!transfer.terminal) {
+                    return running && sessionReady ? 0 : -1;
+                }
+                return transfer.failed ? -1 : 1;
+            }
+            return -1;
+        }
+    }
+
+    /**
+     * Non-blocking decoder-window enqueue. Returns a positive transfer id when
+     * queued, zero for backpressure, or -1 for a terminal/unavailable stream.
+     */
+    public int tryQueueH264Payload(java.nio.ByteBuffer payload) {
+        byte[] bytes = copyH264Payload(payload);
+        if (bytes == null || (bytes[1] & 0xff) != 6) return -1;
+
+        H264Transfer transfer;
+        synchronized (lock) {
+            if (!h264Streaming || h264Ending || h264StreamFailed) return -1;
+            if (!h264HasCapacityLocked(bytes.length)) return 0;
+            transfer = enqueueH264PayloadLocked(bytes, false);
+        }
+        if (transfer == null) return -1;
+        interruptibleSleep.interrupt();
+        return transfer.id;
+    }
+
+    /** Poll decoder-confirmed drain state: 1=drained, 0=pending, -1=failed. */
+    public int pollH264Drain() {
+        synchronized (lock) {
+            if (!running || !sessionReady || !h264Streaming || h264StreamFailed) return -1;
+            checkH264ConfirmationDeadlinesLocked();
+            purgeCompletedH264TransfersLocked();
+            if (h264StreamFailed) return -1;
+            return h264OutstandingNalCountLocked() == 0 ? 1 : 0;
+        }
+    }
+
+    /** Queue one logical mode-11 payload, blocking only for pipeline capacity. */
+    public boolean queueH264Payload(java.nio.ByteBuffer payload) {
+        byte[] bytes = copyH264Payload(payload);
+        if (bytes == null) return false;
+
+        H264Transfer transfer;
+        synchronized (lock) {
+            if (!h264Streaming) {
+                logLine("skip H264 queue; stream not begun");
+                return false;
+            }
+            if (!waitForH264CapacityLocked(bytes.length)) return false;
+            transfer = enqueueH264PayloadLocked(bytes);
+        }
+        if (transfer == null) return false;
+        interruptibleSleep.interrupt();
+        return true;
+    }
+
+    /** Wait until firmware confirms every queued NAL was decoded in sequence. */
+    public boolean drainH264Payloads() {
+        synchronized (lock) {
+            return waitForH264DrainLocked();
+        }
+    }
+
+    public String getH264StreamSummary() {
+        synchronized (lock) {
+            long presentationSpanMs = h264LastPresentationAtMs
+                - h264FirstPresentationAtMs;
+            double presentationFps = presentationSpanMs > 0
+                ? h264PresentationIntervals * 1000.0 / presentationSpanMs
+                : 0.0;
+            double averageGateWaitMs = h264DisplayTimingSamples > 0
+                ? h264DisplayGateWaitTotalUs / 1000.0 / h264DisplayTimingSamples
+                : 0.0;
+            double averagePresentMs = h264DisplayTimingSamples > 0
+                ? h264DisplayPresentTotalUs / 1000.0 / h264DisplayTimingSamples
+                : 0.0;
+            return "session=" + unsignedInt(h264StreamId)
+                + " queued=" + unsignedInt(h264HighestQueuedSeq)
+                + " decoded=" + unsignedInt(h264DecodedSeq)
+                + " presented=" + unsignedInt(h264PresentedSeq)
+                + " retries=" + h264RetryCount
+                + " maxQueue=" + h264MaxFirmwareQueueDepth
+                + " maxOutstanding=" + h264MaxOutstanding
+                + " maxOutstandingBytes=" + h264MaxOutstandingBytes
+                + " firmwareQueue=" + h264FirmwareQueuedBytes
+                + "/" + H264_PAYLOAD_BUDGET_BYTES
+                + " presentFps="
+                + String.format(Locale.US, "%.1f", presentationFps)
+                + " maxPresentGap=" + h264MaxPresentationGapMs + "ms"
+                + " maxLensSkew=" + h264MaxLensSequenceSkew
+                + " admissionPauses=" + h264AdmissionPauseCount
+                + " admissionPauseMs=" + h264AdmissionPauseTotalMs
+                + " admissionPauseMaxMs=" + h264AdmissionPauseMaxMs
+                + " syncEmpty=" + h264FirmwareEmptyDeferredCallbacks
+                + " syncBacklog=" + h264FirmwareBacklogDeferredCallbacks
+                + " pace=" + h264FirmwarePaceFired
+                + "/" + h264FirmwarePaceScheduled
+                + " direct=" + h264FirmwarePaceDirect
+                + " async=" + Math.max(
+                    0,
+                    h264FirmwarePaceScheduled - h264FirmwarePaceDirect
+                )
+                + " paceLate=" + h264FirmwarePaceLate
+                + " paceMaxLateMs=" + h264FirmwarePaceMaxLateMs
+                + " avgGateWaitMs="
+                + String.format(Locale.US, "%.1f", averageGateWaitMs)
+                + " maxGateWaitMs="
+                + String.format(Locale.US, "%.1f", h264DisplayGateWaitMaxUs / 1000.0)
+                + " avgPresentMs="
+                + String.format(Locale.US, "%.1f", averagePresentMs)
+                + " maxPresentMs="
+                + String.format(Locale.US, "%.1f", h264DisplayPresentMaxUs / 1000.0)
+                + " telemetryV=" + h264TelemetryVersion;
+        }
+    }
+
+    /** Begin STOP without blocking the caller. Returns 1=already ended, 0=pending, -1=failed. */
+    public int requestH264End() {
+        int result;
+        synchronized (lock) {
+            if (!h264Streaming) return 1;
+            if (h264Ending) return 0;
+
+            h264Ending = true;
+            h264EndResult = 0;
+            cancelAllH264MessagesLocked("stream ending");
+            h264Transfers.clear();
+            h264StreamFailed = false;
+            h264EndTransfer = enqueueH264PayloadLocked(new byte[] {11, 0}, true);
+            h264EndDeadlineMs = SystemClock.elapsedRealtime() + H264_ASYNC_TIMEOUT_MS;
+            if (h264EndTransfer == null) {
+                finishH264StreamLocked(false);
+                result = -1;
+            } else {
+                result = 0;
+            }
+        }
+        interruptibleSleep.interrupt();
+        if (result < 0) handleTransportFailure("H264 STOP unavailable");
+        return result;
+    }
+
+    /** Poll STOP and always release local exclusive-video state on failure or timeout. */
+    public int pollH264End() {
+        int result;
+        synchronized (lock) {
+            if (!h264Ending) return h264EndResult != 0 ? h264EndResult : 1;
+
+            boolean transportUnavailable = !running || !sessionReady;
+            boolean timedOut = SystemClock.elapsedRealtime() >= h264EndDeadlineMs;
+            if (h264EndTransfer != null && h264EndTransfer.terminal) {
+                finishH264StreamLocked(!h264EndTransfer.failed);
+            } else if (transportUnavailable || timedOut) {
+                finishH264StreamLocked(false);
+            }
+            result = h264Ending ? 0 : h264EndResult;
+        }
+        if (result != 0) interruptibleSleep.interrupt();
+        if (result < 0) handleTransportFailure("H264 STOP failed");
+        return result;
+    }
+
+    private void finishH264StreamLocked(boolean stopped) {
+        cancelAllH264MessagesLocked("stream ended");
+        h264Transfers.clear();
+        h264Streaming = false;
+        h264StreamFailed = false;
+        h264StreamId = 0;
+        h264Ending = false;
+        h264EndResult = stopped ? 1 : -1;
+        h264EndDeadlineMs = 0;
+        h264EndTransfer = null;
+        lastEnqueuedPacked = new byte[0];
+        lastEnqueuedFingerprint = "";
+        displayedFingerprint = "";
+        imageRetryAfterMs = 0;
+        lock.notifyAll();
+        logLine("H264 stream transport end stopped=" + stopped);
+    }
+
+    /** Compatibility path; new callers use requestH264End/pollH264End. */
+    public boolean endH264Stream() {
+        int result = requestH264End();
+        while (result == 0) {
+            synchronized (lock) {
+                try {
+                    lock.wait(50);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            result = pollH264End();
+        }
+        return result == 1;
+    }
+
+    /** Compatibility/synchronous path used by START, STOP, probe and status controls. */
+    public boolean sendH264Payload(java.nio.ByteBuffer payload) {
+        byte[] bytes = copyH264Payload(payload);
+        if (bytes == null) return false;
+
+        final H264Transfer transfer;
+        synchronized (lock) {
+            if (h264Streaming && !waitForH264CapacityLocked(bytes.length)) return false;
+            transfer = enqueueH264PayloadLocked(bytes, false);
+        }
+        if (transfer == null) return false;
+        interruptibleSleep.interrupt();
+        synchronized (lock) {
+            return waitForH264TransferLocked(transfer);
+        }
+    }
+
+    private byte[] copyH264Payload(java.nio.ByteBuffer payload) {
+        java.nio.ByteBuffer view = payload == null ? null : payload.duplicate();
+        byte[] bytes = new byte[view == null ? 0 : view.remaining()];
+        if (view != null) view.get(bytes);
+        if (bytes.length < 2 || (bytes[0] & 0xff) != 11) {
+            logLine("skip H264 payload; invalid mode-11 packet");
+            return null;
+        }
+        return bytes;
+    }
+
+    private H264Transfer enqueueH264PayloadLocked(byte[] bytes) {
+        return enqueueH264PayloadLocked(bytes, false);
+    }
+
+    private H264Transfer enqueueH264PayloadLocked(byte[] bytes, boolean priority) {
+        if (!running || !sessionReady || !fixedLayoutCreated || !warmedUp) {
+            logLine("skip H264 payload; display path not ready");
+            return null;
+        }
+
+        int transferId = nextH264TransferId++;
+        if (nextH264TransferId <= 0) nextH264TransferId = 1;
+        int sub = bytes.length >= 2 ? bytes[1] & 0xff : -1;
+        int wireStreamId = sub == 6 && bytes.length >= 10 ? readLe32(bytes, 2) : 0;
+        int sequence = sub == 6 && bytes.length >= 10 ? readLe32(bytes, 6) : 0;
+        if (sub == 6 && (!h264Streaming || wireStreamId != h264StreamId || sequence <= 0)) {
+            logLine("skip H264 NAL; invalid session/sequence");
+            return null;
+        }
+
+        H264Transfer transfer = new H264Transfer(
+            transferId, bytes, wireStreamId, sequence
+        );
+        h264Transfers.addLast(transfer);
+        h264MaxOutstanding = Math.max(h264MaxOutstanding, h264Transfers.size());
+        h264MaxOutstandingBytes = Math.max(
+            h264MaxOutstandingBytes,
+            h264OutstandingBytesLocked()
+        );
+        if (sequence > h264HighestQueuedSeq) h264HighestQueuedSeq = sequence;
+        if (!enqueueH264AttemptLocked(transfer, false, priority)) {
+            h264Transfers.remove(transfer);
+            return null;
+        }
+        return transfer;
+    }
+
+    private boolean enqueueH264AttemptLocked(
+        H264Transfer transfer,
+        boolean replay,
+        boolean priority
+    ) {
+        BleImageOptimizer.TileImagePlan plan = new BleImageOptimizer.TileImagePlan(
+            0, DASHBOARD_TILE, new byte[0], 0, 0, nextMapSessionId(), transfer.payload
+        );
+        plan.fragments = BleImageOptimizer.planImageFragments(
+            plan.payload, H264_FRAGMENT_SIZE
+        );
+        int fragmentCount = plan.fragments.size();
+        if (fragmentCount == 0) {
+            logLine("skip H264 payload; no fragments");
+            return false;
+        }
+
+        transfer.fragmentCount = fragmentCount;
+        transfer.acknowledgedFragments = 0;
+        transfer.sentFragments = 0;
+        transfer.transportAcked = false;
+        transfer.retryPending = false;
+        transfer.confirmationDeadlineMs = 0;
+        int generation = ++transfer.wireGeneration;
+
+        ArrayList<OutboundMessage> messages = new ArrayList<>();
+        for (BleProtocol.ImageFragment fragment : plan.fragments) {
+            OutboundMessage message = messageBuilder.imageFragment(
+                fragment, plan, true, connectionOptions.sendImagesToLeft
+            );
+            message.h264Payload = true;
+            message.h264TransferId = transfer.id;
+            message.h264Generation = generation;
+            message.onSent = () -> markH264FragmentSentLocked(transfer, generation);
+            message.onAck = () -> markH264FragmentAckedLocked(transfer, generation);
+            message.onTimeout = () -> handleH264FragmentTimeoutLocked(transfer, generation);
+            messages.add(message);
+        }
+        if (priority) {
+            for (int i = messages.size() - 1; i >= 0; i--) {
+                pendingMessages.addFirst(messages.get(i));
+            }
+        } else {
+            for (OutboundMessage message : messages) pendingMessages.addLast(message);
+        }
+        logLine("queue H264 transfer=" + transfer.id
+            + (transfer.sequence > 0 ? " seq=" + unsignedInt(transfer.sequence) : " control")
+            + " generation=" + generation
+            + " retry=" + transfer.retryCount
+            + (replay ? " replay" : "")
+            + " " + transfer.payload.length
+            + "B fragments=" + fragmentCount + " outstanding=" + h264Transfers.size());
+        return true;
+    }
+
+    private void markH264FragmentSentLocked(H264Transfer transfer, int generation) {
+        if (!isCurrentH264AttemptLocked(transfer, generation)) return;
+        transfer.sentFragments++;
+        lock.notifyAll();
+    }
+
+    private void markH264FragmentAckedLocked(H264Transfer transfer, int generation) {
+        if (!isCurrentH264AttemptLocked(transfer, generation)) return;
+        transfer.acknowledgedFragments++;
+        lastHeartbeatAckedAtMs = SystemClock.elapsedRealtime();
+        if (transfer.acknowledgedFragments >= transfer.fragmentCount) {
+            transfer.transportAcked = true;
+            if (transfer.sequence > 0) {
+                transfer.confirmationDeadlineMs =
+                    SystemClock.elapsedRealtime() + H264_DECODER_CONFIRM_MS;
+            }
+            if (transfer.sequence == 0) transfer.terminal = true;
+            logLine("H264 transport ack id=" + transfer.id
+                + (transfer.sequence > 0 ? " seq=" + unsignedInt(transfer.sequence) : " control")
+                + " fragments=" + transfer.fragmentCount);
+        }
+        lock.notifyAll();
+    }
+
+    private void handleH264FragmentTimeoutLocked(H264Transfer transfer, int generation) {
+        if (!isCurrentH264AttemptLocked(transfer, generation)) return;
+        if (transfer.sequence == 0) {
+            failH264TransferLocked(transfer, "transport ACK timeout");
+            return;
+        }
+
+        H264Transfer head = firstOutstandingH264NalLocked();
+        if (head != transfer) {
+            transfer.retryPending = true;
+            transfer.confirmationDeadlineMs = 0;
+            logLine("H264 postpone retry seq=" + unsignedInt(transfer.sequence)
+                + " behind expected seq="
+                + (head == null ? "none" : unsignedInt(head.sequence)));
+            lock.notifyAll();
+            return;
+        }
+
+        if (!retryH264TransferLocked(transfer, "transport ACK timeout")) {
+            failH264TransferLocked(transfer, "transport ACK timeout after retry");
+        }
+    }
+
+    private boolean retryH264TransferLocked(H264Transfer transfer, String reason) {
+        if (transfer.terminal || transfer.decoderConfirmed
+                || transfer.retryCount >= H264_MAX_RETRIES) {
+            return false;
+        }
+        transfer.wireGeneration++;
+        cancelH264TransferMessagesLocked(transfer.id, "H264 retry: " + reason);
+        transfer.retryCount++;
+        transfer.recoveryInProgress = true;
+        h264RetryCount++;
+        logLine("H264 retry seq=" + unsignedInt(transfer.sequence)
+            + " reason=" + reason + " retry=" + transfer.retryCount);
+        boolean queued = enqueueH264AttemptLocked(transfer, false, true);
+        if (queued) interruptibleSleep.interrupt();
+        return queued;
+    }
+
+    private void failH264TransferLocked(H264Transfer transfer, String reason) {
+        if (transfer.terminal) return;
+        transfer.failed = true;
+        transfer.terminal = true;
+        transfer.wireGeneration++;
+        h264StreamFailed = h264Streaming;
+        cancelH264TransferMessagesLocked(transfer.id, "H264 failed: " + reason);
+        logLine("H264 transfer failed id=" + transfer.id
+            + (transfer.sequence > 0 ? " seq=" + unsignedInt(transfer.sequence) : " control")
+            + " reason=" + reason);
+        lock.notifyAll();
+    }
+
+    private void checkH264ConfirmationDeadlinesLocked() {
+        long now = SystemClock.elapsedRealtime();
+        H264Transfer transfer = firstOutstandingH264NalLocked();
+        if (transfer == null) return;
+        if (transfer.retryPending) {
+            if (!retryH264TransferLocked(transfer, "deferred transport retry")) {
+                failH264TransferLocked(transfer, "deferred transport retry unavailable");
+            }
+            return;
+        }
+        if (transfer.confirmationDeadlineMs == 0
+                || transfer.confirmationDeadlineMs > now) return;
+        if (!retryH264TransferLocked(transfer, "decoder confirmation timeout")) {
+            failH264TransferLocked(transfer, "decoder confirmation timeout after retry");
+        }
+    }
+
+    private H264Transfer firstOutstandingH264NalLocked() {
+        for (H264Transfer transfer : h264Transfers) {
+            if (!transfer.terminal && transfer.sequence > 0) return transfer;
+        }
+        return null;
+    }
+
+    private boolean isCurrentH264AttemptLocked(H264Transfer transfer, int generation) {
+        return transfer != null
+            && !transfer.terminal
+            && transfer.wireGeneration == generation;
+    }
+
+    private boolean isCurrentH264MessageLocked(OutboundMessage message) {
+        if (message == null || !message.h264Payload || message.cancelled) return false;
+        for (H264Transfer transfer : h264Transfers) {
+            if (transfer.id == message.h264TransferId) {
+                return isCurrentH264AttemptLocked(transfer, message.h264Generation);
+            }
+        }
+        return false;
+    }
+
+    private void purgeCompletedH264TransfersLocked() {
+        while (!h264Transfers.isEmpty() && h264Transfers.peekFirst().terminal) {
+            H264Transfer finished = h264Transfers.removeFirst();
+            recordH264TransferResultLocked(finished.id, finished.failed ? -1 : 1);
+            if (finished.failed) h264StreamFailed = h264Streaming;
+        }
+    }
+
+    private void recordH264TransferResultLocked(int transferId, int result) {
+        if (!h264TransferResults.containsKey(transferId)) {
+            h264TransferResultOrder.addLast(transferId);
+        }
+        h264TransferResults.put(transferId, result);
+        while (h264TransferResultOrder.size() > H264_RESULT_CACHE_SIZE) {
+            Integer expired = h264TransferResultOrder.removeFirst();
+            h264TransferResults.remove(expired);
+        }
+    }
+
+    private int h264OutstandingBytesLocked() {
+        int bytes = 0;
+        for (H264Transfer transfer : h264Transfers) {
+            if (!transfer.terminal && transfer.sequence > 0) {
+                bytes += transfer.payload.length;
+            }
+        }
+        return bytes;
+    }
+
+    private int h264OutstandingNalCountLocked() {
+        int count = 0;
+        for (H264Transfer transfer : h264Transfers) {
+            if (!transfer.terminal && transfer.sequence > 0) count++;
+        }
+        return count;
+    }
+
+    private boolean h264RecoveryActiveLocked() {
+        for (H264Transfer transfer : h264Transfers) {
+            if (!transfer.terminal && transfer.sequence > 0
+                    && (transfer.recoveryInProgress || transfer.retryPending)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private int h264EffectiveWindowLocked() {
+        if (h264TelemetryVersion < 3 || h264FirmwareFrames == 0) {
+            return H264_STARTUP_WINDOW;
+        }
+        int endToEndCapacity = h264FirmwareQueueCapacity
+            + Math.max(1, connectionOptions.WINDOW_SIZE);
+        return Math.max(
+            1,
+            Math.min(H264_LOGICAL_WINDOW, endToEndCapacity)
+        );
+    }
+
+    /**
+     * V12+ telemetry is emitted independently by both lenses. Keep the normal
+     * four-NAL preparation window while the two pipelines agree, but stop
+     * admitting more data when the observed lens separation exceeds the clean
+     * run's one-sequence notification jitter or either snapshot FIFO reaches
+     * two entries. The clean 5 fps hardware run peaked at one queued snapshot;
+     * the visibly desynchronised 9.8 fps run peaked at three.
+     */
+    private boolean h264LensAdmissionReadyLocked() {
+        String reason = null;
+        if (h264TelemetryVersion >= 11
+                && h264FirmwareFrames > 0
+                && h264LeftTelemetrySeen
+                && h264RightTelemetrySeen) {
+            long presentationSkew = Math.abs(
+                Integer.toUnsignedLong(h264LeftPresentedSeq)
+                    - Integer.toUnsignedLong(h264RightPresentedSeq)
+            );
+            long decoderSkew = Math.abs(
+                Integer.toUnsignedLong(h264LeftDecodedSeq)
+                    - Integer.toUnsignedLong(h264RightDecodedSeq)
+            );
+            int queueDepth = Math.max(h264LeftQueueDepth, h264RightQueueDepth);
+
+            // One sequence of observed skew is normal notification ordering;
+            // the clean 5 fps run reported one without visible eye mismatch.
+            if (presentationSkew > 1) {
+                reason = "presentation-skew=" + presentationSkew;
+            } else if (decoderSkew > 1) {
+                reason = "decoder-skew=" + decoderSkew;
+            } else if (queueDepth >= 2) {
+                reason = "firmware-queue=" + queueDepth;
+            }
+        }
+
+        long now = SystemClock.elapsedRealtime();
+        if (reason != null) {
+            if (!h264AdmissionPaused) {
+                h264AdmissionPaused = true;
+                h264AdmissionPauseReason = reason;
+                h264AdmissionPauseStartedAtMs = now;
+                h264AdmissionPauseCount++;
+                logLine("H264 admission pause " + reason
+                    + " L=" + unsignedInt(h264LeftPresentedSeq)
+                    + " R=" + unsignedInt(h264RightPresentedSeq)
+                    + " q=" + h264LeftQueueDepth + "/" + h264RightQueueDepth);
+            } else {
+                h264AdmissionPauseReason = reason;
+            }
+            return false;
+        }
+
+        if (h264AdmissionPaused) {
+            long durationMs = Math.max(0, now - h264AdmissionPauseStartedAtMs);
+            h264AdmissionPauseTotalMs += durationMs;
+            h264AdmissionPauseMaxMs = Math.max(h264AdmissionPauseMaxMs, durationMs);
+            logLine("H264 admission resume after " + durationMs + "ms"
+                + " reason=" + h264AdmissionPauseReason);
+            h264AdmissionPaused = false;
+            h264AdmissionPauseReason = "";
+            h264AdmissionPauseStartedAtMs = 0;
+        }
+        return true;
+    }
+
+    private boolean h264HasCapacityLocked(int payloadBytes) {
+        checkH264ConfirmationDeadlinesLocked();
+        purgeCompletedH264TransfersLocked();
+        if (!running || !sessionReady || h264StreamFailed || h264Ending) return false;
+
+        int outstandingCount = h264OutstandingNalCountLocked();
+        int outstandingBytes = h264OutstandingBytesLocked();
+        boolean byteRoom = outstandingBytes == 0
+            || (payloadBytes <= H264_PAYLOAD_BUDGET_BYTES
+                && outstandingBytes <= H264_PAYLOAD_BUDGET_BYTES - payloadBytes);
+        return !h264RecoveryActiveLocked()
+            && h264LensAdmissionReadyLocked()
+            && outstandingCount < h264EffectiveWindowLocked()
+            && byteRoom;
+    }
+
+    private boolean waitForH264CapacityLocked(int payloadBytes) {
+        long deadline = SystemClock.elapsedRealtime() + H264_WAIT_TIMEOUT_MS;
+        while (running && sessionReady && !h264StreamFailed) {
+            if (h264HasCapacityLocked(payloadBytes)) return true;
+            long remaining = deadline - SystemClock.elapsedRealtime();
+            if (remaining <= 0) break;
+            try {
+                lock.wait(Math.min(remaining, 100));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        logLine("H264 pipeline capacity wait failed outstanding="
+            + h264OutstandingNalCountLocked()
+            + " bytes=" + h264OutstandingBytesLocked()
+            + " window=" + h264EffectiveWindowLocked());
+        return false;
+    }
+
+    private boolean waitForH264TransferLocked(H264Transfer transfer) {
+        long deadline = SystemClock.elapsedRealtime() + H264_WAIT_TIMEOUT_MS;
+        while (running && sessionReady && !transfer.terminal) {
+            checkH264ConfirmationDeadlinesLocked();
+            long remaining = deadline - SystemClock.elapsedRealtime();
+            if (remaining <= 0) break;
+            try {
+                lock.wait(Math.min(remaining, 100));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        boolean acked = transfer.terminal && !transfer.failed;
+        if (!acked) logLine("H264 transfer wait timeout id=" + transfer.id);
+        purgeCompletedH264TransfersLocked();
+        return acked;
+    }
+
+    private boolean waitForH264DrainLocked() {
+        long deadline = SystemClock.elapsedRealtime() + H264_WAIT_TIMEOUT_MS;
+        while (running && sessionReady && !h264StreamFailed) {
+            checkH264ConfirmationDeadlinesLocked();
+            purgeCompletedH264TransfersLocked();
+            if (h264Transfers.isEmpty()) return true;
+            long remaining = deadline - SystemClock.elapsedRealtime();
+            if (remaining <= 0) break;
+            try {
+                lock.wait(Math.min(remaining, 100));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        logLine("H264 drain failed outstanding=" + h264Transfers.size());
+        return false;
+    }
+
+    private void cancelH264TransferMessagesLocked(int transferId, String reason) {
+        Iterator<OutboundMessage> pending = pendingMessages.iterator();
+        while (pending.hasNext()) {
+            OutboundMessage message = pending.next();
+            if (message.h264Payload && message.h264TransferId == transferId) {
+                pending.remove();
+                message.cancelled = true;
+                discardPrewriteIfMatchesLocked(message);
+                magicPool.release(message.sid, message.magic, message.label, reason);
+            }
+        }
+        Iterator<OutboundMessage> inflight = inFlightMessages.iterator();
+        while (inflight.hasNext()) {
+            OutboundMessage message = inflight.next();
+            if (message.h264Payload && message.h264TransferId == transferId) {
+                inflight.remove();
+                message.cancelled = true;
+                magicPool.release(message.sid, message.magic, message.label, reason);
+            }
+        }
+    }
+
+    private void cancelAllH264MessagesLocked(String reason) {
+        Iterator<H264Transfer> transfers = h264Transfers.iterator();
+        while (transfers.hasNext()) {
+            H264Transfer transfer = transfers.next();
+            if (!transfer.terminal) {
+                transfer.failed = true;
+                transfer.terminal = true;
+                transfer.wireGeneration++;
+            }
+            cancelH264TransferMessagesLocked(transfer.id, reason);
+        }
     }
 
     public boolean sendShutdown(int exitMode) {
@@ -950,7 +1855,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
-
     @Override public void run() {
         logLine(String.format(Locale.US, "communicator start R=%s L=%s ring=%s", rightAddress, leftAddress, ringAddress));
         while (true) {
@@ -1004,8 +1908,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (!BleProtocol.NOTIFY_CHAR_UUID.equals(uuid)) {
             return;
         }
+        String notifyArm = address.equalsIgnoreCase(leftAddress) ? "L"
+            : address.equalsIgnoreCase(rightAddress) ? "R" : "?";
+        Log.i(TAG, "BLE_NOTIFY arm=" + notifyArm
+            + " address=" + address
+            + " uuid=" + characteristicUuid
+            + " len=" + data.length);
+        StringBuilder notifyHex = new StringBuilder();
+        for (byte b : data) notifyHex.append(String.format("%02X", b & 0xFF));
+        Log.i(TAG, "BLE_NOTIFY_HEX arm=" + notifyArm + " data=" + notifyHex);
         Log.d(TAG, "onNotification: address=" + address + " characteristicUuid=" + characteristicUuid + " data.length=" + data.length);
         BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(data);
+        H264Telemetry h264Telemetry = parseH264Telemetry(frame);
         int decodedWearState = BleProtocol.parseWearState(frame);
         BleProtocol.CompassEvent compassEvent = address.equalsIgnoreCase(rightAddress)
             ? BleProtocol.parseCompassEvent(frame)
@@ -1014,6 +1928,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         G2Event event = null;
         synchronized (lock) {
             lastIncomingAtMs = SystemClock.elapsedRealtime();
+            if (h264Telemetry != null) {
+                handleH264TelemetryLocked(address, h264Telemetry);
+            }
             if (decodedWearState >= 0 && decodedWearState != wearState) {
                 wearState = decodedWearState;
                 emitWearState = true;
@@ -1139,6 +2056,446 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 emitRingEvent(event.kind, event.containerName, event.eventType, event.eventSource, event.systemExitReasonCode, frameId);
             }
         }
+    }
+
+    private void handleH264TelemetryLocked(String address, H264Telemetry telemetry) {        boolean isLeft =
+            address.equalsIgnoreCase(leftAddress) && telemetry.side == 2;
+        boolean isRight =
+            address.equalsIgnoreCase(rightAddress) && telemetry.side == 1;
+
+        if (!isLeft && !isRight) {
+            logLine("H264STAT UNKNOWN addr=" + address
+                + " fwside=" + telemetry.side
+                + " session=" + unsignedInt(telemetry.streamId));
+            return;
+        }
+        if (telemetry.version < 2 || telemetry.version > 18) {
+            if (h264Streaming) failH264StreamLocked("firmware lacks h264seq2 telemetry");
+            return;
+        }
+        if (h264Streaming && telemetry.streamId != h264StreamId) {
+            logLine("H264STAT stale session=" + unsignedInt(telemetry.streamId)
+                + " active=" + unsignedInt(h264StreamId));
+            return;
+        }
+
+        if (isRight && Integer.compareUnsigned(telemetry.decodedSeq, h264DecodedSeq) < 0) {
+            logLine("H264STAT stale progress dec=" + unsignedInt(telemetry.decodedSeq)
+                + " activeDec=" + unsignedInt(h264DecodedSeq));
+            return;
+        }
+
+        h264TelemetryVersion = Math.max(h264TelemetryVersion, telemetry.version);
+
+        if (isLeft) {
+            h264LeftTelemetrySeen = true;
+            h264LeftDecodedSeq = telemetry.decodedSeq;
+            h264LeftQueueDepth = telemetry.queueDepth;
+        }
+        if (isRight) {
+            h264RightTelemetrySeen = true;
+            h264RightDecodedSeq = telemetry.decodedSeq;
+            h264RightQueueDepth = telemetry.queueDepth;
+        }
+
+        if (isLeft && Integer.compareUnsigned(
+                telemetry.presentedSeq, h264LeftPresentedSeq) > 0) {
+            h264LeftPresentedSeq = telemetry.presentedSeq;
+        }
+        if (isRight && Integer.compareUnsigned(
+                telemetry.presentedSeq, h264RightPresentedSeq) > 0) {
+            h264RightPresentedSeq = telemetry.presentedSeq;
+        }
+        if (h264LeftPresentedSeq != 0 && h264RightPresentedSeq != 0) {
+            long lensSkew = Math.abs(
+                Integer.toUnsignedLong(h264LeftPresentedSeq)
+                    - Integer.toUnsignedLong(h264RightPresentedSeq)
+            );
+            h264MaxLensSequenceSkew = Math.max(
+                h264MaxLensSequenceSkew,
+                lensSkew
+            );
+        }
+
+        if (isRight) {
+            h264DecodedSeq = telemetry.decodedSeq;
+            if (telemetry.version == 12) {
+                h264FirmwareEmptyDeferredCallbacks =
+                    telemetry.emptyDeferredCallbacks;
+                h264FirmwareBacklogDeferredCallbacks =
+                    telemetry.backlogDeferredCallbacks;
+            }
+            if (telemetry.version >= 13 && telemetry.result != 0xff) {
+                h264FirmwarePaceScheduled = telemetry.paceScheduled;
+                h264FirmwarePaceFired = telemetry.paceFired;
+                h264FirmwarePaceDirect = telemetry.paceDirect;
+                h264FirmwarePaceLate = telemetry.paceLate;
+                h264FirmwarePaceMaxLateMs = telemetry.paceMaxLateMs;
+            }
+            if (Integer.compareUnsigned(telemetry.presentedSeq, h264PresentedSeq) > 0) {
+                long presentedAtMs = SystemClock.elapsedRealtime();
+                if (h264FirstPresentationAtMs == 0) {
+                    h264FirstPresentationAtMs = presentedAtMs;
+                } else if (h264LastPresentationAtMs > 0) {
+                    long sequenceDelta = Integer.toUnsignedLong(telemetry.presentedSeq)
+                        - Integer.toUnsignedLong(h264PresentedSeq);
+                    if (sequenceDelta > 0) {
+                        long elapsedMs = presentedAtMs - h264LastPresentationAtMs;
+                        long normalizedGapMs =
+                            (elapsedMs + sequenceDelta - 1) / sequenceDelta;
+                        h264PresentationIntervals += sequenceDelta;
+                        h264MaxPresentationGapMs = Math.max(
+                            h264MaxPresentationGapMs,
+                            normalizedGapMs
+                        );
+                    }
+                }
+                if (telemetry.version >= 14 && telemetry.result != 0xff) {
+                    long gateWaitUs = Integer.toUnsignedLong(
+                        telemetry.displayGateWaitUs
+                    );
+                    long presentUs = Integer.toUnsignedLong(
+                        telemetry.displayPresentUs
+                    );
+                    h264DisplayTimingSamples++;
+                    h264DisplayGateWaitTotalUs += gateWaitUs;
+                    h264DisplayGateWaitMaxUs = Math.max(
+                        h264DisplayGateWaitMaxUs,
+                        gateWaitUs
+                    );
+                    h264DisplayPresentTotalUs += presentUs;
+                    h264DisplayPresentMaxUs = Math.max(
+                        h264DisplayPresentMaxUs,
+                        presentUs
+                    );
+                }
+                h264LastPresentationAtMs = presentedAtMs;
+                h264PresentedSeq = telemetry.presentedSeq;
+            }
+            h264FirmwareFrames = Math.max(h264FirmwareFrames, telemetry.frames);
+            h264FirmwareQueueCapacity = telemetry.version >= 3
+                ? Math.max(1, telemetry.queueCapacity)
+                : H264_STARTUP_WINDOW;
+            h264FirmwareQueuedBytes = telemetry.version >= 3 ? telemetry.queuedBytes : 0;
+        }
+
+        h264MaxFirmwareQueueDepth =
+            Math.max(h264MaxFirmwareQueueDepth, telemetry.queueDepth);
+
+        for (H264Transfer transfer : h264Transfers) {
+            if (!transfer.terminal && transfer.sequence > 0
+                    && transfer.streamId == telemetry.streamId
+                    && Integer.compareUnsigned(
+                        transfer.sequence, telemetry.decodedSeq
+                    ) <= 0) {
+
+                if (isLeft) {
+                    transfer.leftDecoderConfirmed = true;
+                }
+
+                if (isRight) {
+                    transfer.rightDecoderConfirmed = true;
+                }
+
+                transfer.decoderConfirmed =
+                    transfer.leftDecoderConfirmed &&
+                    transfer.rightDecoderConfirmed;
+
+                if (transfer.decoderConfirmed) {
+                    transfer.terminal = true;
+                    transfer.recoveryInProgress = false;
+                    transfer.retryPending = false;
+                    transfer.wireGeneration++;
+                    cancelH264TransferMessagesLocked(
+                        transfer.id,
+                        "both decoders confirmed seq=" + transfer.sequence
+                    );
+                }
+            }
+        }
+        purgeCompletedH264TransfersLocked();
+
+        boolean sequenceError = (telemetry.flags & 8) != 0;
+        boolean snapshotOverflow = (telemetry.flags & 16) != 0;
+        boolean snapshotOom = (telemetry.flags & 32) != 0;
+        boolean reorderWait = (telemetry.flags & 64) != 0;
+        boolean queueFull = (telemetry.flags & 128) != 0;
+        int decoderLag = Math.max(0, h264HighestQueuedSeq - telemetry.decodedSeq);
+        String allocationFailure = h264AllocationFailure(telemetry);
+        String arenaUsage = h264ArenaUsage(telemetry);
+        logLine("H264STAT " + (isLeft ? "LEFT" : "RIGHT") + " addr=" + address + " fwside=" + telemetry.side + " session=" + unsignedInt(telemetry.streamId)
+            + " rx=" + unsignedInt(telemetry.receivedSeq)
+            + " dec=" + unsignedInt(telemetry.decodedSeq)
+            + " present=" + unsignedInt(telemetry.presentedSeq)
+            + " expected=" + unsignedInt(telemetry.expectedSeq)
+            + " frames=" + telemetry.frames
+            + " q=" + telemetry.queueDepth
+            + "/" + h264FirmwareQueueCapacity
+            + " qbytes=" + h264FirmwareQueuedBytes
+            + " lag=" + decoderLag
+            + " nal=" + telemetry.nalType
+            + " result=" + telemetry.result
+            + " decode=" + telemetry.decodeUs + "us"
+            + " retries=" + h264RetryCount
+            + (telemetry.version >= 4
+                ? " diag=" + unsignedInt(telemetry.diagStage)
+                    + "/" + unsignedInt(telemetry.diagMbEntered)
+                    + "/" + unsignedInt(telemetry.diagMbCompleted)
+                    + "/" + unsignedInt(telemetry.diagBitOffset)
+                : "")
+            + (telemetry.version == 12
+                    && (telemetry.diagMbCompleted < 200
+                        || telemetry.diagMbCompleted >= 500)
+                ? " sync=" + telemetry.emptyDeferredCallbacks
+                    + "/" + telemetry.backlogDeferredCallbacks
+                : "")
+            + (telemetry.version >= 13 && telemetry.result != 0xff
+                ? " pace=" + telemetry.paceFired
+                    + "/" + telemetry.paceScheduled
+                    + (telemetry.version >= 16
+                        ? " route=" + telemetry.paceDirect
+                            + "/" + Math.max(
+                                0,
+                                telemetry.paceScheduled - telemetry.paceDirect
+                            )
+                        : "")
+                    + " late=" + telemetry.paceLate
+                    + " maxLate=" + telemetry.paceMaxLateMs + "ms"
+                : "")
+            + (telemetry.version >= 14 && telemetry.result != 0xff
+                ? " gate=" + unsignedInt(telemetry.displayGateWaitUs) + "us"
+                    + " presentWork=" + unsignedInt(telemetry.displayPresentUs) + "us"
+                : "")
+            + (allocationFailure != null
+                ? " ALLOCFAIL=" + allocationFailure
+                    + " bytes=" + unsignedInt(telemetry.diagBitOffset)
+                : "")
+            + (arenaUsage != null ? " " + arenaUsage : "")
+            + (sequenceError ? " SEQERR" : "")
+            + (snapshotOverflow ? " SNAPOF" : "")
+            + (snapshotOom ? " SNAPOOM" : "")
+            + (reorderWait ? " REORDERWAIT" : "")
+            + (queueFull ? " QFULL" : ""));
+
+        if (allocationFailure != null) {
+            failH264StreamLocked(
+                "firmware decoder allocation failed: " + allocationFailure
+                    + " bytes=" + unsignedInt(telemetry.diagBitOffset)
+                    + (arenaUsage != null ? " " + arenaUsage : "")
+            );
+        } else if (snapshotOom) {
+            failH264StreamLocked("firmware H264 snapshot allocation failed");
+        } else if (snapshotOverflow && telemetry.version < 3) {
+            failH264StreamLocked("firmware snapshot overflow");
+        } else if (h264Streaming) {
+            if (queueFull) {
+                H264Transfer rejected = findH264TransferBySequenceLocked(
+                    telemetry.receivedSeq
+                );
+                if (rejected != null && !rejected.recoveryInProgress) {
+                    rejected.retryPending = true;
+                    rejected.confirmationDeadlineMs = 0;
+                    logLine("H264 firmware queue rejected seq="
+                        + unsignedInt(rejected.sequence)
+                        + "; retry deferred until it is expected");
+                }
+            }
+            if (sequenceError) {
+                H264Transfer expected = findH264TransferBySequenceLocked(telemetry.expectedSeq);
+                if (expected == null) {
+                    failH264StreamLocked(
+                        "firmware requested unavailable seq=" + telemetry.expectedSeq
+                    );
+                } else {
+                    if (!expected.recoveryInProgress
+                            && !retryH264TransferLocked(
+                                expected,
+                                "firmware requested expected sequence"
+                            )) {
+                        failH264TransferLocked(
+                            expected,
+                            "firmware sequence recovery unavailable"
+                        );
+                    } else if (expected.recoveryInProgress) {
+                        logLine("H264 recovery waiting seq="
+                            + unsignedInt(expected.sequence));
+                    }
+                }
+            }
+        }
+        lastHeartbeatAckedAtMs = SystemClock.elapsedRealtime();
+        if (h264Streaming && !h264StreamFailed) {
+            checkH264ConfirmationDeadlinesLocked();
+        }
+        lock.notifyAll();
+    }
+
+    private H264Transfer findH264TransferBySequenceLocked(int sequence) {
+        for (H264Transfer transfer : h264Transfers) {
+            if (!transfer.terminal && transfer.sequence == sequence) return transfer;
+        }
+        return null;
+    }
+
+    private void failH264StreamLocked(String reason) {
+        h264StreamFailed = h264Streaming;
+        for (H264Transfer transfer : h264Transfers) {
+            if (!transfer.terminal) {
+                transfer.failed = true;
+                transfer.terminal = true;
+                transfer.wireGeneration++;
+                cancelH264TransferMessagesLocked(transfer.id, "H264 stream failed: " + reason);
+            }
+        }
+        logLine("H264 stream failed: " + reason);
+        lock.notifyAll();
+    }
+
+    private static H264Telemetry parseH264Telemetry(BleProtocol.ParsedFrame frame) {
+        if (frame == null || !frame.ok || frame.sid != 0x11
+                || (frame.flag != BleProtocol.FLAG_NOTIFY && frame.flag != BleProtocol.FLAG_NOTIFY_ALT)) {
+            return null;
+        }
+        byte[] pb = frame.pb;
+        for (int i = 0; i + 2 < pb.length; i++) {
+            if ((pb[i] & 0xff) != 0xa2 || (pb[i + 1] & 0xff) != 0x06) continue;
+            int len = pb[i + 2] & 0xff;
+            int o = i + 3;
+            if (len < 28 || o + len > pb.length || pb[o] != 'H' || pb[o + 1] != '2') return null;
+            H264Telemetry result = new H264Telemetry();
+            result.version = pb[o + 2] & 0xff;
+            result.side = pb[o + 3] & 0xff;
+            result.flags = pb[o + 4] & 0xff;
+            result.queueDepth = pb[o + 5] & 0xff;
+            result.nalType = pb[o + 6] & 0xff;
+            result.result = pb[o + 7] & 0xff;
+            if (result.version >= 2 && len >= 36) {
+                result.streamId = readLe32(pb, o + 8);
+                result.receivedSeq = readLe32(pb, o + 12);
+                result.decodedSeq = readLe32(pb, o + 16);
+                result.presentedSeq = readLe32(pb, o + 20);
+                result.frames = readLe32(pb, o + 24);
+                result.decodeUs = readLe32(pb, o + 28);
+                result.expectedSeq = readLe32(pb, o + 32);
+                if (result.version >= 3 && len >= 41) {
+                    result.queueCapacity = pb[o + 36] & 0xff;
+                    result.queuedBytes = readLe32(pb, o + 37);
+                } else {
+                    result.queueCapacity = H264_STARTUP_WINDOW;
+                    result.queuedBytes = 0;
+                }
+                if (result.version >= 4 && len >= 57) {
+                    result.diagStage = readLe32(pb, o + 41);
+                    result.diagMbEntered = readLe32(pb, o + 45);
+                    result.diagMbCompleted = readLe32(pb, o + 49);
+                    result.diagBitOffset = readLe32(pb, o + 53);
+                    if (result.version >= 16 && result.result != 0xff) {
+                        result.paceScheduled = result.diagStage & 0x3ff;
+                        result.paceFired = (result.diagStage >>> 10) & 0x3ff;
+                        result.paceDirect = (result.diagStage >>> 20) & 0x3ff;
+                        result.paceLate = result.diagMbEntered & 0x3ff;
+                        result.paceMaxLateMs =
+                            (result.diagMbEntered >>> 10) & 0x3ff;
+                        result.displayGateWaitUs = result.diagMbCompleted;
+                        result.displayPresentUs = result.diagBitOffset;
+                    } else if (result.version >= 14 && result.result != 0xff) {
+                        result.paceScheduled = result.diagStage & 0xffff;
+                        result.paceFired = (result.diagStage >>> 16) & 0xffff;
+                        result.paceLate = result.diagMbEntered & 0xffff;
+                        result.paceMaxLateMs =
+                            (result.diagMbEntered >>> 16) & 0xffff;
+                        result.displayGateWaitUs = result.diagMbCompleted;
+                        result.displayPresentUs = result.diagBitOffset;
+                    } else if (result.version >= 13 && result.result != 0xff) {
+                        result.paceScheduled = result.diagStage;
+                        result.paceFired = result.diagMbEntered;
+                        result.paceLate = result.diagMbCompleted;
+                        result.paceMaxLateMs = result.diagBitOffset;
+                    } else if (result.version >= 12
+                            && (result.diagMbCompleted < 200
+                                || result.diagMbCompleted >= 500)) {
+                        result.emptyDeferredCallbacks =
+                            result.diagBitOffset & 0xffff;
+                        result.backlogDeferredCallbacks =
+                            (result.diagBitOffset >>> 16) & 0xffff;
+                    }
+                }
+            } else {
+                result.receivedSeq = readLe32(pb, o + 8);
+                result.decodedSeq = readLe32(pb, o + 12);
+                result.presentedSeq = readLe32(pb, o + 16);
+                result.frames = readLe32(pb, o + 20);
+                result.decodeUs = readLe32(pb, o + 24);
+            }
+            return result;
+        }
+        return null;
+    }
+
+    private static String h264AllocationFailure(H264Telemetry telemetry) {
+        if (telemetry == null || telemetry.version < 5) return null;
+        if (telemetry.version >= 13 && telemetry.result != 0xff) return null;
+        int stage = telemetry.diagMbCompleted;
+        if (telemetry.version >= 7 && stage == 290) {
+            switch (telemetry.diagBitOffset) {
+                case 1: return "arena-bind-invalid-layout";
+                case 2: return "arena-bind-runtime-mismatch";
+                case 3: return "arena-bind-used-overflow";
+                default: return "arena-bind-failed";
+            }
+        }
+
+        int family = stage / 100;
+        int tag = stage % 100;
+        if (family < 1 || family > 4) return null;
+        String reason;
+        switch (family) {
+            case 2: reason = " arena-unavailable"; break;
+            case 3: reason = " arena-exhausted"; break;
+            case 4: reason = " firmware-heap-exhausted"; break;
+            default: reason = ""; break;
+        }
+        String allocation;
+        switch (tag) {
+            case 1: allocation = "dpb-entries"; break;
+            case 2: allocation = "frame-y"; break;
+            case 3: allocation = "frame-u"; break;
+            case 4: allocation = "frame-v"; break;
+            case 5: allocation = "nnz-luma"; break;
+            case 6: allocation = "nnz-cb"; break;
+            case 7: allocation = "nnz-cr"; break;
+            case 8: allocation = "mb-qps"; break;
+            case 9: allocation = "mb-transform8x8"; break;
+            case 10: allocation = "mb-motion"; break;
+            case 11: allocation = "mb-intra4x4-modes"; break;
+            case 12: allocation = "cabac-neighbors"; break;
+            default: return null;
+        }
+        return allocation + reason;
+    }
+
+    private static String h264ArenaUsage(H264Telemetry telemetry) {
+        if (telemetry == null || telemetry.version < 7) return null;
+        if (telemetry.version >= 13 && telemetry.result != 0xff) return null;
+        int stage = telemetry.diagMbCompleted;
+        if (stage < 200 || stage >= 500) return null;
+        long firstSize = (telemetry.diagStage & 0xffffL) * 8L;
+        long firstUsed = ((telemetry.diagStage >>> 16) & 0xffffL) * 8L;
+        long secondSize = (telemetry.diagMbEntered & 0xffffL) * 8L;
+        long secondUsed = ((telemetry.diagMbEntered >>> 16) & 0xffffL) * 8L;
+        return "arena=A:" + firstUsed + "/" + firstSize
+            + " B:" + secondUsed + "/" + secondSize;
+    }
+
+    private static int readLe32(byte[] bytes, int offset) {
+        return (bytes[offset] & 0xff)
+            | ((bytes[offset + 1] & 0xff) << 8)
+            | ((bytes[offset + 2] & 0xff) << 16)
+            | ((bytes[offset + 3] & 0xff) << 24);
+    }
+
+    private static String unsignedInt(int value) {
+        return Integer.toUnsignedString(value);
     }
 
     private void handleDirectRingNotification(String characteristicUuid, byte[] data) {
@@ -1269,6 +2626,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             setStateDisplay("connected", "Connected.");
             logLine("session ready");
+        enableWearDetectionAndRequestState();
             synchronized (lock) {
                 // Query settings promptly on the first session so firmware
                 // version/capabilities (and battery) arrive without waiting for
@@ -1528,38 +2886,44 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         enqueueWarmupLocked();
                     }
 
-                    if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && warmedUp
+                    if (messageToPrewrite == null && !h264Streaming && !shutdownRequested && fixedLayoutCreated && warmedUp
                             && (firmwareDebugFlagsEnabled ? 2 : 1) != firmwareDebugFlagsLastSent
                             && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                         Log.i(TAG, "enqueueing firmware debug flags " + (firmwareDebugFlagsEnabled ? "show" : "hide"));
                         enqueueFirmwareDebugFlagsLocked();
                     }
 
-                    if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && warmedUp
+                    if (messageToPrewrite == null && !h264Streaming && !shutdownRequested && fixedLayoutCreated && warmedUp
                             && (compassEnabled ? 1 : 0) != compassControlLastSent
                             && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                         Log.i(TAG, "enqueueing compass " + (compassEnabled ? "enable" : "disable"));
                         enqueueCompassControlLocked(false, compassEnabled);
                     }
 
-                    // Up to WINDOW_SIZE messages may be in flight at once (full
-                    // pipelining); a slot frees when an ack arrives.
-                    boolean windowHasRoom = inFlightMessages.size() < Math.max(1, connectionOptions.WINDOW_SIZE);
+                    // Ordinary UI traffic uses the configured transport window.
+                    // H.264 keeps its separate four-NAL logical decoder window,
+                    // but serializes physical BLE messages so completed images
+                    // reach both lenses at an even cadence instead of bursts of
+                    // three followed by a queue-drain pause.
+                    int transportWindow = h264Streaming
+                        ? 1
+                        : Math.max(1, connectionOptions.WINDOW_SIZE);
+                    boolean windowHasRoom = inFlightMessages.size() < transportWindow;
                     // A frame ready to send right now: don't inject a fresh
                     // heartbeat in front of it (the image's own ack resets the
                     // firmware heartbeat timer, so the heartbeat is redundant).
-                    boolean imageWaiting = !shutdownRequested && fixedLayoutCreated && warmedUp
+                    boolean imageWaiting = !h264Streaming && !shutdownRequested && fixedLayoutCreated && warmedUp
                             && !hasPendingOrInflightKindLocked("heartbeat")
                             && now >= imageRetryAfterMs
                             && !getDesiredFingerprint().equals(lastEnqueuedFingerprint);
-                    if (messageToPrewrite == null && handleHeartbeat(imageWaiting)) {
+                    if (messageToPrewrite == null && !h264Streaming && handleHeartbeat(imageWaiting)) {
                         return ConnectionOptions.IDLE_SLEEP_MS;
                     }
 
                     if (messageToPrewrite == null && sessionReady && windowHasRoom && !pendingMessages.isEmpty()) {
                         messageToWrite = pendingMessages.removeFirst();
                         Log.i(TAG, "sending pending message: " + messageToWrite.label);
-                    } else if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && warmedUp
+                    } else if (messageToPrewrite == null && !h264Streaming && !shutdownRequested && fixedLayoutCreated && warmedUp
                             && windowHasRoom && !hasPendingImageLocked()
                             && now >= imageRetryAfterMs
                             && !getDesiredFingerprint().equals(lastEnqueuedFingerprint)) {
@@ -1569,7 +2933,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         Log.i(TAG, "Enqueued image update");
                         enqueueDesiredImageLocked();
                         return 0;
-                    } else if (messageToPrewrite == null && shouldPollBatteryLocked(now)) {
+                    } else if (messageToPrewrite == null && !h264Streaming && shouldPollBatteryLocked(now)) {
                         Log.i(TAG, "Writing battery query");
                         messageToWrite = createBatteryQueryMessageLocked();
                         lastBatteryRefreshAtMs = now;
@@ -1698,8 +3062,19 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         message.writeStartedAtMs = now;
         message.sentAtMs = now;
         message.ackDeadlineAtMs = now + message.ackTimeoutMs + ConnectionOptions.WRITE_TIMEOUT_MS;
-        if (message.magic != 0) {
-            synchronized (lock) {
+        synchronized (lock) {
+            if (message.h264Payload && !isCurrentH264MessageLocked(message)) {
+                message.cancelled = true;
+                discardPrewriteIfMatchesLocked(message);
+                magicPool.release(
+                    message.sid,
+                    message.magic,
+                    message.label,
+                    "stale H264 generation before write"
+                );
+                return true;
+            }
+            if (message.magic != 0) {
                 inFlightMessages.addLast(message);
             }
         }
@@ -1744,7 +3119,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             message.sentAtMs = sentAtMs;
             message.ackDeadlineAtMs = sentAtMs + message.ackTimeoutMs;
             logImageUpdateSendLandmarkLocked(message);
-            if (result && message.onSent != null) {
+            boolean current = !message.h264Payload || isCurrentH264MessageLocked(message);
+            if (result && current && message.onSent != null) {
                 message.onSent.run();
                 lock.notifyAll();
             }
@@ -1754,6 +3130,19 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private boolean prewriteMessage(OutboundMessage message) {
+        synchronized (lock) {
+            if (message.h264Payload && !isCurrentH264MessageLocked(message)) {
+                message.cancelled = true;
+                discardPrewriteIfMatchesLocked(message);
+                magicPool.release(
+                    message.sid,
+                    message.magic,
+                    message.label,
+                    "stale H264 generation before prewrite"
+                );
+                return true;
+            }
+        }
         if (prewrittenMessage == message) {
             return true;
         }
@@ -1858,6 +3247,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             message.onAck.run();
         }
         consecutiveAckTimeouts = 0;
+        // ACK-specific waiters update their condition state in onAck. Wake them
+        // immediately instead of making them consume the 100 ms safety poll.
+        lock.notifyAll();
     }
 
     private void logImageUpdateSendLandmarkLocked(OutboundMessage message) {
@@ -2119,7 +3511,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             enqueueImageFragmentLocked(plan, fragment, fingerprint, updateId, i + 1, messageCount, true);
         }
         // This frame is now the base for the next delta (it will be the firmware
-        // shadow once applied), even though it hasn't been acked yet — that is what
+        // shadow once applied), even though it hasn't been acked yet ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â that is what
         // lets the next frame pipeline behind it. plan.packed is the full frame;
         // frames are immutable by convention, so referencing it is safe.
         lastEnqueuedPacked = plan.packed;
@@ -2330,13 +3722,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void handleAckTimeoutLocked(OutboundMessage message) {
-        consecutiveAckTimeouts += 1;
+        // Sequenced H.264 has its own bounded retry/replay state machine. Its
+        // deliberate cancellation and recovery must not poison the generic
+        // connection-wide timeout counter and force an otherwise healthy reconnect.
+        if (!message.h264Payload) consecutiveAckTimeouts += 1;
 
         if (message.onTimeout != null) {
             message.onTimeout.run();
         }
 
-        if (consecutiveAckTimeouts > ConnectionOptions.MAX_CONSECUTIVE_ACK_TIMEOUTS) {
+        if (!message.h264Payload
+                && consecutiveAckTimeouts > ConnectionOptions.MAX_CONSECUTIVE_ACK_TIMEOUTS) {
             handleTransportFailure("too many ack timeouts");
         }
     }
@@ -2980,7 +4376,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         String message = t.getMessage();
         return message == null || message.trim().isEmpty() ? String.valueOf(t) : message;
     }
-    
+
     private String getDesiredFingerprint() {
         synchronized (desiredTilesLock) {
             return desiredFingerprint;

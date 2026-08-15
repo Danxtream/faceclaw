@@ -200,6 +200,7 @@ class Shell {
   private focus: FocusKind = "sidebar";
   private screenOn = true;
   private lastInputAtMs = Date.now();
+  private screenAwakeLeaseCount = 0;
   private battery: ShellChromeState["battery"] = { headset: null, headsetCharging: null };
   private attention = new Map<string, boolean>();
   // App-provided top-bar tray icons, keyed by owner id; drawn between the
@@ -378,6 +379,23 @@ class Shell {
     this.lastInputAtMs = nowMs;
   }
 
+  /**
+   * Prevent the idle timeout from suspending the display while a bounded
+   * operation (for example video playback) owns the screen. The returned
+   * release callback is idempotent and restarts the normal timeout.
+   */
+  acquireScreenAwakeLease(): () => void {
+    this.screenAwakeLeaseCount++;
+    this.lastInputAtMs = Date.now();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.screenAwakeLeaseCount = Math.max(0, this.screenAwakeLeaseCount - 1);
+      this.lastInputAtMs = Date.now();
+    };
+  }
+
   /** Turn the screen on (if off) and set focus. Returns whether it was off. */
   wake(focus: FocusKind, nowMs = Date.now()): boolean {
     this.lastInputAtMs = nowMs;
@@ -424,7 +442,11 @@ class Shell {
     // An in-flight assistant turn suspends it for the same reason (a tool loop
     // can run for a while with no input); once the turn ends and the
     // Follow-up/Done menu is showing, the normal idle timeout resumes.
-    if (this.activeVoiceLayer || this.assistantSession?.isTurnActive()) {
+    if (
+      this.screenAwakeLeaseCount > 0 ||
+      this.activeVoiceLayer ||
+      this.assistantSession?.isTurnActive()
+    ) {
       this.lastInputAtMs = nowMs;
       return false;
     }

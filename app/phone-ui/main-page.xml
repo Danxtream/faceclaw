@@ -4,6 +4,7 @@
         <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Take screenshot" tap="{{ onTakeScreenshotTap }}" android.position="popup" />
         <ActionItem text="Record screen" tap="{{ onRecordScreenTap }}" android.position="popup" />
+        <ActionItem text="Update custom firmware" tap="{{ onInstallFirmwareTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Uninstall custom firmware" tap="{{ onUninstallFirmwareTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="{{ showLogMenuLabel }}" tap="{{ onToggleLogTap }}" android.position="popup" />
     </ActionBar>

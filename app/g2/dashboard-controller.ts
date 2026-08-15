@@ -1410,6 +1410,7 @@ class DashboardController {
         this.submitWindowFrame(surfaceId, image, paintMs, frameId),
       setWindowSurfaceVisible: (surfaceId, visible) => this.setWindowSurfaceVisible(surfaceId, visible),
       requestShellRender: () => this.requestShellRender(),
+      acquireScreenAwakeLease: () => shell.acquireScreenAwakeLease(),
       appendLog: (message) => this.appendLog(message),
       setTextEditorHost: (host) => {
         this.textEditorHost = host;

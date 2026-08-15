@@ -68,7 +68,7 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
     private static final int[] END_OK = new int[] {0, 8, 9};
 
     // Firmware layout expectations (mirrors g2flash.py).
-    private static final int EXPECTED_SEGMENTS = 5;
+    private static final int EXPECTED_SEGMENTS = 6;
     private static final String REQUIRED_SEGMENT = "ota/s200_firmware_ota.bin";
     private static final long APP_LOAD_ADDR = 0x00438000L;
     private static final long APP_MAX_END = 0x007F0000L;

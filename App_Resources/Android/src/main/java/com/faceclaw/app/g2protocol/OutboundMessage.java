@@ -22,6 +22,10 @@ public final class OutboundMessage {
     Runnable onSent;
     Runnable onAck;
     Runnable onTimeout;
+    boolean h264Payload;
+    int h264TransferId;
+    int h264Generation;
+    boolean cancelled;
 
     OutboundMessage(String kind, String label, int sid, int flag, int magic, byte[] message, int ackTimeoutMs, int tileIndex, boolean isLeftArmMessage) {
         this.kind = kind;
