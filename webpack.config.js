@@ -1,7 +1,9 @@
 const webpack = require("@nativescript/webpack");
 const { resolve } = require("path");
+const { verify: verifyG2FirmwareSync } = require("./scripts/g2-firmware-guard.cjs");
 
 module.exports = (env) => {
+    verifyG2FirmwareSync();
 	webpack.init(env);
 
 	// Learn how to customize:

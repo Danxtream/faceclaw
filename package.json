@@ -1,29 +1,33 @@
 {
-  "name": "faceclaw",
-  "main": "app/app.ts",
-  "version": "1.0.0",
-  "private": false,
-  "scripts": {
-    "build": "nativescript build android"
-  },
-  "dependencies": {
-    "@nativescript/core": "~9.0.0",
-    "@nativescript/theme": "^3.1.0",
-    "@xterm/headless": "^6.0.0",
-    "lodash": "^4.18.1",
-    "lz4js": "^0.2.0",
-    "pako": "^2.1.0",
-    "upng-js": "^2.1.0"
-  },
-  "devDependencies": {
-    "@nativescript/android": "9.0.4",
-    "@nativescript/types": "~9.0.0",
-    "@nativescript/webpack": "~5.0.25",
-    "typescript": "~5.4.0"
-  },
-  "allowScripts": {
-    "@nativescript/core@9.0.18": true,
-    "@parcel/watcher@2.5.6": true,
-    "core-js-pure@3.49.0": true
-  }
+    "name":  "faceclaw",
+    "main":  "app/app.ts",
+    "version":  "1.0.0",
+    "private":  false,
+    "scripts":  {
+                    "build":  "nativescript build android",
+                    "firmware:verify":  "node scripts/g2-firmware-guard.cjs",
+                    "firmware:sync":  "node scripts/g2-firmware-guard.cjs --sync",
+                    "firmware:promote":  "npm run firmware:sync \u0026\u0026 npm run build",
+                    "prebuild":  "npm run firmware:verify"
+                },
+    "dependencies":  {
+                         "@nativescript/core":  "~9.0.0",
+                         "@nativescript/theme":  "^3.1.0",
+                         "@xterm/headless":  "^6.0.0",
+                         "lodash":  "^4.18.1",
+                         "lz4js":  "^0.2.0",
+                         "pako":  "^2.1.0",
+                         "upng-js":  "^2.1.0"
+                     },
+    "devDependencies":  {
+                            "@nativescript/android":  "9.0.4",
+                            "@nativescript/types":  "~9.0.0",
+                            "@nativescript/webpack":  "~5.0.25",
+                            "typescript":  "~5.4.0"
+                        },
+    "allowScripts":  {
+                         "@nativescript/core@9.0.18":  true,
+                         "@parcel/watcher@2.5.6":  true,
+                         "core-js-pure@3.49.0":  true
+                     }
 }

@@ -125,6 +125,13 @@ public class FaceclawBleManager {
         }
     }
 
+    public void readPhy(String address) {
+        synchronized (gattLock(address)) {
+            BluetoothGatt gatt = requireGatt(address);
+            gatt.readPhy();
+        }
+    }
+
     public boolean requestMtu(String address, int mtu, int timeoutMs) {
         synchronized (gattLock(address)) {
             CountDownLatch latch = new CountDownLatch(1);
@@ -405,6 +412,9 @@ public class FaceclawBleManager {
         @Override
         public void onMtuChanged(BluetoothGatt gatt, int mtu, int status) {
             String address = gatt.getDevice().getAddress();
+            Log.i(TAG, "BLELINK MTU address=" + address
+                + " mtu=" + mtu
+                + " status=" + status);
             mtuStatuses.put(address, status);
             CountDownLatch latch = mtuLatches.remove(address);
             if (latch != null) {
@@ -414,7 +424,11 @@ public class FaceclawBleManager {
 
         @Override
         public void onPhyRead(BluetoothGatt gatt, int txPhy, int rxPhy, int status) {
-            Log.i(TAG, "onPhyRead: txPhy=" + txPhy + " rxPhy=" + rxPhy + " status=" + status);
+            String address = gatt.getDevice().getAddress();
+            Log.i(TAG, "BLELINK PHY address=" + address
+                + " txPhy=" + txPhy
+                + " rxPhy=" + rxPhy
+                + " status=" + status);
         }
 
         @Override

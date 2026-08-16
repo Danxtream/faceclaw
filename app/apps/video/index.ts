@@ -289,7 +289,6 @@ const videoApp: AppDefinition = {
         let lateFrames = 0;
         let maxLatenessMs = 0;
         let firstFrameQueuedMs = 0;
-        let lastFrameQueuedMs = 0;
         let totalTransportMs = 0;
 
         for (let i = 0; i < playbackPlan.nals.length; i++) {
@@ -303,10 +302,13 @@ const videoApp: AppDefinition = {
             if (sentFrames === 0) {
               targetStartMs = Date.now();
             } else {
-              // Pace from the previous actual enqueue completion. If transport
-              // stalls, playback slows instead of bursting reference frames to
-              // catch up and overflowing the firmware snapshot queue.
-              targetStartMs = lastFrameQueuedMs + frameDurationMs;
+              // Pace against a fixed media timeline anchored to the first actual
+              // frame enqueue. Backpressure may make a frame late; do not add a
+              // second full frame interval afterward. If this target is already
+              // in the past, pauseUntil returns immediately and the Java decoder
+              // window / byte-budget / firmware-queue guards remain authoritative.
+              targetStartMs =
+                firstFrameQueuedMs + sentFrames * frameDurationMs;
               await pauseUntil(targetStartMs);
             }
           }
@@ -337,7 +339,6 @@ const videoApp: AppDefinition = {
             const queuedAtMs = Date.now();
             sentFrames++;
             if (firstFrameQueuedMs === 0) firstFrameQueuedMs = queuedAtMs;
-            lastFrameQueuedMs = queuedAtMs;
 
             if (
               vclCount <= 10 ||

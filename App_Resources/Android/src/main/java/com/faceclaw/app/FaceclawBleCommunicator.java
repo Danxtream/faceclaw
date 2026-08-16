@@ -120,6 +120,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     // With serialized physical BLE delivery, keep four logical NALs prepared.
     // Three reduced throughput without improving presentation gaps or lens skew.
     private static final int H264_LOGICAL_WINDOW = 4;
+    private static final int H264_BLE_WINDOW = 2;
+    private static final boolean H264_SEND_TO_LEFT = true;
     private static final int H264_STARTUP_WINDOW = 1;
     private static final int H264_PAYLOAD_BUDGET_BYTES = 16 * 1024;
     // A V11 firmware snapshot is 4096 bytes. Keep one ordinary encoded NAL in a
@@ -957,7 +959,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             logLine("H264 stream transport begin session=" + unsignedInt(streamId)
                 + " startupWindow=" + H264_STARTUP_WINDOW
                 + " decoderWindow=" + H264_LOGICAL_WINDOW
-                + " bleWindow=1"
+                + " bleWindow=" + H264_BLE_WINDOW
                 + " byteBudget=" + H264_PAYLOAD_BUDGET_BYTES);
         }
         interruptibleSleep.interrupt();
@@ -1284,7 +1286,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         ArrayList<OutboundMessage> messages = new ArrayList<>();
         for (BleProtocol.ImageFragment fragment : plan.fragments) {
             OutboundMessage message = messageBuilder.imageFragment(
-                fragment, plan, true, connectionOptions.sendImagesToLeft
+                fragment, plan, true, H264_SEND_TO_LEFT
             );
             message.h264Payload = true;
             message.h264TransferId = transfer.id;
@@ -1996,6 +1998,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     && frame.flag != BleProtocol.FLAG_NOTIFY
                     && frame.flag != BleProtocol.FLAG_NOTIFY_ALT) {
                 lastAckAtMs = lastIncomingAtMs;
+                if (h264Streaming) {
+                    Log.i(TAG, "H264ACKRX arm=" + notifyArm
+                        + " sid=" + frame.sid
+                        + " magic=" + frame.msgSeq);
+                }
                 resolveAckLocked(frame.sid, frame.msgSeq, frame.pb);
             }
             if (!faceclawWakeNotification
@@ -2680,6 +2687,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (enableRenderNotify) {
             bleManager.enableNotifications(address, BleProtocol.RENDER_NOTIFY_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS);
         }
+        bleManager.readPhy(address);
         synchronized (lock) {
             if (address.equalsIgnoreCase(rightAddress)) {
                 rightConnected = true;
@@ -2842,7 +2850,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         handleAckTimeoutLocked(oldest);
                         return 0;
                     }
-                    if (connectionOptions.WINDOW_SIZE <= 1
+                    if ((!h264Streaming || H264_BLE_WINDOW <= 1)
+                            && connectionOptions.WINDOW_SIZE <= 1
                             && sessionReady
                             && prewrittenMessage == null
                             && !pendingMessages.isEmpty()
@@ -2906,7 +2915,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     // reach both lenses at an even cadence instead of bursts of
                     // three followed by a queue-drain pause.
                     int transportWindow = h264Streaming
-                        ? 1
+                        ? H264_BLE_WINDOW
                         : Math.max(1, connectionOptions.WINDOW_SIZE);
                     boolean windowHasRoom = inFlightMessages.size() < transportWindow;
                     // A frame ready to send right now: don't inject a fresh
@@ -3106,6 +3115,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 nextTransportSeq++
             );
         }
+        long h264PhyWriteStartedAtMs = SystemClock.elapsedRealtime();
         boolean result = bleManager.writeFrames(
             writeAddress,
             BleProtocol.WRITE_CHAR_UUID,
@@ -3113,6 +3123,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             ConnectionOptions.WRITE_TYPE,
             ConnectionOptions.WRITE_TIMEOUT_MS
         );
+        if (message.h264Payload) {             long h264PhyWriteMs = Math.max(                 0L,                 SystemClock.elapsedRealtime() - h264PhyWriteStartedAtMs             );             Log.i(TAG, "H264PHY WRITE transfer=" + message.h264TransferId                 + " generation=" + message.h264Generation                 + " arm=" + (message.isLeftArmMessage ? "L" : "R")                 + " sid=" + message.sid                 + " magic=" + message.magic                 + " frames=" + frames.size()                 + " writeMs=" + h264PhyWriteMs                 + " result=" + result);         }
 
         synchronized (lock) {
             long sentAtMs = SystemClock.elapsedRealtime();
