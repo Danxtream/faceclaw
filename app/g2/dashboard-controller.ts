@@ -1319,6 +1319,10 @@ class DashboardController {
           event.eventType === OsEventTypeList.ABNORMAL_EXIT_EVENT ||
           event.eventType === OsEventTypeList.SYSTEM_EXIT_EVENT
         ) {
+          if ((globalThis as any).__faceclawVideoOwnsDisplay) {
+            console.log("VIDEO_DISPLAY_EXIT_SUPPRESSED");
+            return;
+          }
           this.appendLog("display state invalidated by firmware exit event");
         }
         if (event.eventSource === EventSourceType.TOUCH_EVENT_FROM_RING) {

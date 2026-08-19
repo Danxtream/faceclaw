@@ -328,6 +328,15 @@ class Shell {
     if (window) this.closeWindow(window.windowId);
   }
 
+  /** Close every closeable window except explicitly excluded window ids. */
+  closeAllCloseableWindows(excludedWindowIds: readonly string[] = []): void {
+    const excluded = new Set(excludedWindowIds);
+    const windowIds = this.windows
+      .filter((window) => window.closeable && !excluded.has(window.windowId))
+      .map((window) => window.windowId);
+    for (const windowId of windowIds) this.closeWindow(windowId);
+  }
+
   getWindows(): readonly ShellWindow[] {
     return this.windows;
   }

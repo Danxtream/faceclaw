@@ -75,10 +75,16 @@ function fileIconName(name: string): IconName {
 }
 
 export type FileBrowserOptions = {
+  /** Optional app-specific title instead of the generic Files heading. */
+  title?: string;
+  /** Optional fixed filesystem root; double-click at this root leaves the browser. */
+  rootPath?: string;
+  /** Omit entries completely (directories can be retained by returning true). */
+  includeEntry?: (entry: DirectoryEntry) => boolean;
   /** Files failing this are listed dimmed (not viewable); picking them still fires onFilePicked. */
   isSupportedFile: (name: string) => boolean;
   onFilePicked: (entry: DirectoryEntry, ctx: LayerContext) => void;
-  /** Double-click while already at the Places level (leave the browser). */
+  /** Double-click while already at the root/Places level (leave the browser). */
   onLeave: () => void;
 };
 
@@ -118,6 +124,7 @@ export class FileBrowserLayer implements Layer {
   private location: string | null = null;
   /** The Places entry we descended through; going up from it returns to Places. */
   private navRoot: string | null = null;
+  private readonly fixedRoot: string | null;
   private entries: DirectoryEntry[] | null = null;
   private listingFailed = false;
 
@@ -127,7 +134,13 @@ export class FileBrowserLayer implements Layer {
   private iconMode: IconMode = "row";
   private scrollRow = 0;
 
-  constructor(private readonly options: FileBrowserOptions) {}
+  constructor(private readonly options: FileBrowserOptions) {
+    this.fixedRoot = options.rootPath ?? null;
+    if (this.fixedRoot !== null) {
+      this.location = this.fixedRoot;
+      this.navRoot = this.fixedRoot;
+    }
+  }
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
@@ -135,7 +148,7 @@ export class FileBrowserLayer implements Layer {
     const image = new GrayImage(width, height, 0);
     const rows = this.flatRows();
 
-    image.drawText(font, 20, 8, "Files", 220);
+    image.drawText(font, 20, 8, this.options.title ?? "Files", 220);
     const pathLabel = this.location === null ? "Places" : this.location;
     image.drawText(font, 20, 22, truncateLeft(font, pathLabel, width - 40), 130);
 
@@ -418,6 +431,10 @@ export class FileBrowserLayer implements Layer {
       this.options.onLeave();
       return;
     }
+    if (this.fixedRoot !== null && from === this.fixedRoot) {
+      this.options.onLeave();
+      return;
+    }
     if (from === this.navRoot || from === "/") {
       this.location = null;
       this.entries = null;
@@ -475,6 +492,7 @@ export class FileBrowserLayer implements Layer {
     }
     this.loadEntries();
     for (const entry of this.entries ?? []) {
+      if (this.options.includeEntry && !this.options.includeEntry(entry)) continue;
       rows.push({
         kind: "entry",
         entry,
@@ -528,6 +546,16 @@ export class FileBrowserLayer implements Layer {
       place: true,
       fixed: false,
     };
+  }
+
+  /**
+   * Drop the cached filesystem snapshot without changing
+   * the current directory or selection. The next browser
+   * query immediately re-runs listDirectory().
+   */
+  refreshEntries(): void {
+    this.entries = null;
+    this.listingFailed = false;
   }
 
   private loadEntries(): void {

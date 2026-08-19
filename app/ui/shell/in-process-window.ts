@@ -39,6 +39,8 @@ export type InProcessWindowOptions = {
   setSurfaceVisible: (visible: boolean) => void;
   removeSurface?: () => void;
   onClosed?: () => void;
+  /** When true, the app/firmware owns the framebuffer and normal compositor frames must be dropped. */
+  shouldSuppressRender?: () => boolean;
 };
 
 export type InProcessWindow = {
@@ -81,6 +83,10 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       // The surface is gone (e.g. Close window picked from this window's own
       // menu); dropping the frame beats submitting to a removed surface.
       frameTimings.finishFrame(frameId, "discarded: window closed");
+      return;
+    }
+    if (options.shouldSuppressRender?.()) {
+      frameTimings.finishFrame(frameId, "discarded: direct framebuffer owner");
       return;
     }
     const wantFreshData = nextRenderWantsFreshData;

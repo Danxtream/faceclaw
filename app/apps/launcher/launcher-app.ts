@@ -13,6 +13,11 @@ import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../../ui/m
 import { onAnySettingChanged } from "../../ui/dashboard-settings";
 import { createInProcessWindow } from "../../ui/shell/in-process-window";
 import { getFolderAssignments, getFolders, getFolderStateFingerprint } from "./launcher-folders";
+import {
+  getOrderedLauncherAppIds,
+  isLauncherAppVisible,
+  launcherPreferencesFingerprint,
+} from "./launcher-preferences";
 import { shell, type ShellWindow } from "../../ui/shell/shell";
 
 export type LauncherAppEntry = {
@@ -83,15 +88,19 @@ class LauncherGridLayer implements Layer {
    * disbanded it), the view falls back to the top grid.
    */
   private entries(): LauncherGridEntry[] {
-    const byAppId = new Map(this.options.apps.map((app) => [app.appId, app]));
+    const visibleApps = this.options.apps.filter((app) => isLauncherAppVisible(app.appId));
+    const visibleById = new Map(visibleApps.map((app) => [app.appId, app]));
+    const orderedApps = getOrderedLauncherAppIds(visibleApps.map((app) => app.appId))
+      .map((appId) => visibleById.get(appId))
+      .filter(Boolean) as LauncherAppEntry[];
+    const byAppId = new Map(orderedApps.map((app) => [app.appId, app]));
     if (this.currentFolder !== null) {
-      const members = (getFolders().get(this.currentFolder) ?? [])
-        .map((appId) => byAppId.get(appId))
-        .filter(Boolean) as LauncherAppEntry[];
+      const memberIds = new Set(getFolders().get(this.currentFolder) ?? []);
+      const members = orderedApps.filter((app) => memberIds.has(app.appId));
       if (members.length > 0) {
-        return members
-          .map((app): LauncherGridEntry => ({ kind: "app", label: app.label, icon: app.icon, appId: app.appId }))
-          .sort((a, b) => a.label.localeCompare(b.label));
+        return members.map(
+          (app): LauncherGridEntry => ({ kind: "app", label: app.label, icon: app.icon, appId: app.appId }),
+        );
       }
       this.currentFolder = null;
     }
@@ -104,12 +113,18 @@ class LauncherGridLayer implements Layer {
         entries.push({ kind: "folder", label: name, name });
       }
     }
-    for (const app of this.options.apps) {
+    for (const app of orderedApps) {
       if (!assignments[app.appId]) {
         entries.push({ kind: "app", label: app.label, icon: app.icon, appId: app.appId });
       }
     }
-    return entries.sort((a, b) => a.label.localeCompare(b.label));
+    const folders = entries
+      .filter((entry): entry is Extract<LauncherGridEntry, { kind: "folder" }> => entry.kind === "folder")
+      .sort((a, b) => a.label.localeCompare(b.label));
+    const apps = entries.filter(
+      (entry): entry is Extract<LauncherGridEntry, { kind: "app" }> => entry.kind === "app",
+    );
+    return [...folders, ...apps];
   }
 
   private rowCount(entryCount: number): number {
@@ -289,11 +304,11 @@ export function createLauncherWindow(options: LauncherOptions): ShellWindow {
   // keeps every unrelated setting change from repainting the launcher. The
   // launcher is pinned for the app's lifetime, so the subscription never needs
   // tearing down.
-  let lastFolderState = getFolderStateFingerprint();
+  let lastLauncherState = `${getFolderStateFingerprint()}|${launcherPreferencesFingerprint()}`;
   onAnySettingChanged(() => {
-    const state = getFolderStateFingerprint();
-    if (state === lastFolderState) return;
-    lastFolderState = state;
+    const state = `${getFolderStateFingerprint()}|${launcherPreferencesFingerprint()}`;
+    if (state === lastLauncherState) return;
+    lastLauncherState = state;
     created.requestRender();
   });
   return created.window;

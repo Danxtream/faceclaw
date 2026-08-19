@@ -77,6 +77,13 @@ export function h264StreamSummary(): string {
   return String(active.getH264StreamSummary());
 }
 
+/** Latest firmware-reported physically presented sequence for the active stream. */
+export function h264PresentedSequence(): number {
+  const active = activeCommunicator();
+  if (!active) return 0;
+  return Number(active.getH264PresentedSequence()) >>> 0;
+}
+
 export async function h264EndStream(): Promise<boolean> {
   const active = activeCommunicator();
 
@@ -152,6 +159,26 @@ export function h264SetFrameInterval(frameDurationMs: number): Promise<boolean> 
   return sendH264Payload(
     new Uint8Array([11, 10, intervalMs & 0xff, (intervalMs >>> 8) & 0xff]),
   );
+}
+
+/** Paint or clear the firmware-owned paused playback controls. */
+export function h264PauseOverlay(
+  paused: boolean,
+  positionMs: number,
+  durationMs: number,
+  selection: number,
+): Promise<boolean> {
+  if (!Number.isInteger(selection) || selection < 0 || selection > 4) {
+    throw new Error(`Invalid H264 pause-overlay selection: ${selection}`);
+  }
+  const payload = new Uint8Array(12);
+  payload[0] = 11;
+  payload[1] = 11;
+  payload[2] = paused ? 1 : 0;
+  payload[3] = selection;
+  writeUint32Le(payload, 4, Math.max(0, Math.round(positionMs)) >>> 0);
+  writeUint32Le(payload, 8, Math.max(0, Math.round(durationMs)) >>> 0);
+  return sendH264Payload(payload);
 }
 
 export function h264DecodeNal(nal: Uint8Array): Promise<boolean> {

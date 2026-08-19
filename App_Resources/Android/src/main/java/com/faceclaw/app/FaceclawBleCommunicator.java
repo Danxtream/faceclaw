@@ -1059,6 +1059,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
+    public int getH264PresentedSequence() {
+        synchronized (lock) {
+            return h264PresentedSeq;
+        }
+    }
+
     public String getH264StreamSummary() {
         synchronized (lock) {
             long presentationSpanMs = h264LastPresentationAtMs

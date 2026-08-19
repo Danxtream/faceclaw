@@ -25,6 +25,7 @@ const settingsApp: AppDefinition = {
     await ctx.launchInProcessApp(SETTINGS_WINDOW_ID, SETTINGS_SURFACE_ID, (options) => {
       const app = createSettingsAppWindow({
         ...options,
+        apps: ctx.apps,
         onClosed: () => {
           // Closing mid-edit must not leave the phone-side editor dangling.
           void options.actions.endTextSettingEdit();

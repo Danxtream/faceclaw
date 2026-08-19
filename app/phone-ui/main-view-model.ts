@@ -2,6 +2,12 @@ import { Application, Frame, ImageSource, Observable, Screen } from "@nativescri
 import { dashboardController } from "../g2/dashboard-controller";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../graphics/image";
+import {
+  formatVideoTime,
+  parseVideoTime,
+  videoPlaybackState,
+  type VideoPlaybackSnapshot,
+} from "../apps/video/video-playback-state";
 
 const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
 
@@ -24,6 +30,18 @@ export class MainViewModel extends Observable {
   private _batteryOptimizationWarningVisible = false;
   private _showLog = false;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
+  private _videoActive = false;
+  private _videoPlaying = false;
+  private _videoPositionText = "0:00:00";
+  private _videoDurationText = "0:00:00";
+  private _videoSeekSeconds = 0;
+  private _videoDurationSeconds = 0;
+  private _videoStatus = "";
+  private _videoTimeEntry = "";
+  private videoTimeEditing = false;
+  private videoSeekPreviewMs: number | null = null;
+  private videoScrubTimer: ReturnType<typeof setTimeout> | null = null;
+  private videoPlaybackUnsubscribe: (() => void) | null = null;
 
   constructor() {
     super();
@@ -42,6 +60,9 @@ export class MainViewModel extends Observable {
       this.firmwareWarningVisible = snapshot.firmwareWarningVisible;
       this.screenRecordingActive = snapshot.screenRecordingActive;
       this.batteryOptimizationWarningVisible = snapshot.batteryOptimizationWarningVisible;
+    });
+    this.videoPlaybackUnsubscribe = videoPlaybackState.subscribe((snapshot) => {
+      this.applyVideoSnapshot(snapshot);
     });
   }
 
@@ -462,6 +483,184 @@ export class MainViewModel extends Observable {
 
   async onSyntheticMicTap(): Promise<void> {
     await dashboardController.injectSyntheticRingInput("wakeword");
+  }
+
+  get videoControlsVisibility(): "visible" | "collapse" {
+    return this._videoActive ? "visible" : "collapse";
+  }
+
+  get videoPlayPauseLabel(): string {
+    return this._videoPlaying ? "Pause" : "Play";
+  }
+
+  get videoPositionText(): string {
+    return this._videoPositionText;
+  }
+
+  set videoPositionText(value: string) {
+    this._videoPositionText = String(value ?? "");
+  }
+
+  get videoDurationText(): string {
+    return this._videoDurationText;
+  }
+
+  get videoSeekSeconds(): number {
+    return this._videoSeekSeconds;
+  }
+
+  set videoSeekSeconds(value: number) {
+    this._videoSeekSeconds = Number(value) || 0;
+  }
+
+  get videoDurationSeconds(): number {
+    return Math.max(1, this._videoDurationSeconds);
+  }
+
+  get videoStatus(): string {
+    return this._videoStatus;
+  }
+
+  get videoTimeEntry(): string {
+    return this._videoTimeEntry;
+  }
+
+  set videoTimeEntry(value: string) {
+    this._videoTimeEntry = String(value ?? "");
+  }
+
+  async onVideoPlayPauseTap(): Promise<void> {
+    await videoPlaybackState.togglePause();
+  }
+
+  async onVideoBack10Tap(): Promise<void> {
+    await videoPlaybackState.seekBy(-10_000);
+  }
+
+  async onVideoForward10Tap(): Promise<void> {
+    await videoPlaybackState.seekBy(10_000);
+  }
+
+  async onVideoBack30Tap(): Promise<void> {
+    await videoPlaybackState.seekBy(-30_000);
+  }
+
+  async onVideoForward30Tap(): Promise<void> {
+    await videoPlaybackState.seekBy(30_000);
+  }
+
+  async onVideoStopTap(): Promise<void> {
+    await videoPlaybackState.stop();
+  }
+
+  onVideoTimeFocus(): void {
+    this.videoTimeEditing = true;
+    this._videoTimeEntry = "";
+    this.notifyPropertyChange("videoTimeEntry", this._videoTimeEntry);
+  }
+
+  onVideoTimeBlur(): void {
+    this.videoTimeEditing = false;
+    this._videoTimeEntry = "";
+    this.notifyPropertyChange("videoTimeEntry", this._videoTimeEntry);
+    this.applyVideoSnapshot(videoPlaybackState.current());
+  }
+
+  async onVideoTimeReturnPress(args: { object?: { text?: string; dismissSoftInput?: () => void } }): Promise<void> {
+    const text = String(args.object?.text ?? this._videoTimeEntry);
+    const parsedPositionMs = parseVideoTime(text);
+    this.videoTimeEditing = false;
+    this._videoTimeEntry = "";
+    this.notifyPropertyChange("videoTimeEntry", this._videoTimeEntry);
+    args.object?.dismissSoftInput?.();
+
+    if (parsedPositionMs === null) {
+      this.applyVideoSnapshot(videoPlaybackState.current());
+      return;
+    }
+
+    const snapshot = videoPlaybackState.current();
+    const targetMs = Math.max(0, Math.min(snapshot.durationMs, parsedPositionMs));
+    this.videoSeekPreviewMs = targetMs;
+    this._videoPositionText = formatVideoTime(targetMs);
+    this._videoSeekSeconds = targetMs / 1000;
+    this._videoStatus = `seeking | ${formatVideoTime(targetMs)} / ${this._videoDurationText}`;
+    this.notifyPropertyChange("videoPositionText", this._videoPositionText);
+    this.notifyPropertyChange("videoSeekSeconds", this._videoSeekSeconds);
+    this.notifyPropertyChange("videoStatus", this._videoStatus);
+
+    try {
+      await videoPlaybackState.seekTo(targetMs);
+    } finally {
+      if (this.videoSeekPreviewMs === targetMs) {
+        this.videoSeekPreviewMs = null;
+        this.applyVideoSnapshot(videoPlaybackState.current());
+      }
+    }
+  }
+
+  onVideoSeekValueChange(args: { value?: number; object?: { value?: number } }): void {
+    if (!this._videoActive) return;
+    const seconds = Number(args.value ?? args.object?.value ?? this._videoSeekSeconds);
+    if (!Number.isFinite(seconds)) return;
+
+    const targetSeconds = Math.max(0, Math.min(this.videoDurationSeconds, seconds));
+    const targetMs = targetSeconds * 1000;
+    const currentMs = videoPlaybackState.current().positionMs;
+    if (Math.abs(targetMs - currentMs) < 750) return;
+
+    this.videoSeekPreviewMs = targetMs;
+    this._videoPositionText = formatVideoTime(targetMs);
+    this._videoStatus = `seeking | ${formatVideoTime(targetMs)} / ${this._videoDurationText}`;
+    this.notifyPropertyChange("videoPositionText", this._videoPositionText);
+    this.notifyPropertyChange("videoStatus", this._videoStatus);
+
+    if (this.videoScrubTimer !== null) clearTimeout(this.videoScrubTimer);
+    this.videoScrubTimer = setTimeout(() => {
+      this.videoScrubTimer = null;
+      void (async () => {
+        try {
+          await videoPlaybackState.seekTo(targetMs);
+        } finally {
+          if (this.videoSeekPreviewMs === targetMs) {
+            this.videoSeekPreviewMs = null;
+            this.applyVideoSnapshot(videoPlaybackState.current());
+          }
+        }
+      })();
+    }, 250);
+  }
+
+  dispose(): void {
+    if (this.videoScrubTimer !== null) {
+      clearTimeout(this.videoScrubTimer);
+      this.videoScrubTimer = null;
+    }
+    this.videoPlaybackUnsubscribe?.();
+    this.videoPlaybackUnsubscribe = null;
+  }
+
+  private applyVideoSnapshot(snapshot: VideoPlaybackSnapshot): void {
+    const activeChanged = this._videoActive !== snapshot.active;
+    const playingChanged = this._videoPlaying !== snapshot.playing;
+    this._videoActive = snapshot.active;
+    this._videoPlaying = snapshot.playing;
+    this._videoDurationText = formatVideoTime(snapshot.durationMs);
+    this._videoDurationSeconds = Math.max(0, snapshot.durationMs / 1000);
+    const displayPositionMs = this.videoSeekPreviewMs ?? snapshot.positionMs;
+    this._videoSeekSeconds = Math.max(0, displayPositionMs / 1000);
+    this._videoStatus =
+      this.videoSeekPreviewMs === null
+        ? snapshot.status
+        : `seeking | ${formatVideoTime(displayPositionMs)} / ${this._videoDurationText}`;
+    this._videoPositionText = formatVideoTime(displayPositionMs);
+    if (activeChanged) this.notifyPropertyChange("videoControlsVisibility", this.videoControlsVisibility);
+    if (playingChanged) this.notifyPropertyChange("videoPlayPauseLabel", this.videoPlayPauseLabel);
+    this.notifyPropertyChange("videoPositionText", this._videoPositionText);
+    this.notifyPropertyChange("videoDurationText", this._videoDurationText);
+    this.notifyPropertyChange("videoSeekSeconds", this._videoSeekSeconds);
+    this.notifyPropertyChange("videoDurationSeconds", this.videoDurationSeconds);
+    this.notifyPropertyChange("videoStatus", this._videoStatus);
   }
 
   private appendLog(line: string): void {

@@ -4,7 +4,17 @@ import type { GrayImage } from "../../graphics/image";
 import { getDashboardLogo } from "../../graphics/logo";
 import { wrapText } from "../../graphics/textwrap";
 import { TextViewerLayer } from "../../apps/files/text-viewer";
-import type { MenuItem } from "../menu";
+import type { AppDefinition } from "../../apps/app-definition";
+import { LauncherOrderLayer } from "../../apps/launcher/launcher-order-layer";
+import {
+  isLauncherAppVisible,
+  setLauncherAppVisible,
+} from "../../apps/launcher/launcher-preferences";
+import {
+  videoPlaybackFpsSetting,
+  videoScaleSetting,
+} from "../../apps/video/video-settings";
+import { drawToggleMenuItem, type MenuItem } from "../menu";
 import { shell } from "../shell/shell";
 import {
   anthropicApiKeySetting,
@@ -45,17 +55,42 @@ import {
 import { SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 
 /** The Settings app's master-detail panel (sections on the left, contents on the right). */
-export function createSettingsPanelLayer(): SettingsPanelLayer {
-  return new SettingsPanelLayer(settingsSections());
+export function createSettingsPanelLayer(apps: readonly AppDefinition[] = []): SettingsPanelLayer {
+  return new SettingsPanelLayer(settingsSections(apps));
 }
 
-function settingsSections(): SettingsSection[] {
+function launcherVisibilityItem(app: AppDefinition): MenuItem {
+  return {
+    label: app.title,
+    description: `Show or hide ${app.title} on the main Apps screen. Closing or hiding an app does not erase that app's saved state.`,
+    onSelect: (ctx) => {
+      setLauncherAppVisible(app.appId, !isLauncherAppVisible(app.appId));
+      ctx.actions.requestRender();
+    },
+    render: ({ image, x, y, width, selected }) => {
+      drawToggleMenuItem(
+        image,
+        getDefaultSmallFont(),
+        x,
+        y,
+        width,
+        app.title,
+        isLauncherAppVisible(app.appId),
+        selected,
+      );
+    },
+  };
+}
+
+function settingsSections(apps: readonly AppDefinition[]): SettingsSection[] {
+  const launcherApps = apps.filter(
+    (app) => app.showInLauncher !== false && app.appId !== "settings",
+  );
+
   return [
     {
       label: "Display",
       items: [
-        // Auto (ambient sensor) or an exact level; pushed to the glasses by
-        // the dashboard controller when changed and on each connect.
         enumSettingMenuItem(brightnessSetting),
         enumSettingMenuItem(screenTimeoutSetting, {
           onChange: () => {
@@ -63,15 +98,31 @@ function settingsSections(): SettingsSection[] {
           },
         }),
         toggleSettingMenuItem(lockScreenEnabledSetting),
-        // Where min-height windows (and the sidebar) sit vertically on the
-        // screen; the dashboard controller repositions surfaces on change.
         enumSettingMenuItem(verticalPositionSetting),
-        // Controls the top-bar battery indicators (icon vs percentage).
         enumSettingMenuItem(batteryDisplayModeSetting),
-        // Controls the top-bar clock (24-hour vs 12-hour).
         enumSettingMenuItem(timeFormatSetting),
-        // Selects the UI body typeface (Terminus vs proportional TerminusV).
         enumSettingMenuItem(uiFontSetting),
+      ],
+    },
+    {
+      label: "Video",
+      items: [
+        enumSettingMenuItem(videoPlaybackFpsSetting),
+        enumSettingMenuItem(videoScaleSetting),
+      ],
+    },
+    {
+      label: "Apps",
+      items: [
+        {
+          label: "Reorder apps",
+          description:
+            "Choose the order of visible apps on the main Apps screen. Tap an app to enter move mode, scroll it up or down, then tap again to finish.",
+          onSelect: (ctx) => {
+            ctx.stack.push(new LauncherOrderLayer(apps));
+          },
+        },
+        ...launcherApps.map(launcherVisibilityItem),
       ],
     },
     {
@@ -84,11 +135,8 @@ function settingsSections(): SettingsSection[] {
     {
       label: "Assistant",
       items: [
-        // On-phone LLM loop vs the user's own agent via the bridge plugin.
         enumSettingMenuItem(assistantBackendSetting),
         enumSettingMenuItem(assistantModelSetting),
-        // When on, a wakeword utterance goes straight to the assistant with no
-        // Send/Type menu step.
         toggleSettingMenuItem(assistantSkipConfirmationSetting),
         textSettingMenuItem(assistantBridgeHostSetting),
         textSettingMenuItem(assistantBridgePortSetting),
@@ -133,8 +181,6 @@ function settingsSections(): SettingsSection[] {
     },
     {
       label: "About",
-      // The version/license blurb (renderDetail) draws above the bundled
-      // project docs, in both the preview and the focused states.
       items: [
         bundledDocMenuItem("README.md", "README"),
         bundledDocMenuItem("LICENSE", "License"),
@@ -145,6 +191,15 @@ function settingsSections(): SettingsSection[] {
     {
       label: "Quit",
       items: [
+        {
+          label: "Close all apps",
+          description:
+            "Close every closeable app window except Settings. Saved app state, including the last video and playback position, is kept.",
+          onSelect: (ctx) => {
+            shell.closeAllCloseableWindows(["settings"]);
+            ctx.actions.requestRender();
+          },
+        },
         {
           label: "Disconnect from glasses",
           description: "Close the Bluetooth connection to the glasses and return them to standby.",
@@ -158,8 +213,6 @@ function settingsSections(): SettingsSection[] {
   ];
 }
 
-/** A row that opens one of the project docs (copied into the bundle under
- * about/ by webpack.config.js) in the paged text viewer. */
 function bundledDocMenuItem(fileName: string, label: string): MenuItem {
   return {
     label,
@@ -182,9 +235,7 @@ function renderAbout(args: { image: GrayImage; x: number; y: number; width: numb
   const { image, x, y, width } = args;
   const font = getDefaultSmallFont();
   const logo = getDashboardLogo();
-  if (logo) {
-    image.bitBlt(logo, x, y + 4, { transparentZero: true });
-  }
+  if (logo) image.bitBlt(logo, x, y + 4, { transparentZero: true });
   const textX = logo ? x + logo.width + 12 : x;
   image.drawText(font, textX, y + 8, "Faceclaw", 220);
   image.drawText(font, textX, y + 24, "v0.3.0", 170);

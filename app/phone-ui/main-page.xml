@@ -46,6 +46,31 @@
                         <Button row="2" col="1" text="Swipe down" tap="{{ onSyntheticDownTap }}" />
                     </GridLayout>
                     <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
+                    <StackLayout visibility="{{ videoControlsVisibility }}" class="m-t-12">
+                        <Label text="Video" />
+                        <Label text="{{ videoStatus }}" textWrap="true" />
+                        <GridLayout columns="*,*,*,*,*,*" class="m-t-4">
+                            <Button col="0" text="{{ videoPlayPauseLabel }}" tap="{{ onVideoPlayPauseTap }}" />
+                            <Button col="1" text="-10s" tap="{{ onVideoBack10Tap }}" />
+                            <Button col="2" text="+10s" tap="{{ onVideoForward10Tap }}" />
+                            <Button col="3" text="-30s" tap="{{ onVideoBack30Tap }}" />
+                            <Button col="4" text="+30s" tap="{{ onVideoForward30Tap }}" />
+                            <Button col="5" text="Stop" tap="{{ onVideoStopTap }}" />
+                        </GridLayout>
+                        <Slider minValue="0" maxValue="{{ videoDurationSeconds }}" value="{{ videoSeekSeconds }}" valueChange="{{ onVideoSeekValueChange }}" />
+                        <GridLayout columns="140,*" class="m-t-4">
+                            <TextField
+                                col="0"
+                                text="{{ videoTimeEntry }}"
+                                focus="{{ onVideoTimeFocus }}"
+                                blur="{{ onVideoTimeBlur }}"
+                                returnPress="{{ onVideoTimeReturnPress }}"
+                                autocorrect="false"
+                                autocapitalizationType="none"
+                                returnKeyType="done" />
+                            <Label col="1" text="{{ videoDurationText }}" verticalAlignment="center" class="m-l-8" />
+                        </GridLayout>
+                    </StackLayout>
                 </StackLayout>
                 <Label row="2" text="{{ status }}" class="m-t-16" textWrap="true" />
                 <ScrollView id="logScrollView" row="3" class="m-t-16" visibility="{{ showLogVisibility }}">
@@ -94,6 +119,31 @@
                         <Button row="2" col="1" text="Swipe down" tap="{{ onSyntheticDownTap }}" />
                     </GridLayout>
                     <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
+                    <StackLayout visibility="{{ videoControlsVisibility }}" class="m-t-12">
+                        <Label text="Video" />
+                        <Label text="{{ videoStatus }}" textWrap="true" />
+                        <GridLayout columns="*,*,*,*,*,*" class="m-t-4">
+                            <Button col="0" text="{{ videoPlayPauseLabel }}" tap="{{ onVideoPlayPauseTap }}" />
+                            <Button col="1" text="-10s" tap="{{ onVideoBack10Tap }}" />
+                            <Button col="2" text="+10s" tap="{{ onVideoForward10Tap }}" />
+                            <Button col="3" text="-30s" tap="{{ onVideoBack30Tap }}" />
+                            <Button col="4" text="+30s" tap="{{ onVideoForward30Tap }}" />
+                            <Button col="5" text="Stop" tap="{{ onVideoStopTap }}" />
+                        </GridLayout>
+                        <Slider minValue="0" maxValue="{{ videoDurationSeconds }}" value="{{ videoSeekSeconds }}" valueChange="{{ onVideoSeekValueChange }}" />
+                        <GridLayout columns="140,*" class="m-t-4">
+                            <TextField
+                                col="0"
+                                text="{{ videoTimeEntry }}"
+                                focus="{{ onVideoTimeFocus }}"
+                                blur="{{ onVideoTimeBlur }}"
+                                returnPress="{{ onVideoTimeReturnPress }}"
+                                autocorrect="false"
+                                autocapitalizationType="none"
+                                returnKeyType="done" />
+                            <Label col="1" text="{{ videoDurationText }}" verticalAlignment="center" class="m-l-8" />
+                        </GridLayout>
+                    </StackLayout>
                 </StackLayout>
                 <Label row="1" col="0" colSpan="2" text="{{ status }}" class="m-t-16" textWrap="true" />
                 <ScrollView id="logScrollViewLandscape" row="2" col="0" colSpan="2" class="m-t-16" visibility="{{ showLogVisibility }}">
