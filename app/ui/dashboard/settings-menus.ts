@@ -11,8 +11,10 @@ import {
   setLauncherAppVisible,
 } from "../../apps/launcher/launcher-preferences";
 import {
+  videoDebuggingSetting,
   videoPlaybackFpsSetting,
   videoScaleSetting,
+  videoBlePhySetting,
 } from "../../apps/video/video-settings";
 import { drawToggleMenuItem, type MenuItem } from "../menu";
 import { shell } from "../shell/shell";
@@ -107,8 +109,10 @@ function settingsSections(apps: readonly AppDefinition[]): SettingsSection[] {
     {
       label: "Video",
       items: [
+        toggleSettingMenuItem(videoDebuggingSetting),
         enumSettingMenuItem(videoPlaybackFpsSetting),
         enumSettingMenuItem(videoScaleSetting),
+        enumSettingMenuItem(videoBlePhySetting),
       ],
     },
     {

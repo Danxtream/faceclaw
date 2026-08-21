@@ -79,6 +79,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     // overlay state is re-asserted on every reconnect and whenever the value changes.
     private volatile boolean firmwareDebugFlagsEnabled;
     private int firmwareDebugFlagsLastSent = -1;
+    private boolean phy2mProbeSent;
     // Desired CFW mode-10 compass state. It survives reconnects; lastSent is
     // reset with each session so an open Compass window is re-asserted.
     private boolean compassEnabled;
@@ -132,6 +133,34 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final long H264_DECODER_CONFIRM_MS = 1_200L;
     private static final int H264_MAX_RETRIES = 1;
     private static final int H264_RESULT_CACHE_SIZE = 64;
+
+    /*
+     * Video-only BLE PHY control.
+     *
+     * The controller normally boots with:
+     *   FF 7C 01 0F B8 19 00 00
+     *
+     * 2M video mode temporarily uses:
+     *   FF 7D 01 0F B8 19 00 00
+     *
+     * via Packetcraft vendor command 0xFFF2.
+     *
+     * No direct EM9305 RAM writes are used by this path.
+     */
+    private final Object videoBlePhyControlLock = new Object();
+    private int nextVideoBlePhyRequestId = 1;
+    private int videoBlePhyRequestId;
+    private int videoBlePhyRequestResult = 1;
+    private Thread videoBlePhyControlThread;
+
+
+    // VIDEO_PHY_JAVA_LIFECYCLE_V1
+    private static final String VIDEO_BLE_PHY_SETTING_KEY =
+        "video.blePhy";
+
+    private final FaceclawSettingsListener videoBlePhySettingListener;
+
+
 
     /**
      * Completion state for one logical mode-11 payload.  This deliberately
@@ -323,11 +352,55 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     public FaceclawBleCommunicator(Context context, String rightAddress, String leftAddress, String ringAddress) {
         this.appContext = context.getApplicationContext();
+
+        this.videoBlePhySettingListener =
+            key -> {
+                if (!VIDEO_BLE_PHY_SETTING_KEY.equals(key)) {
+                    return;
+                }
+
+                boolean videoActive =
+                    isH264VideoActiveForPhyControl();
+
+                String value =
+                    FaceclawSettings
+                        .getInstance(appContext)
+                        .getString(
+                            VIDEO_BLE_PHY_SETTING_KEY,
+                            "1m"
+                        );
+
+                int targetPhy =
+                    "2m".equalsIgnoreCase(value)
+                        ? 2
+                        : 1;
+
+                logLine(
+                    "VIDEO_PHY setting changed value=" +
+                    value +
+                    " active=" +
+                    videoActive
+                );
+
+                if (videoActive) {
+                    scheduleVideoBlePhy(
+                        targetPhy,
+                        "setting-change"
+                    );
+                }
+            };
+
         FrameTimings.getInstance().init(appContext);
         this.powerManager = (PowerManager) appContext.getSystemService(Context.POWER_SERVICE);
         this.keyguardManager = (KeyguardManager) appContext.getSystemService(Context.KEYGUARD_SERVICE);
         this.bleManager = new FaceclawBleManager(appContext);
         this.bleManager.setListener(this);
+
+        FaceclawSettings
+            .getInstance(appContext)
+            .registerListener(
+                videoBlePhySettingListener
+            );
         this.rightAddress = requireAddress("rightAddress", rightAddress);
         this.leftAddress = requireAddress("leftAddress", leftAddress);
         this.ringAddress = ringAddress == null ? "" : ringAddress.trim();
@@ -398,6 +471,19 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     public void close() {
+        try {
+            FaceclawSettings
+                .getInstance(appContext)
+                .unregisterListener(
+                    videoBlePhySettingListener
+                );
+        } catch (Throwable t) {
+            logLine(
+                "VIDEO_PHY settings listener unregister failed: " +
+                t
+            );
+        }
+
         if (activeInstance == this) {
             activeInstance = null;
         }
@@ -660,6 +746,427 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         return activeInstance;
     }
 
+
+    /**
+     * Begin an asynchronous Video BLE PHY transition.
+     *
+     * phy:
+     *   1 = LE 1M
+     *   2 = LE 2M
+     *
+     * Returns a positive request id, or -1 when invalid/busy.
+     */
+    public int requestVideoBlePhy(int phy) {
+        if (phy != 1 && phy != 2) {
+            logLine("VIDEO_PHY reject invalid phy=" + phy);
+            return -1;
+        }
+
+        synchronized (videoBlePhyControlLock) {
+            if (
+                videoBlePhyControlThread != null &&
+                videoBlePhyControlThread.isAlive()
+            ) {
+                logLine(
+                    "VIDEO_PHY reject busy target=" +
+                    phy
+                );
+                return -1;
+            }
+
+            int requestId =
+                nextVideoBlePhyRequestId++;
+
+            if (nextVideoBlePhyRequestId <= 0) {
+                nextVideoBlePhyRequestId = 1;
+            }
+
+            videoBlePhyRequestId =
+                requestId;
+
+            videoBlePhyRequestResult =
+                0;
+
+            Thread thread =
+                new Thread(
+                    () -> {
+                        boolean ok = false;
+
+                        try {
+                            ok =
+                                applyVideoBlePhySync(
+                                    phy
+                                );
+                        } catch (Throwable t) {
+                            logLine(
+                                "VIDEO_PHY exception target=" +
+                                phy +
+                                " error=" +
+                                t
+                            );
+                        }
+
+                        synchronized (
+                            videoBlePhyControlLock
+                        ) {
+                            if (
+                                videoBlePhyRequestId ==
+                                requestId
+                            ) {
+                                videoBlePhyRequestResult =
+                                    ok ? 1 : -1;
+                            }
+
+                            videoBlePhyControlThread =
+                                null;
+                        }
+
+                        logLine(
+                            "VIDEO_PHY complete request=" +
+                            requestId +
+                            " target=" +
+                            (phy == 2 ? "2M" : "1M") +
+                            " result=" +
+                            ok
+                        );
+                    },
+                    "FaceclawVideoBlePhy"
+                );
+
+            videoBlePhyControlThread =
+                thread;
+
+            thread.start();
+
+            return requestId;
+        }
+    }
+
+    /**
+     * Poll requestVideoBlePhy().
+     *
+     *  1 = complete/success
+     *  0 = pending
+     * -1 = failed/unknown request
+     */
+    public int pollVideoBlePhy(
+        int requestId
+    ) {
+        synchronized (videoBlePhyControlLock) {
+            if (
+                requestId <= 0 ||
+                requestId !=
+                    videoBlePhyRequestId
+            ) {
+                return -1;
+            }
+
+            return videoBlePhyRequestResult;
+        }
+    }
+
+
+    /*
+     * Kept as a method rather than direct access from the
+     * listener field initializer. Java permits this method to
+     * reference the H264 state fields declared later in the
+     * class without an illegal-forward-reference error.
+     */
+    private boolean isH264VideoActiveForPhyControl() {
+        synchronized (lock) {
+            return h264Streaming && !h264Ending;
+        }
+    }
+
+    private void scheduleVideoBlePhy(
+        int phy,
+        String reason
+    ) {
+        Thread scheduler =
+            new Thread(
+                () -> {
+                    long deadline =
+                        SystemClock.elapsedRealtime() +
+                        2500L;
+
+                    while (true) {
+                        int requestId =
+                            requestVideoBlePhy(
+                                phy
+                            );
+
+                        if (requestId > 0) {
+                            logLine(
+                                "VIDEO_PHY scheduled reason=" +
+                                reason +
+                                " target=" +
+                                (phy == 2 ? "2M" : "1M") +
+                                " request=" +
+                                requestId
+                            );
+
+                            return;
+                        }
+
+                        if (
+                            SystemClock.elapsedRealtime() >=
+                            deadline
+                        ) {
+                            logLine(
+                                "VIDEO_PHY schedule failed reason=" +
+                                reason +
+                                " target=" +
+                                (phy == 2 ? "2M" : "1M")
+                            );
+
+                            return;
+                        }
+
+                        SystemClock.sleep(
+                            50L
+                        );
+                    }
+                },
+                "FaceclawVideoPhySchedule"
+            );
+
+        scheduler.start();
+    }
+
+    private boolean applyVideoBlePhySync(
+        int phy
+    ) {
+        final boolean use2m =
+            phy == 2;
+
+        logLine(
+            "VIDEO_PHY apply target=" +
+            (use2m ? "2M" : "1M")
+        );
+
+        boolean featureOk;
+        boolean phyOk;
+
+        if (use2m) {
+            /*
+             * Packetcraft Set Local Feature:
+             *
+             * FF 7C ... -> FF 7D ...
+             *
+             * This exposes LE 2M to LlSetPhy().
+             */
+            featureOk =
+                bleLabSend(
+                    "VIDEO_PHY FFF2 enable-2M",
+                    new byte[] {
+                        11, 24,
+                        (byte) 0xf2,
+                        (byte) 0xff,
+                        8,
+                        (byte) 0xff,
+                        0x7d,
+                        0x01,
+                        0x0f,
+                        (byte) 0xb8,
+                        0x19,
+                        0x00,
+                        0x00
+                    },
+                    200L
+                );
+
+            if (!featureOk) {
+                logLine(
+                    "VIDEO_PHY 2M feature enable transport failed"
+                );
+
+                return false;
+            }
+
+            phyOk =
+                bleLabSend(
+                    "VIDEO_PHY set-2M",
+                    new byte[] {
+                        11, 22,
+                        0,
+                        2,
+                        2,
+                        0, 0
+                    },
+                    650L
+                );
+                // VIDEO_CONN_75_RAW_HCI_V1
+                boolean conn75Transport = bleLabSend(
+                    "VIDEO_CONN_75 HCI2013 request-7.5ms",
+                    new byte[] {
+            11, 24,
+            0x13, 0x20,
+            14,
+
+            0x00, 0x00,
+
+            6, 0,
+            6, 0,
+
+            0x00, 0x00,
+
+            (byte) 0xF4, 0x01,
+
+            0x00, 0x00,
+            0x00, 0x00
+        },
+                    650L
+                );
+                logLine("VIDEO_CONN_75 requested interval=7.5ms units=6 transport=" + conn75Transport);
+                // VIDEO_CONN_75_RETRY_V2
+                for (int conn75Attempt = 2; conn75Attempt <= 3; conn75Attempt++) {
+                    SystemClock.sleep(1000L);
+                    conn75Transport = bleLabSend(
+                    "VIDEO_CONN_75 HCI2013 request-7.5ms retry-" + conn75Attempt,
+                    new byte[] {
+            11, 24,
+            0x13, 0x20,
+            14,
+
+            0x00, 0x00,
+
+            6, 0,
+            6, 0,
+
+            0x00, 0x00,
+
+            (byte) 0xF4, 0x01,
+
+            0x00, 0x00,
+            0x00, 0x00
+        },
+                    650L
+                );
+                    logLine(
+                        "VIDEO_CONN_75 retry attempt=" +
+                        conn75Attempt +
+                        " interval=7.5ms units=6 transport=" +
+                        conn75Transport
+                    );
+                }
+        } else {
+            /*
+             * Return the live connection to 1M before removing
+             * LE 2M from the controller feature mask.
+             */
+            phyOk =
+                bleLabSend(
+                    "VIDEO_PHY set-1M",
+                    new byte[] {
+                        11, 22,
+                        0,
+                        1,
+                        1,
+                        0, 0
+                    },
+                    650L
+                );
+
+            featureOk =
+                bleLabSend(
+                    "VIDEO_PHY FFF2 restore-1M-mask",
+                    new byte[] {
+                        11, 24,
+                        (byte) 0xf2,
+                        (byte) 0xff,
+                        8,
+                        (byte) 0xff,
+                        0x7c,
+                        0x01,
+                        0x0f,
+                        (byte) 0xb8,
+                        0x19,
+                        0x00,
+                        0x00
+                    },
+                    200L
+                );
+                boolean conn15Transport = bleLabSend(
+                    "VIDEO_CONN_75 HCI2013 restore-15ms",
+                    new byte[] {
+            11, 24,
+            0x13, 0x20,
+            14,
+
+            0x00, 0x00,
+
+            12, 0,
+            12, 0,
+
+            0x00, 0x00,
+
+            (byte) 0xF4, 0x01,
+
+            0x00, 0x00,
+            0x00, 0x00
+        },
+                    200L
+                );
+                logLine("VIDEO_CONN_75 requested restore=15ms units=12 transport=" + conn15Transport);
+                for (int conn15Attempt = 2; conn15Attempt <= 3; conn15Attempt++) {
+                    SystemClock.sleep(1000L);
+                    conn15Transport = bleLabSend(
+                    "VIDEO_CONN_75 HCI2013 restore-15ms retry-" + conn15Attempt,
+                    new byte[] {
+            11, 24,
+            0x13, 0x20,
+            14,
+
+            0x00, 0x00,
+
+            12, 0,
+            12, 0,
+
+            0x00, 0x00,
+
+            (byte) 0xF4, 0x01,
+
+            0x00, 0x00,
+            0x00, 0x00
+        },
+                    200L
+                );
+                    logLine(
+                        "VIDEO_CONN_75 restore retry attempt=" +
+                        conn15Attempt +
+                        " interval=15ms units=12 transport=" +
+                        conn15Transport
+                    );
+                }
+        }
+
+        try {
+            bleManager.readPhy(
+                rightAddress
+            );
+
+            bleManager.readPhy(
+                leftAddress
+            );
+        } catch (Throwable t) {
+            logLine(
+                "VIDEO_PHY readback request failed: " +
+                t
+            );
+        }
+
+        logLine(
+            "VIDEO_PHY applied target=" +
+            (use2m ? "2M" : "1M") +
+            " featureTransport=" +
+            featureOk +
+            " phyTransport=" +
+            phyOk
+        );
+
+        return featureOk && phyOk;
+    }
+
     /** Set the compositor's output frame size. Call before configuring surfaces. */
     public void configureCompositorScreen(int width, int height) {
         compositor.configureScreen(width, height);
@@ -892,7 +1399,56 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /** Enter exclusive video transport mode and pause ordinary compositor images. */
+
     public boolean beginH264Stream(int streamId) {
+        String configuredPhy =
+            FaceclawSettings
+                .getInstance(appContext)
+                .getString(
+                    VIDEO_BLE_PHY_SETTING_KEY,
+                    "1m"
+                );
+
+        int targetPhy =
+            "2m".equalsIgnoreCase(
+                configuredPhy
+            )
+                ? 2
+                : 1;
+
+        boolean phyApplied =
+            applyVideoBlePhySync(
+                targetPhy
+            );
+
+        logLine(
+            "VIDEO_PHY stream-start setting=" +
+            configuredPhy +
+            " target=" +
+            (targetPhy == 2 ? "2M" : "1M") +
+            " result=" +
+            phyApplied
+        );
+
+        /*
+         * 2M is opt-in. If enabling it fails, fail closed to
+         * the normal G2 1M profile before video traffic starts.
+         */
+        if (
+            targetPhy == 2 &&
+            !phyApplied
+        ) {
+            boolean fallback =
+                applyVideoBlePhySync(
+                    1
+                );
+
+            logLine(
+                "VIDEO_PHY stream-start fallback=1M result=" +
+                fallback
+            );
+        }
+
         synchronized (lock) {
             if (!running || !sessionReady || !fixedLayoutCreated || !warmedUp) {
                 logLine("skip H264 stream; display path not ready");
@@ -1179,6 +1735,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         displayedFingerprint = "";
         imageRetryAfterMs = 0;
         lock.notifyAll();
+
+        scheduleVideoBlePhy(
+            1,
+            "stream-end"
+        );
+
         logLine("H264 stream transport end stopped=" + stopped);
     }
 
@@ -2098,6 +2660,350 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return;
         }
 
+        if (telemetry.result == 0xff
+                && telemetry.diagMbCompleted >= 480
+                && telemetry.diagMbCompleted <= 483) {
+            int liveConnections =
+                telemetry.diagMbCompleted - 480;
+            int connId = telemetry.diagBitOffset;
+
+            logLine(
+                "PHY2M G2 "
+                    + (isLeft ? "LEFT" : "RIGHT")
+                    + " liveConnections=" + liveConnections
+                    + " connId=" + connId
+                    + " requestIssued="
+                    + (liveConnections == 1
+                        && connId >= 1
+                        && connId <= 3)
+            );
+        }
+
+        if (telemetry.result == 0xff
+                && (telemetry.diagStage & 0xffffff00)
+                    == 0x424c4100) {
+            int tag =
+                telemetry.diagStage & 0xff;
+
+            int a =
+                telemetry.diagMbEntered;
+
+            int b0 =
+                telemetry.diagMbCompleted;
+
+            int b1 =
+                telemetry.diagBitOffset;
+
+            String sideName =
+                isLeft ? "LEFT" : "RIGHT";
+
+            if (tag == 1) {
+                int opcode =
+                    a & 0xffff;
+
+                int paramLen =
+                    (a >>> 16) & 0xff;
+
+                int result =
+                    (a >>> 24) & 0xff;
+
+                logLine(
+                    "BLELAB HCI_SEND "
+                        + sideName
+                        + " opcode=0x"
+                        + String.format(
+                            Locale.US,
+                            "%04X",
+                            opcode
+                        )
+                        + " len="
+                        + paramLen
+                        + " result=0x"
+                        + String.format(
+                            Locale.US,
+                            "%02X",
+                            result
+                        )
+                );
+            } else if (tag == 2) {
+                int connId =
+                    a & 0xff;
+
+                int role =
+                    (a >>> 8) & 0xff;
+
+                int state =
+                    (a >>> 16) & 0xff;
+
+                int inUse =
+                    (a >>> 24) & 0xff;
+
+                int handle =
+                    b0 & 0xffff;
+
+                int peerAddrType =
+                    (b0 >>> 16) & 0xff;
+
+                int featuresPresent =
+                    (b0 >>> 24) & 0xff;
+
+                logLine(
+                    "BLELAB CONN "
+                        + sideName
+                        + " connId="
+                        + connId
+                        + " handle=0x"
+                        + String.format(
+                            Locale.US,
+                            "%04X",
+                            handle
+                        )
+                        + " role="
+                        + role
+                        + " state="
+                        + state
+                        + " inUse="
+                        + inUse
+                        + " peerAddrType="
+                        + peerAddrType
+                        + " featuresPresent="
+                        + featuresPresent
+                        + " remoteFeaturesLow32=0x"
+                        + String.format(
+                            Locale.US,
+                            "%08X",
+                            b1
+                        )
+                );
+            } else if (tag == 3) {
+                int count =
+                    a & 0xff;
+
+                int pos =
+                    (a >>> 8) & 0xff;
+
+                int mask =
+                    (a >>> 16) & 0xff;
+
+                logLine(
+                    "BLELAB RING "
+                        + sideName
+                        + " count="
+                        + count
+                        + " pos="
+                        + pos
+                        + " mask=0x"
+                        + String.format(
+                            Locale.US,
+                            "%02X",
+                            mask
+                        )
+                        + " seq="
+                        + unsignedInt(b0)
+                );
+            } else if (tag == 4) {
+                int key =
+                    a & 0xffff;
+
+                int type =
+                    (a >>> 16) & 7;
+
+                boolean found =
+                    ((a >>> 19) & 1) != 0;
+
+                int chunk =
+                    (a >>> 20) & 0x0f;
+
+                int used =
+                    (a >>> 24) & 0x7f;
+
+                logLine(
+                    "BLELAB EVENT "
+                        + sideName
+                        + " type="
+                        + type
+                        + " key=0x"
+                        + String.format(
+                            Locale.US,
+                            "%04X",
+                            key
+                        )
+                        + " found="
+                        + found
+                        + " chunk="
+                        + chunk
+                        + " used="
+                        + used
+                        + " data0=0x"
+                        + String.format(
+                            Locale.US,
+                            "%08X",
+                            b0
+                        )
+                        + " data1=0x"
+                        + String.format(
+                            Locale.US,
+                            "%08X",
+                            b1
+                        )
+                );
+            } else if (tag == 5) {
+                int connId =
+                    a & 0xff;
+
+                int allPhys =
+                    (a >>> 8) & 0xff;
+
+                int txPhys =
+                    (a >>> 16) & 0xff;
+
+                int rxPhys =
+                    (a >>> 24) & 0xff;
+
+                logLine(
+                    "BLELAB SET_PHY "
+                        + sideName
+                        + " connId="
+                        + connId
+                        + " all="
+                        + allPhys
+                        + " tx="
+                        + txPhys
+                        + " rx="
+                        + rxPhys
+                        + " options="
+                        + (b0 & 0xffff)
+                        + " result="
+                        + b1
+                );
+            } else if (tag == 6) {
+                logLine(
+                    "BLELAB REMOTE_FEATURE_REQUEST "
+                        + sideName
+                        + " connId="
+                        + (a & 0xff)
+                        + " result="
+                        + b1
+                );
+            } else if (tag == 7) {
+                logLine(
+                    "BLELAB SET_DATA_LEN "
+                        + sideName
+                        + " connId="
+                        + (a & 0xff)
+                        + " txOctets="
+                        + (b0 & 0xffff)
+                        + " txTime="
+                        + ((b0 >>> 16) & 0xffff)
+                        + " result="
+                        + b1
+                );
+            } else if (tag == 8) {
+                logLine(
+                    "BLELAB RAW_EVENT "
+                        + sideName
+                        + " back="
+                        + (a & 0xff)
+                        + " chunk="
+                        + ((a >>> 8) & 0x0f)
+                        + " used="
+                        + ((a >>> 16) & 0x7f)
+                        + " data0=0x"
+                        + String.format(
+                            Locale.US,
+                            "%08X",
+                            b0
+                        )
+                        + " data1=0x"
+                        + String.format(
+                            Locale.US,
+                            "%08X",
+                            b1
+                        )
+                );
+            } else if (tag == 9) {
+                logLine(
+                    "BLELAB CAPTURE_MASK "
+                        + sideName
+                        + " mask=0x"
+                        + String.format(
+                            Locale.US,
+                            "%02X",
+                            a & 0xff
+                        )
+                );
+            } else {
+                logLine(
+                    "BLELAB UNKNOWN "
+                        + sideName
+                        + " tag="
+                        + tag
+                        + " a=0x"
+                        + String.format(
+                            Locale.US,
+                            "%08X",
+                            a
+                        )
+                        + " b0=0x"
+                        + String.format(
+                            Locale.US,
+                            "%08X",
+                            b0
+                        )
+                        + " b1=0x"
+                        + String.format(
+                            Locale.US,
+                            "%08X",
+                            b1
+                        )
+                );
+            }
+
+            return;
+        }
+
+        if (telemetry.result == 0xff
+                && telemetry.diagMbCompleted == 490) {
+            int packed = telemetry.diagBitOffset;
+            int hciStatus = packed & 0xff;
+            int txPhy = (packed >>> 8) & 0xff;
+            int rxPhy = (packed >>> 16) & 0xff;
+            int hdrStatus = (packed >>> 24) & 0xff;
+
+            logLine(
+                "PHY2M HCI UPDATE "
+                    + (isLeft ? "LEFT" : "RIGHT")
+                    + " status=0x"
+                    + String.format(Locale.US, "%02X", hciStatus)
+                    + " txPhy=" + txPhy
+                    + " rxPhy=" + rxPhy
+                    + " hdrStatus=0x"
+                    + String.format(Locale.US, "%02X", hdrStatus)
+            );
+        } else if (telemetry.result == 0xff
+                && telemetry.diagMbCompleted == 492) {
+            int packed = telemetry.diagBitOffset;
+            int hciStatus = packed & 0xff;
+            int opcode = (packed >>> 8) & 0xffff;
+            int numPackets = (packed >>> 24) & 0xff;
+
+            logLine(
+                "PHY2M HCI CMDSTATUS "
+                    + (isLeft ? "LEFT" : "RIGHT")
+                    + " status=0x"
+                    + String.format(Locale.US, "%02X", hciStatus)
+                    + " opcode=0x"
+                    + String.format(Locale.US, "%04X", opcode)
+                    + " numPackets=" + numPackets
+            );
+        } else if (telemetry.result == 0xff
+                && telemetry.diagMbCompleted == 491) {
+            logLine(
+                "PHY2M HCI UPDATE "
+                    + (isLeft ? "LEFT" : "RIGHT")
+                    + " updateObserved=false"
+            );
+        }
         h264TelemetryVersion = Math.max(h264TelemetryVersion, telemetry.version);
 
         if (isLeft) {
@@ -2621,6 +3527,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 lastHeartbeatAckedAtMs = 0;
                 consecutiveAckTimeouts = 0;
                 lastAudioControlAckMagic = 0;
+                phy2mProbeSent = false;
                 audioCaptureActive = false;
                 faceclawWakePendingNonce = -1;
                 lastFaceclawWakeLeaseQueuedAtMs = 0;
@@ -2818,6 +3725,76 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
+
+    private boolean bleLabSend(
+            String label,
+            byte[] payload,
+            long settleMs) {
+        boolean delivered =
+            sendH264Payload(
+                java.nio.ByteBuffer.wrap(payload)
+            );
+
+        logLine(
+            "BLELAB SEND "
+                + label
+                + " transport="
+                + delivered
+        );
+
+        if (settleMs > 0L) {
+            SystemClock.sleep(settleMs);
+        }
+
+        return delivered;
+    }
+
+    private void bleLabFind(
+            int type,
+            int key,
+            int chunks) {
+        for (
+            int chunk = 0;
+            chunk < chunks;
+            chunk++
+        ) {
+            bleLabSend(
+                "find type="
+                    + type
+                    + " key=0x"
+                    + String.format(
+                        Locale.US,
+                        "%04X",
+                        key
+                    )
+                    + " chunk="
+                    + chunk,
+                new byte[] {
+                    11,
+                    29,
+                    (byte)type,
+                    (byte)(key & 0xff),
+                    (byte)((key >>> 8) & 0xff),
+                    (byte)chunk
+                },
+                20L
+            );
+        }
+    }
+
+
+
+
+    private void runPhy2mProbe() {
+        /*
+         * Historical PHY diagnostics are intentionally disabled.
+         *
+         * Video BLE PHY is now controlled by the user's Video
+         * setting through requestVideoBlePhy().
+         */
+    }
+
+
     private long driveSession() {
         //Log.d(TAG, "driveSession called (pendingMessages.size=" + pendingMessages.size() + " inFlightMessages.size=" + inFlightMessages.size() + ")");
         while (true) {
@@ -2913,6 +3890,24 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                             && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                         Log.i(TAG, "enqueueing compass " + (compassEnabled ? "enable" : "disable"));
                         enqueueCompassControlLocked(false, compassEnabled);
+                    }
+
+                    if (messageToPrewrite == null
+                            && !h264Streaming
+                            && !shutdownRequested
+                            && fixedLayoutCreated
+                            && warmedUp
+                            && !phy2mProbeSent
+                            && pendingMessages.isEmpty()
+                            && inFlightMessages.isEmpty()) {
+                        phy2mProbeSent = true;
+                        logLine(
+                            "BLELAB scheduling startup sweep"
+                        );
+                        new Thread(
+                            () -> runPhy2mProbe(),
+                            "FaceclawPhy2mProbe"
+                        ).start();
                     }
 
                     // Ordinary UI traffic uses the configured transport window.

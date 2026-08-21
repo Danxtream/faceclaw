@@ -40,6 +40,15 @@ export class MainViewModel extends Observable {
   private _videoTimeEntry = "";
   private videoTimeEditing = false;
   private videoSeekPreviewMs: number | null = null;
+
+  // VIDEO_V252_USER_SEEK_GATE
+  //
+  // A bound NativeScript Slider may emit valueChange when the program
+  // changes its value/max. That is NOT a user seek.
+  //
+  // Only the exact Slider currently touched by the user may seek.
+  private videoSeekTouchSource: { value?: number } | null = null;
+
   private videoScrubTimer: ReturnType<typeof setTimeout> | null = null;
   private videoPlaybackUnsubscribe: (() => void) | null = null;
 
@@ -599,8 +608,62 @@ export class MainViewModel extends Observable {
     }
   }
 
+  onVideoSeekTouch(
+    args: {
+      action?: string;
+      object?: { value?: number };
+    },
+  ): void {
+    const action =
+      String(args.action ?? "");
+
+    const source =
+      args.object ?? null;
+
+    if (
+      action === "down" ||
+      action === "move"
+    ) {
+      if (source) {
+        this.videoSeekTouchSource =
+          source;
+      }
+
+      return;
+    }
+
+    if (
+      action === "up" ||
+      action === "cancel"
+    ) {
+      const endingSource =
+        source;
+
+      // valueChange may be dispatched as part of the same final touch.
+      // Clear ownership on the next event-loop turn.
+      setTimeout(() => {
+        if (
+          !endingSource ||
+          this.videoSeekTouchSource ===
+            endingSource
+        ) {
+          this.videoSeekTouchSource =
+            null;
+        }
+      }, 0);
+    }
+  }
+
   onVideoSeekValueChange(args: { value?: number; object?: { value?: number } }): void {
-    if (!this._videoActive) return;
+    // Programmatic binding/clamp changes are not user seeks.
+    if (
+      !this._videoActive ||
+      !args.object ||
+      args.object !==
+        this.videoSeekTouchSource
+    ) {
+      return;
+    }
     const seconds = Number(args.value ?? args.object?.value ?? this._videoSeekSeconds);
     if (!Number.isFinite(seconds)) return;
 
@@ -658,8 +721,11 @@ export class MainViewModel extends Observable {
     if (playingChanged) this.notifyPropertyChange("videoPlayPauseLabel", this.videoPlayPauseLabel);
     this.notifyPropertyChange("videoPositionText", this._videoPositionText);
     this.notifyPropertyChange("videoDurationText", this._videoDurationText);
-    this.notifyPropertyChange("videoSeekSeconds", this._videoSeekSeconds);
+
+    // V2.5.2: publish the Slider maximum before restored/live value.
     this.notifyPropertyChange("videoDurationSeconds", this.videoDurationSeconds);
+    this.notifyPropertyChange("videoSeekSeconds", this._videoSeekSeconds);
+
     this.notifyPropertyChange("videoStatus", this._videoStatus);
   }
 

@@ -1,4 +1,4 @@
-import { getStringSetting, setStringSetting } from "./settings-store";
+import { getStringSetting, setStringSetting, setStringSettingSync } from "./settings-store";
 import type { DirectoryEntry } from "./file-access";
 
 declare const android: any;
@@ -102,7 +102,26 @@ export function saveVideoResumeState(path: string, positionMs: number): void {
     path,
     positionMs: Math.max(0, Math.round(positionMs)),
   };
-  setStringSetting(VIDEO_RESUME_KEY, JSON.stringify(state));
+
+  setStringSetting(
+    VIDEO_RESUME_KEY,
+    JSON.stringify(state),
+  );
+}
+
+export function saveVideoResumeStateDurable(
+  path: string,
+  positionMs: number,
+): boolean {
+  const state: VideoResumeState = {
+    path,
+    positionMs: Math.max(0, Math.round(positionMs)),
+  };
+
+  return setStringSettingSync(
+    VIDEO_RESUME_KEY,
+    JSON.stringify(state),
+  );
 }
 
 export function resumePositionFor(path: string): number {

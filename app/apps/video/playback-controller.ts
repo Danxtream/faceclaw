@@ -11,9 +11,15 @@ import {
   h264SetScale2x,
   h264Start,
 } from "../../native/h264";
-import { pairedMp4Path, resumePositionFor, saveVideoResumeState } from "../../native/g2-video-library";
+import { pairedMp4Path, resumePositionFor, saveVideoResumeState, saveVideoResumeStateDurable } from "../../native/g2-video-library";
 import { VideoAudioClock } from "../../native/video-audio";
-import { configuredVideoFps, configuredVideoScale2x } from "./video-settings";
+
+import {
+  configuredVideoBlePhy2m,
+  configuredVideoFps,
+  configuredVideoScale2x,
+  onVideoBlePhySettingChanged,
+} from "./video-settings";
 import { videoPlaybackState, type VideoPlaybackSnapshot } from "./video-playback-state";
 
 const V24_DEGRADED_STARTUP_GRACE_MS = 15_000;
@@ -21,6 +27,7 @@ const V24_HARD_STARTUP_GRACE_MS = 2_500;
 const V24_ZERO_PROGRESS_MS = 2_500;
 const V24_ZERO_PROGRESS_POLL_MS = 500;
 const V25_RESUME_SAVE_INTERVAL_MS = 1_500;
+const V251_DURABLE_RESUME_SAVE_INTERVAL_MS = 10_000;
 const V25_SESSION_SETTLE_MS = 2_500;
 const V25_SESSION_SAMPLE_MS = 5_000;
 const V25_MAX_AUTO_RETRIES = 2;
@@ -90,12 +97,14 @@ export class VideoPlaybackController {
   private v25PauseSettling: Promise<void> | null = null;
 
   private v25LastResumeSaveMs = 0;
+  private v251LastDurableResumeSaveMs = 0;
 
   private v25QualificationTimer: any = null;
   private v25QualificationToken = 0;
   private v25AutoRetryCount = 0;
   private v25SessionHealthy = false;
   private v25SessionRecoveryInFlight = false;
+  private v251ManualControlEpoch = 0;
 
   private v25StopRequested = false;
 
@@ -147,6 +156,14 @@ export class VideoPlaybackController {
   private lastPublishedAtMs = 0;
   private releaseScreenAwake: (() => void) | null = null;
   private controlTail: Promise<void> = Promise.resolve();
+
+  private blePhyControlTail:
+    Promise<void> =
+      Promise.resolve();
+
+  private releaseBlePhySettingListener:
+    (() => void) | null =
+      null;
   private lastRecoveryFrame: number | null = null;
   private healthWindowStartedAtMs = 0;
   private healthWindowStartFrame: number | null = null;
@@ -224,10 +241,14 @@ export class VideoPlaybackController {
   }
 
   async togglePause(): Promise<void> {
-    return this.runControl(async () => {
-      if (this.playing) await this.pauseInternal();
-      else await this.resumeInternal();
-    });
+    // VIDEO_V251_ROUTING
+    // Generic/phone Play-Pause enters the V2.5 canonical path.
+    if (this.playing) {
+      await this.pause();
+      return;
+    }
+
+    await this.resume();
   }
 
   async pauseV233(): Promise<void> {
@@ -239,7 +260,13 @@ export class VideoPlaybackController {
   }
 
   async seekBy(deltaMs: number): Promise<void> {
-    return this.runControl(() => this.seekToInternal(this.currentPositionMs + deltaMs));
+    // VIDEO_V251_ROUTING
+    // Phone and glasses skips share the same canonical seek path.
+    const anchor = this.playing
+      ? (this.presentedMediaMs() ?? this.currentPositionMs)
+      : this.v25CanonicalMs;
+
+    await this.seekTo(anchor + deltaMs);
   }
 
   async seekToV233(targetMs: number): Promise<void> {
@@ -266,12 +293,65 @@ export class VideoPlaybackController {
     return run;
   }
 
+
+
+  private queueVideoBlePhy(
+    use2m: boolean,
+    reason: string,
+  ): Promise<void> {
+    /*
+     * Java's actual H264 transport lifecycle owns PHY now.
+     * Keep this method as a compatibility no-op so any current
+     * TS start/stop/listener path cannot issue duplicate PHY
+     * commands.
+     */
+    this.ctx.appendLog(
+      `VIDEO_BLE_PHY delegated-to-java reason=${reason} requested=${use2m ? "2M" : "1M"}`,
+    );
+
+    return Promise.resolve();
+  }
+
+  private installVideoBlePhySettingListener():
+    void {
+    if (
+      this.releaseBlePhySettingListener
+    ) {
+      return;
+    }
+
+    this.releaseBlePhySettingListener =
+      onVideoBlePhySettingChanged(
+        (
+          value,
+          oldValue,
+        ) => {
+          this.ctx.appendLog(
+            `VIDEO_BLE_PHY setting ${oldValue}->${value}`,
+          );
+
+          void this.queueVideoBlePhy(
+            value === "2m",
+            "setting",
+          );
+        },
+      );
+  }
+
   private async startInternal(): Promise<void> {
     (globalThis as any).__faceclawVideoOwnsDisplay = true;
     this.publish("starting", true);
     this.releaseScreenAwake = this.ctx.acquireScreenAwakeLease();
     this.lastRecoveryFrame = null;
+
+    this.installVideoBlePhySettingListener();
+
     try {
+      await this.queueVideoBlePhy(
+        configuredVideoBlePhy2m(),
+        "start",
+      );
+
       await this.rebuildAt(this.positionMs, false);
       await this.resumeInternal();
     } catch (error) {
@@ -366,6 +446,29 @@ export class VideoPlaybackController {
       this.ctx.appendLog("PHONE_STOP_NO_FIRMWARE_OVERLAY");
       await this.endCurrentStream();
     } finally {
+      const releaseBlePhySettingListener =
+        this.releaseBlePhySettingListener;
+
+      this.releaseBlePhySettingListener =
+        null;
+
+      releaseBlePhySettingListener?.();
+
+      /*
+       * Let an already-running live setting transition finish,
+       * then force the G2 back to its normal 1M profile.
+       */
+      await this.blePhyControlTail.catch(
+        () => undefined,
+      );
+
+      await this.queueVideoBlePhy(
+        false,
+        "stop",
+      ).catch(
+        () => undefined,
+      );
+
       this.audio.release();
       this.reader.close();
       const releaseScreenAwake = this.releaseScreenAwake;
@@ -1384,16 +1487,16 @@ export class VideoPlaybackController {
     );
 
     try {
-      // startV233 performs the proven clean initial rebuild.
-      //
-      // Its call to this.resume() resolves to the V2.5 resume
-      // method below.
       await this.startV233();
+
+      // Initial H264 session must be qualified too.
+      this.v25ScheduleQualification(
+        "start",
+      );
     } catch (error) {
       if (this.v25CanonicalMs > 0) {
-        saveVideoResumeState(
-          this.filePath,
-          this.v25CanonicalMs,
+        this.v251PersistDurableResume(
+          "start-failure",
         );
       }
 
@@ -1402,37 +1505,34 @@ export class VideoPlaybackController {
   }
 
   async pause(): Promise<void> {
+    this.v251BeginManualControl(
+      "pause",
+    );
+
     if (
-      !this.playing ||
-      this.stopping
+      this.stopping ||
+      (!this.playing &&
+        !this.v25SessionRecoveryInFlight)
     ) {
       return;
     }
-
-    this.v25CancelQualification();
 
     const anchor =
       this.presentedMediaMs() ??
       this.currentPositionMs;
 
-    //
-    // Capture the position BEFORE changing clocks/state.
-    //
+    // Capture canonical position before clocks/state change.
     this.v25CommitPosition(
       anchor,
       "pause",
       false,
     );
 
-    //
-    // Pause is LOCAL ONLY.
-    //
-    // No h264Drain()
-    // No h264EndStream()
-    // No RESET
-    // No rebuild
-    // No pause-overlay command
-    //
+    // LOCAL ONLY:
+    // no H264 drain
+    // no H264 END
+    // no H264 reset
+    // no rebuild
     this.playing = false;
     this.audioHeldForSync = false;
 
@@ -1448,12 +1548,28 @@ export class VideoPlaybackController {
 
     this.generation++;
 
+    // VIDEO_V253_PAUSE_END_NO_DRAIN
+    // Pause returns immediately, but once the JS pump has stopped we close
+    // the firmware decoder session. Deliberately do NOT drain queued H264.
     //
-    // Do not make Pause wait on an in-flight BLE transfer.
-    // This is intentionally asynchronous.
-    //
-    const settling =
-      this.waitForPumpStop();
+    // This avoids leaving an idle decoder/transport session alive for the
+    // entire paused interval.
+    const settling = (async () => {
+      await this.waitForPumpStop();
+
+      // The glasses click path calls setPauseOverlaySelection immediately
+      // after pause() returns. Give that control packet a brief opportunity
+      // to enqueue before STOP closes the H264 decoder session.
+      await sleep(200);
+
+      const endOk =
+        await h264EndStream()
+          .catch(() => false);
+
+      this.ctx.appendLog(
+        `VIDEO_V253_PAUSE_SESSION_END result=${endOk} drain=false`,
+      );
+    })();
 
     this.v25PauseSettling =
       settling;
@@ -1470,15 +1586,14 @@ export class VideoPlaybackController {
 
     this.v25NeedsFreshResume = true;
 
-    saveVideoResumeState(
-      this.filePath,
-      this.v25CanonicalMs,
+    this.v251PersistDurableResume(
+      "pause",
     );
 
     this.ctx.appendLog(
       `VIDEO_V25_PAUSE positionMs=${Math.round(
         this.v25CanonicalMs,
-      )} h264Action=NONE`,
+      )} h264Action=END_NO_DRAIN`,
     );
 
     this.publish(
@@ -1489,24 +1604,24 @@ export class VideoPlaybackController {
 
   async resume(): Promise<void> {
     if (
-      this.playing ||
+      (this.playing &&
+        !this.v25SessionRecoveryInFlight) ||
       this.stopping
     ) {
       return;
     }
 
+    this.v251BeginManualControl(
+      "resume",
+    );
+
     await this.v25AwaitPauseSettled();
+    await this.v251AwaitRecoverySettled();
 
     if (this.v25StopRequested) {
       return;
     }
 
-    //
-    // Manual Pause -> Play is a deliberate new-session attempt.
-    //
-    // This implements what was empirically helping when the
-    // user tried Play/Pause several times.
-    //
     if (this.v25NeedsFreshResume) {
       const anchor =
         this.v25CanonicalMs;
@@ -1559,7 +1674,12 @@ export class VideoPlaybackController {
   ): Promise<void> {
     if (this.stopping) return;
 
+    this.v251BeginManualControl(
+      "seek",
+    );
+
     await this.v25AwaitPauseSettled();
+    await this.v251AwaitRecoverySettled();
 
     const target = Math.max(
       0,
@@ -1572,25 +1692,14 @@ export class VideoPlaybackController {
     const wasPlaying =
       this.playing;
 
-    this.v25CancelQualification();
-
-    //
-    // A user seek is authoritative.
-    //
-    // It is allowed to move backward.
-    //
+    // Explicit user seek is authoritative and may move backward.
     this.v25CommitPosition(
       target,
       "user-seek-request",
       true,
     );
 
-    //
-    // The proven V2.3 seek implementation may start internally
-    // from a preceding IDR, but it decodes forward to the target.
-    //
-    // That internal IDR NEVER replaces v25CanonicalMs.
-    //
+    // Internal preceding-IDR decode cannot replace canonical target.
     this.v25NeedsFreshResume =
       false;
 
@@ -1612,9 +1721,8 @@ export class VideoPlaybackController {
       true,
     );
 
-    saveVideoResumeState(
-      this.filePath,
-      this.v25CanonicalMs,
+    this.v251PersistDurableResume(
+      "seek",
     );
 
     this.ctx.appendLog(
@@ -1623,11 +1731,6 @@ export class VideoPlaybackController {
       )} playing=${this.playing}`,
     );
 
-    //
-    // If V2.3 preserved playing state, qualify this new H264
-    // session. If the user remains paused, do not start any
-    // automatic recovery work.
-    //
     if (
       wasPlaying &&
       this.playing
@@ -1647,11 +1750,11 @@ export class VideoPlaybackController {
   async stop(): Promise<void> {
     if (this.stopping) return;
 
-    //
-    // Stop wins over every automatic session operation.
-    //
     this.v25StopRequested = true;
-    this.v25CancelQualification();
+
+    this.v251BeginManualControl(
+      "stop",
+    );
 
     const anchor =
       this.presentedMediaMs() ??
@@ -1664,9 +1767,8 @@ export class VideoPlaybackController {
       false,
     );
 
-    saveVideoResumeState(
-      this.filePath,
-      this.v25CanonicalMs,
+    this.v251PersistDurableResume(
+      "stop",
     );
 
     this.ctx.appendLog(
@@ -1676,20 +1778,16 @@ export class VideoPlaybackController {
     );
 
     await this.v25AwaitPauseSettled();
+    await this.v251AwaitRecoverySettled();
 
     try {
       await this.stopV233();
     } finally {
-      //
-      // stopV233 may observe a temporary internal/rebuild
-      // position. Restore the user's canonical location.
-      //
       if (
         this.v25CanonicalMs > 0
       ) {
-        saveVideoResumeState(
-          this.filePath,
-          this.v25CanonicalMs,
+        this.v251PersistDurableResume(
+          "stop-final",
         );
       }
     }
@@ -1717,6 +1815,37 @@ export class VideoPlaybackController {
       candidate,
       "periodic",
       false,
+    );
+
+    if (
+      now -
+        this.v251LastDurableResumeSaveMs >=
+      V251_DURABLE_RESUME_SAVE_INTERVAL_MS
+    ) {
+      this.v251PersistDurableResume(
+        "periodic",
+      );
+    }
+  }
+
+  private v251PersistDurableResume(
+    reason: string,
+  ): void {
+    const committed =
+      saveVideoResumeStateDurable(
+        this.filePath,
+        this.v25CanonicalMs,
+      );
+
+    if (committed) {
+      this.v251LastDurableResumeSaveMs =
+        Date.now();
+    }
+
+    this.ctx.appendLog(
+      `VIDEO_V251_RESUME_DURABLE reason=${reason} positionMs=${Math.round(
+        this.v25CanonicalMs,
+      )} committed=${committed}`,
     );
   }
 
@@ -1769,6 +1898,26 @@ export class VideoPlaybackController {
       this.filePath,
       candidate,
     );
+  }
+
+  private v251BeginManualControl(
+    reason: string,
+  ): void {
+    this.v251ManualControlEpoch++;
+
+    this.v25CancelQualification();
+
+    this.ctx.appendLog(
+      `VIDEO_V251_MANUAL_CONTROL reason=${reason} epoch=${this.v251ManualControlEpoch}`,
+    );
+  }
+
+  private async v251AwaitRecoverySettled(): Promise<void> {
+    while (
+      this.v25SessionRecoveryInFlight
+    ) {
+      await sleep(20);
+    }
   }
 
   private async v25AwaitPauseSettled(): Promise<void> {
@@ -1965,6 +2114,9 @@ export class VideoPlaybackController {
       return;
     }
 
+    const recoveryEpoch =
+      this.v251ManualControlEpoch;
+
     this.v25SessionRecoveryInFlight =
       true;
 
@@ -1997,6 +2149,16 @@ export class VideoPlaybackController {
       await this.waitForPumpStop();
 
       if (
+        recoveryEpoch !==
+        this.v251ManualControlEpoch
+      ) {
+        this.ctx.appendLog(
+          `VIDEO_V251_SESSION_RETRY_ABORT stage=after-pump epoch=${recoveryEpoch}->${this.v251ManualControlEpoch}`,
+        );
+        return;
+      }
+
+      if (
         this.stopping ||
         this.v25StopRequested
       ) {
@@ -2009,6 +2171,16 @@ export class VideoPlaybackController {
         true,
         `v25-auto-retry-${this.v25AutoRetryCount}`,
       );
+
+      if (
+        recoveryEpoch !==
+        this.v251ManualControlEpoch
+      ) {
+        this.ctx.appendLog(
+          `VIDEO_V251_SESSION_RETRY_ABORT stage=after-rebuild epoch=${recoveryEpoch}->${this.v251ManualControlEpoch}`,
+        );
+        return;
+      }
 
       if (
         this.stopping ||

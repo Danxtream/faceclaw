@@ -1,0 +1,2268 @@
+& {
+    $ErrorActionPreference = 'Stop'
+
+    # ============================================================
+    # G2 VIDEO - ONE FULL ENCODE + RESUMABLE LOCAL REPAIRS
+    #
+    # MERGE OF THE TWO RECOVERED POWERSHELL SCRIPTS:
+    #
+    #   1) one full encode into 128-frame / 12.8-second GOP pieces
+    #   2) fast full-file G2 audit
+    #   3) re-encode ONLY globally failing short GOP segments
+    #   4) keep CRF 12; tighten local VBV only as much as required
+    #   5) reassemble and audit again
+    #   6) promote only after every gate passes
+    #
+    # If a complete preserved work folder already exists, this block
+    # validates it and RESUMES it instead of doing another full encode.
+    #
+    # Change only $Source / $Final at the top for another movie.
+    # ============================================================
+
+    $Root = 'C:\Users\danxt\Desktop\G2 Video player project'
+
+    $Source = Join-Path $Root 'Tokyo_KIRBY10hour.mp4'
+    $Final  = Join-Path $Root '7Tokyo_KIRBY10hour.h264'
+
+    $Work        = Join-Path $Root '__G2_VIDEO7_LOCAL_WORK'
+    $SegmentsDir = Join-Path $Work 'segments'
+    $Assembled   = Join-Path $Work 'assembled_merged.h264'
+    $RateState   = Join-Path $Work 'local_segment_rates.json'
+
+    # Old candidate left by an earlier Video 7 script.
+    $OldCandidate = Join-Path $Root '7Tokyo_KIRBY10hour.__candidate.h264'
+
+    # ------------------------------------------------------------
+    # Output contract
+    # ------------------------------------------------------------
+
+    $Fps    = 10
+    $Width  = 320
+    $Height = 192
+
+    # 128 frames / 10 FPS = 12.8 seconds.
+    $SegmentFrames  = 128
+    $SegmentSeconds = 12.8
+
+    $Crf = 12
+
+    # Normal video settings.
+    $NormalMaxRate = 110
+    $NormalBufSize = 22
+
+    # G2 acceptance contract.
+    $NalCeiling = 2980
+    $Max1SecWrites = 75.0
+    $Max5SecWrites = 61.0
+
+    $PhysicalPayload = 230
+    $Mode11Header = 10
+
+    # Only local 12.8-second pieces may retry.
+    $MaxGlobalRounds = 10
+    $MaxLocalTries = 16
+    $MinimumLocalRate = 45
+
+    # A preserved full-segment set must be within this much of the
+    # source duration before it may be resumed.
+    $ResumeDurationToleranceSec = 2.0
+
+    # ------------------------------------------------------------
+    # Preconditions
+    # ------------------------------------------------------------
+
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        throw "Source missing: $Source"
+    }
+
+    $Ffmpeg = (Get-Command ffmpeg -ErrorAction Stop).Source
+    $Ffprobe = (Get-Command ffprobe -ErrorAction Stop).Source
+
+    if (Test-Path -LiteralPath $OldCandidate -PathType Leaf) {
+        Remove-Item -LiteralPath $OldCandidate -Force
+    }
+
+    # ------------------------------------------------------------
+    # Source duration
+    # ------------------------------------------------------------
+
+    $durationRaw = & $Ffprobe `
+        -v error `
+        -show_entries format=duration `
+        -of default=noprint_wrappers=1:nokey=1 `
+        $Source
+
+    if ($LASTEXITCODE -ne 0) {
+        throw 'ffprobe could not read source duration.'
+    }
+
+    $DurationSec = [double]::Parse(
+        ($durationRaw | Select-Object -First 1).ToString().Trim(),
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+
+    if (
+        -not [double]::IsFinite($DurationSec) -or
+        $DurationSec -le 0
+    ) {
+        throw "Invalid source duration: $DurationSec"
+    }
+
+    $SegmentSecondsText =
+        $SegmentSeconds.ToString(
+            '0.000000',
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+
+    # ============================================================
+    # FAST ANNEX-B AUDITOR / PROBLEM MAP
+    # ============================================================
+
+    if (-not ('G2LocalRepairV1.Scanner' -as [type])) {
+
+        $CSharp = @'
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+
+namespace G2LocalRepairV1
+{
+    public sealed class ProblemRange
+    {
+        public int StartFrame;
+        public int EndFrame;
+        public double SuggestedMultiplier;
+        public string Reason;
+    }
+
+    public sealed class AuditResult
+    {
+        public long FileBytes;
+
+        public int VclFrames;
+        public int IdrFrames;
+        public long TotalNals;
+
+        public int MaxVcl;
+        public int MaxVclFrame;
+
+        public int MaxTransport;
+        public int MaxTransportFrame;
+        public int MaxTransportType;
+
+        public int VclOverCeiling;
+        public int TransportOverCeiling;
+
+        public double Worst1WritesPerSec;
+        public int Worst1StartFrame;
+
+        public double Worst5WritesPerSec;
+        public int Worst5StartFrame;
+
+        public ProblemRange[] Problems;
+    }
+
+    public static class Scanner
+    {
+        private const int Payload = 230;
+        private const int Header = 10;
+
+        private static int WritesFor(int nalBytes)
+        {
+            return (nalBytes + Header + Payload - 1) / Payload;
+        }
+
+        private static double ClampFactor(double f)
+        {
+            if (f > 0.98) f = 0.98;
+            if (f < 0.55) f = 0.55;
+
+            return Math.Floor(f * 100.0) / 100.0;
+        }
+
+        private static void Mark(
+            double[] need,
+            byte[] flags,
+            int start,
+            int end,
+            double factor,
+            byte flag)
+        {
+            if (need.Length == 0)
+                return;
+
+            if (start < 0)
+                start = 0;
+
+            if (end >= need.Length)
+                end = need.Length - 1;
+
+            factor = ClampFactor(factor);
+
+            for (int i = start; i <= end; i++)
+            {
+                if (factor < need[i])
+                    need[i] = factor;
+
+                flags[i] |= flag;
+            }
+        }
+
+        private static string Reason(byte flags)
+        {
+            List<string> s = new List<string>();
+
+            if ((flags & 1) != 0) s.Add("NAL");
+            if ((flags & 2) != 0) s.Add("1SEC");
+            if ((flags & 4) != 0) s.Add("5SEC");
+
+            return string.Join("+", s.ToArray());
+        }
+
+        private static long MaxWindow(
+            List<int> values,
+            int width,
+            out int start)
+        {
+            start = -1;
+
+            if (values.Count == 0)
+                return 0;
+
+            if (width < 1)
+                width = 1;
+
+            if (width > values.Count)
+                width = values.Count;
+
+            long sum = 0;
+
+            for (int i = 0; i < width; i++)
+                sum += values[i];
+
+            long best = sum;
+            start = 0;
+
+            for (int i = width; i < values.Count; i++)
+            {
+                sum += values[i];
+                sum -= values[i - width];
+
+                if (sum > best)
+                {
+                    best = sum;
+                    start = i - width + 1;
+                }
+            }
+
+            return best;
+        }
+
+        private static void MarkWindows(
+            List<int> writes,
+            int fps,
+            int width,
+            double maxPerSecond,
+            double[] need,
+            byte[] flags,
+            byte flag,
+            double factorCap,
+            int pad)
+        {
+            int n = writes.Count;
+
+            if (n == 0)
+                return;
+
+            if (width < 1)
+                width = 1;
+
+            if (width > n)
+                width = n;
+
+            double seconds = width / (double)fps;
+            double limit = maxPerSecond * seconds;
+
+            long sum = 0;
+
+            for (int i = 0; i < n; i++)
+            {
+                sum += writes[i];
+
+                if (i >= width)
+                    sum -= writes[i - width];
+
+                if (i < width - 1)
+                    continue;
+
+                if (sum > limit + 0.000001)
+                {
+                    int start = i - width + 1;
+                    int end = i;
+
+                    // A little margin prevents landing on exactly
+                    // the same integer BLE-write boundary.
+                    double f = 0.95 * limit / sum;
+
+                    if (f > factorCap)
+                        f = factorCap;
+
+                    Mark(
+                        need,
+                        flags,
+                        start - pad,
+                        end + pad,
+                        f,
+                        flag
+                    );
+                }
+            }
+        }
+
+        private static ProblemRange[] BuildProblems(
+            List<int> frameWrites,
+            List<int> frameMaxNal,
+            int fps,
+            int ceiling,
+            double max1,
+            double max5)
+        {
+            int n = frameWrites.Count;
+
+            double[] need = new double[n];
+            byte[] flags = new byte[n];
+
+            for (int i = 0; i < n; i++)
+                need[i] = 1.0;
+
+            // Individual oversized NALs.
+            for (int i = 0; i < n; i++)
+            {
+                int size = frameMaxNal[i];
+
+                if (size > ceiling)
+                {
+                    double f =
+                        0.94 *
+                        ceiling /
+                        (double)size;
+
+                    if (f > 0.90)
+                        f = 0.90;
+
+                    Mark(
+                        need,
+                        flags,
+                        i - 1,
+                        i + 1,
+                        f,
+                        1
+                    );
+                }
+            }
+
+            // One-second density.
+            MarkWindows(
+                frameWrites,
+                fps,
+                fps,
+                max1,
+                need,
+                flags,
+                2,
+                0.92,
+                2
+            );
+
+            // Five-second density.
+            MarkWindows(
+                frameWrites,
+                fps,
+                fps * 5,
+                max5,
+                need,
+                flags,
+                4,
+                0.93,
+                2
+            );
+
+            List<ProblemRange> result =
+                new List<ProblemRange>();
+
+            int pos = 0;
+
+            while (pos < n)
+            {
+                if (flags[pos] == 0)
+                {
+                    pos++;
+                    continue;
+                }
+
+                int start = pos;
+                int end = pos;
+
+                double minFactor = need[pos];
+                byte combined = flags[pos];
+
+                pos++;
+
+                while (
+                    pos < n &&
+                    flags[pos] != 0
+                )
+                {
+                    end = pos;
+
+                    if (need[pos] < minFactor)
+                        minFactor = need[pos];
+
+                    combined |= flags[pos];
+
+                    pos++;
+                }
+
+                ProblemRange p =
+                    new ProblemRange();
+
+                p.StartFrame = start;
+                p.EndFrame = end;
+                p.SuggestedMultiplier = minFactor;
+                p.Reason = Reason(combined);
+
+                result.Add(p);
+            }
+
+            return result.ToArray();
+        }
+
+        private static void FinishNal(
+            int nalType,
+            int nalBytes,
+            int ceiling,
+            AuditResult r,
+            List<int> frameWrites,
+            List<int> frameMaxNal,
+            ref int pendingWrites,
+            ref int pendingMaxNal)
+        {
+            if (nalBytes <= 0)
+                return;
+
+            r.TotalNals++;
+
+            bool vcl =
+                nalType == 1 ||
+                nalType == 5;
+
+            // Current player contract ignores SEI/AUD.
+            bool transported =
+                nalType != 6 &&
+                nalType != 9;
+
+            int currentFrame = r.VclFrames;
+
+            int writes = 0;
+
+            if (transported)
+            {
+                writes = WritesFor(nalBytes);
+
+                if (nalBytes > r.MaxTransport)
+                {
+                    r.MaxTransport = nalBytes;
+                    r.MaxTransportFrame = currentFrame;
+                    r.MaxTransportType = nalType;
+                }
+
+                if (nalBytes > ceiling)
+                    r.TransportOverCeiling++;
+            }
+
+            if (vcl)
+            {
+                if (nalBytes > r.MaxVcl)
+                {
+                    r.MaxVcl = nalBytes;
+                    r.MaxVclFrame = currentFrame;
+                }
+
+                if (nalBytes > ceiling)
+                    r.VclOverCeiling++;
+
+                if (nalType == 5)
+                    r.IdrFrames++;
+
+                frameWrites.Add(
+                    pendingWrites + writes
+                );
+
+                frameMaxNal.Add(
+                    Math.Max(
+                        pendingMaxNal,
+                        nalBytes
+                    )
+                );
+
+                pendingWrites = 0;
+                pendingMaxNal = 0;
+
+                r.VclFrames++;
+            }
+            else if (transported)
+            {
+                pendingWrites += writes;
+
+                if (nalBytes > pendingMaxNal)
+                    pendingMaxNal = nalBytes;
+            }
+        }
+
+        public static AuditResult Scan(
+            string path,
+            int fps,
+            int ceiling,
+            double max1,
+            double max5)
+        {
+            AuditResult r =
+                new AuditResult();
+
+            r.MaxVclFrame = -1;
+            r.MaxTransportFrame = -1;
+            r.Worst1StartFrame = -1;
+            r.Worst5StartFrame = -1;
+
+            List<int> frameWrites =
+                new List<int>(400000);
+
+            List<int> frameMaxNal =
+                new List<int>(400000);
+
+            int pendingWrites = 0;
+            int pendingMaxNal = 0;
+
+            byte[] buffer =
+                new byte[8 * 1024 * 1024];
+
+            bool inNal = false;
+            bool needHeader = false;
+
+            int nalType = 0;
+            int nalBytes = 0;
+            int zeroRun = 0;
+
+            using (
+                FileStream fs =
+                    new FileStream(
+                        path,
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.Read,
+                        buffer.Length,
+                        FileOptions.SequentialScan
+                    )
+            )
+            {
+                r.FileBytes = fs.Length;
+
+                int read;
+
+                while (
+                    (
+                        read =
+                            fs.Read(
+                                buffer,
+                                0,
+                                buffer.Length
+                            )
+                    ) > 0
+                )
+                {
+                    for (int i = 0; i < read; i++)
+                    {
+                        byte b = buffer[i];
+
+                        if (b == 0)
+                        {
+                            zeroRun++;
+                            continue;
+                        }
+
+                        // Annex-B start code:
+                        // 00 00 01 or 00 00 00 01
+                        if (
+                            b == 1 &&
+                            zeroRun >= 2
+                        )
+                        {
+                            if (inNal)
+                            {
+                                FinishNal(
+                                    nalType,
+                                    nalBytes,
+                                    ceiling,
+                                    r,
+                                    frameWrites,
+                                    frameMaxNal,
+                                    ref pendingWrites,
+                                    ref pendingMaxNal
+                                );
+                            }
+
+                            inNal = false;
+                            needHeader = true;
+                            nalBytes = 0;
+                            zeroRun = 0;
+
+                            continue;
+                        }
+
+                        if (needHeader)
+                        {
+                            nalType = b & 0x1F;
+                            nalBytes = 1;
+                            inNal = true;
+                            needHeader = false;
+                            zeroRun = 0;
+
+                            continue;
+                        }
+
+                        if (inNal)
+                        {
+                            nalBytes += zeroRun;
+                            zeroRun = 0;
+                            nalBytes++;
+                        }
+                        else
+                        {
+                            zeroRun = 0;
+                        }
+                    }
+                }
+
+                if (inNal)
+                {
+                    FinishNal(
+                        nalType,
+                        nalBytes,
+                        ceiling,
+                        r,
+                        frameWrites,
+                        frameMaxNal,
+                        ref pendingWrites,
+                        ref pendingMaxNal
+                    );
+                }
+            }
+
+            if (r.VclFrames <= 0)
+            {
+                throw new InvalidDataException(
+                    "No VCL pictures found."
+                );
+            }
+
+            if (
+                pendingWrites > 0 &&
+                frameWrites.Count > 0
+            )
+            {
+                int last =
+                    frameWrites.Count - 1;
+
+                frameWrites[last] +=
+                    pendingWrites;
+
+                if (
+                    pendingMaxNal >
+                    frameMaxNal[last]
+                )
+                {
+                    frameMaxNal[last] =
+                        pendingMaxNal;
+                }
+            }
+
+            int oneWidth =
+                Math.Min(
+                    fps,
+                    frameWrites.Count
+                );
+
+            int fiveWidth =
+                Math.Min(
+                    fps * 5,
+                    frameWrites.Count
+                );
+
+            int start1;
+
+            long writes1 =
+                MaxWindow(
+                    frameWrites,
+                    oneWidth,
+                    out start1
+                );
+
+            r.Worst1StartFrame = start1;
+
+            r.Worst1WritesPerSec =
+                writes1 /
+                (
+                    oneWidth /
+                    (double)fps
+                );
+
+            int start5;
+
+            long writes5 =
+                MaxWindow(
+                    frameWrites,
+                    fiveWidth,
+                    out start5
+                );
+
+            r.Worst5StartFrame = start5;
+
+            r.Worst5WritesPerSec =
+                writes5 /
+                (
+                    fiveWidth /
+                    (double)fps
+                );
+
+            r.Problems =
+                BuildProblems(
+                    frameWrites,
+                    frameMaxNal,
+                    fps,
+                    ceiling,
+                    max1,
+                    max5
+                );
+
+            return r;
+        }
+
+        public static double[] NewRepairMap(
+            int frameCount)
+        {
+            double[] map =
+                new double[frameCount];
+
+            for (int i = 0; i < frameCount; i++)
+                map[i] = 1.0;
+
+            return map;
+        }
+
+        public static int ApplyRange(
+            double[] map,
+            int start,
+            int end,
+            double multiplier,
+            double minFactor)
+        {
+            if (start < 0)
+                start = 0;
+
+            if (end >= map.Length)
+                end = map.Length - 1;
+
+            if (start > end)
+                return 0;
+
+            int changed = 0;
+
+            for (int i = start; i <= end; i++)
+            {
+                double next =
+                    map[i] * multiplier;
+
+                if (next < minFactor)
+                    next = minFactor;
+
+                if (
+                    next <
+                    map[i] - 0.000001
+                )
+                {
+                    map[i] = next;
+                    changed++;
+                }
+            }
+
+            return changed;
+        }
+
+        public static string BuildZones(
+            double[] map)
+        {
+            List<string> zones =
+                new List<string>();
+
+            int i = 0;
+
+            while (i < map.Length)
+            {
+                while (
+                    i < map.Length &&
+                    map[i] >= 0.999
+                )
+                {
+                    i++;
+                }
+
+                if (i >= map.Length)
+                    break;
+
+                int start = i;
+                int end = i;
+
+                double minFactor = map[i];
+
+                i++;
+
+                while (
+                    i < map.Length &&
+                    map[i] < 0.999
+                )
+                {
+                    end = i;
+
+                    if (map[i] < minFactor)
+                        minFactor = map[i];
+
+                    i++;
+                }
+
+                if (minFactor < 0.35)
+                    minFactor = 0.35;
+
+                minFactor =
+                    Math.Floor(
+                        minFactor * 100.0
+                    ) / 100.0;
+
+                zones.Add(
+                    start.ToString(
+                        CultureInfo.InvariantCulture
+                    ) +
+                    "," +
+                    end.ToString(
+                        CultureInfo.InvariantCulture
+                    ) +
+                    ",b=" +
+                    minFactor.ToString(
+                        "0.00",
+                        CultureInfo.InvariantCulture
+                    )
+                );
+            }
+
+            return string.Join(
+                "/",
+                zones.ToArray()
+            );
+        }
+    }
+}
+'@
+
+        Add-Type `
+            -TypeDefinition $CSharp `
+            -Language CSharp
+    }
+
+    # ============================================================
+    # HELPERS
+    # ============================================================
+
+    function Format-G2Time {
+        param(
+            [long] $Frame
+        )
+
+        if ($Frame -lt 0) {
+            return '-'
+        }
+
+        return (
+            [TimeSpan]::FromSeconds(
+                $Frame / [double]$Fps
+            )
+        ).ToString(
+            'hh\:mm\:ss\.fff'
+        )
+    }
+
+    function Invoke-G2Audit {
+        param(
+            [string] $Path
+        )
+
+        return [G2LocalRepairV1.Scanner]::Scan(
+            $Path,
+            $Fps,
+            $NalCeiling,
+            $Max1SecWrites,
+            $Max5SecWrites
+        )
+    }
+
+    function Test-G2Pass {
+        param(
+            $Audit
+        )
+
+        return (
+            ($Audit.MaxVcl -le $NalCeiling) -and
+            ($Audit.MaxTransport -le $NalCeiling) -and
+            ($Audit.VclOverCeiling -eq 0) -and
+            ($Audit.TransportOverCeiling -eq 0) -and
+            ($Audit.Worst1WritesPerSec -le $Max1SecWrites) -and
+            ($Audit.Worst5WritesPerSec -le $Max5SecWrites)
+        )
+    }
+
+    function Show-G2Audit {
+        param(
+            $Audit,
+            [string] $Title
+        )
+
+        Write-Host ''
+        Write-Host '------------------------------------------------------------'
+        Write-Host $Title
+        Write-Host '------------------------------------------------------------'
+
+        Write-Host (
+            "SIZE                   = {0:N2} MB" -f
+            ($Audit.FileBytes / 1MB)
+        )
+
+        Write-Host (
+            "TOTAL NALS             = {0}" -f
+            $Audit.TotalNals
+        )
+
+        Write-Host (
+            "VCL FRAMES             = {0}" -f
+            $Audit.VclFrames
+        )
+
+        Write-Host (
+            "IDR FRAMES             = {0}" -f
+            $Audit.IdrFrames
+        )
+
+        Write-Host (
+            "MAX VCL                = {0} B" -f
+            $Audit.MaxVcl
+        )
+
+        Write-Host (
+            "MAX VCL TIME           = {0}" -f
+            (Format-G2Time $Audit.MaxVclFrame)
+        )
+
+        Write-Host (
+            "MAX TRANSPORT NAL      = {0} B" -f
+            $Audit.MaxTransport
+        )
+
+        Write-Host (
+            "NALs >2980             = {0}" -f
+            $Audit.TransportOverCeiling
+        )
+
+        Write-Host (
+            "WORST 1-SEC BLE        = {0:N2} writes/sec" -f
+            $Audit.Worst1WritesPerSec
+        )
+
+        Write-Host (
+            "WORST 1-SEC TIME       = {0}" -f
+            (Format-G2Time $Audit.Worst1StartFrame)
+        )
+
+        Write-Host (
+            "WORST 5-SEC BLE        = {0:N2} writes/sec" -f
+            $Audit.Worst5WritesPerSec
+        )
+
+        Write-Host (
+            "WORST 5-SEC TIME       = {0}" -f
+            (Format-G2Time $Audit.Worst5StartFrame)
+        )
+
+        Write-Host (
+            "PROBLEM REGIONS        = {0}" -f
+            @($Audit.Problems).Count
+        )
+
+        Write-Host '------------------------------------------------------------'
+    }
+
+    function Get-G2X264Params {
+        param(
+            [int] $MaxRate,
+            [int] $Buffer
+        )
+
+        return (
+            'cabac=0:' +
+            'ref=1:' +
+            'bframes=0:' +
+            'weightp=0:' +
+            'keyint=128:' +
+            'min-keyint=65:' +
+            'scenecut=0:' +
+            'slices=1:' +
+            'aq-mode=2:' +
+            'aq-strength=1.0:' +
+            'ipratio=0.50:' +
+            'vbv-maxrate={0}:' +
+            'vbv-bufsize={1}:' +
+            'repeat-headers=1:' +
+            'annexb=1:' +
+            'stitchable=1'
+        ) -f $MaxRate, $Buffer
+    }
+
+    function Join-G2Segments {
+        param(
+            [array] $Metadata,
+            [string] $Destination
+        )
+
+        if (Test-Path -LiteralPath $Destination) {
+            Remove-Item -LiteralPath $Destination -Force
+        }
+
+        $output = [IO.File]::Open(
+            $Destination,
+            [IO.FileMode]::Create,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None
+        )
+
+        try {
+            $buffer = New-Object byte[] (8MB)
+
+            foreach (
+                $item in
+                ($Metadata | Sort-Object Index)
+            ) {
+                if (-not (Test-Path -LiteralPath $item.Path -PathType Leaf)) {
+                    throw "Missing GOP segment: $($item.Path)"
+                }
+
+                $input = [IO.File]::OpenRead(
+                    $item.Path
+                )
+
+                try {
+                    while (
+                        (
+                            $read = $input.Read(
+                                $buffer,
+                                0,
+                                $buffer.Length
+                            )
+                        ) -gt 0
+                    ) {
+                        $output.Write(
+                            $buffer,
+                            0,
+                            $read
+                        )
+                    }
+                }
+                finally {
+                    $input.Dispose()
+                }
+            }
+        }
+        finally {
+            $output.Dispose()
+        }
+    }
+
+    function Get-G2SegmentFiles {
+        return @(
+            Get-ChildItem `
+                -LiteralPath $SegmentsDir `
+                -Filter 'seg_*.h264' `
+                -File |
+            Sort-Object Name
+        )
+    }
+
+    function New-G2Metadata {
+        param(
+            [array] $SegmentFiles,
+            $Audit
+        )
+
+        $expectedSegmentCount =
+            [int][Math]::Ceiling(
+                $Audit.VclFrames /
+                [double]$SegmentFrames
+            )
+
+        if (
+            $expectedSegmentCount -ne
+            $SegmentFiles.Count
+        ) {
+            throw (
+                "Segment count mismatch. Expected $expectedSegmentCount, found $($SegmentFiles.Count)."
+            )
+        }
+
+        for (
+            $checkIndex = 0;
+            $checkIndex -lt $SegmentFiles.Count;
+            $checkIndex++
+        ) {
+            $expectedName =
+                'seg_{0:D5}.h264' -f
+                $checkIndex
+
+            if (
+                $SegmentFiles[$checkIndex].Name -ne
+                $expectedName
+            ) {
+                throw (
+                    "Segment filename sequence is not contiguous at index $checkIndex. Expected $expectedName, found $($SegmentFiles[$checkIndex].Name)."
+                )
+            }
+        }
+
+        if (
+            $Audit.IdrFrames -ne
+            $SegmentFiles.Count
+        ) {
+            throw (
+                "IDR validation failed: $($Audit.IdrFrames) IDRs for $($SegmentFiles.Count) GOP segments."
+            )
+        }
+
+        $lastSegmentFrames =
+            $Audit.VclFrames -
+            (
+                ($SegmentFiles.Count - 1) *
+                $SegmentFrames
+            )
+
+        if (
+            $lastSegmentFrames -lt 1 -or
+            $lastSegmentFrames -gt $SegmentFrames
+        ) {
+            throw (
+                "Invalid last segment frame count: $lastSegmentFrames"
+            )
+        }
+
+        $metadata = @()
+
+        for (
+            $index = 0;
+            $index -lt $SegmentFiles.Count;
+            $index++
+        ) {
+            if (
+                $index -eq
+                $SegmentFiles.Count - 1
+            ) {
+                $frameCount =
+                    $lastSegmentFrames
+            }
+            else {
+                $frameCount =
+                    $SegmentFrames
+            }
+
+            $metadata += [pscustomobject]@{
+                Index      = $index
+                Path       = $SegmentFiles[$index].FullName
+                StartFrame = $index * $SegmentFrames
+                FrameCount = $frameCount
+            }
+        }
+
+        return $metadata
+    }
+
+    function Save-G2RateState {
+        param(
+            [hashtable] $Rates
+        )
+
+        $ordered = [ordered]@{}
+
+        foreach (
+            $key in
+            ($Rates.Keys | Sort-Object)
+        ) {
+            $ordered["$key"] =
+                [int]$Rates[$key]
+        }
+
+        $json =
+            $ordered |
+            ConvertTo-Json -Depth 4
+
+        [IO.File]::WriteAllText(
+            $RateState,
+            $json,
+            [Text.UTF8Encoding]::new($false)
+        )
+    }
+
+    function Load-G2RateState {
+        $rates = @{}
+
+        if (-not (Test-Path -LiteralPath $RateState -PathType Leaf)) {
+            return $rates
+        }
+
+        try {
+            $raw =
+                Get-Content `
+                    -LiteralPath $RateState `
+                    -Raw
+
+            if ([string]::IsNullOrWhiteSpace($raw)) {
+                return $rates
+            }
+
+            $obj =
+                $raw |
+                ConvertFrom-Json
+
+            foreach ($property in $obj.PSObject.Properties) {
+                $rates[[int]$property.Name] =
+                    [int]$property.Value
+            }
+        }
+        catch {
+            Write-Host ''
+            Write-Host 'WARNING: local repair-rate state could not be read.'
+            Write-Host $_.Exception.Message
+            Write-Host 'Continuing with segment-content validation and an empty rate-state map.'
+            return @{}
+        }
+
+        return $rates
+    }
+
+    # ============================================================
+    # ONE FULL ENCODE
+    # ============================================================
+
+    function Invoke-G2FullEncode {
+        Write-Host ''
+        Write-Host '============================================================'
+        Write-Host 'G2 VIDEO - ONE FULL SOURCE ENCODE'
+        Write-Host '============================================================'
+        Write-Host "SOURCE              = $Source"
+        Write-Host "FPS                 = $Fps"
+        Write-Host "RESOLUTION          = ${Width}x${Height}"
+        Write-Host "NORMAL CRF          = $Crf"
+        Write-Host "NORMAL MAXRATE      = ${NormalMaxRate}k"
+        Write-Host "NORMAL BUFSIZE      = ${NormalBufSize}k"
+        Write-Host "GOP / REPAIR UNIT   = $SegmentFrames frames / ${SegmentSeconds}s"
+        Write-Host ''
+        Write-Host 'This is the only full-source encode.'
+        Write-Host '============================================================'
+        Write-Host ''
+
+        $segmentPattern =
+            Join-Path $SegmentsDir 'seg_%05d.h264'
+
+        $baseX264 =
+            Get-G2X264Params `
+                -MaxRate $NormalMaxRate `
+                -Buffer $NormalBufSize
+
+        $fullArgs = @(
+            '-hide_banner',
+            '-y',
+            '-loglevel', 'error',
+            '-progress', 'pipe:1',
+            '-nostats',
+
+            '-i', $Source,
+
+            '-map', '0:v:0',
+
+            '-vf',
+            "fps=$Fps,scale=${Width}:${Height}:flags=lanczos+accurate_rnd+full_chroma_int",
+
+            '-an',
+
+            '-c:v', 'libx264',
+            '-preset', 'slow',
+            '-crf', "$Crf",
+
+            '-pix_fmt', 'yuv420p',
+            '-profile:v', 'baseline',
+            '-level:v', '3.0',
+
+            '-threads', '0',
+
+            '-g', "$SegmentFrames",
+            '-sc_threshold', '0',
+
+            '-force_key_frames',
+            "expr:gte(t,n_forced*$SegmentSecondsText)",
+
+            '-x264-params',
+            $baseX264,
+
+            '-f', 'segment',
+            '-segment_time', $SegmentSecondsText,
+            '-segment_time_delta', '0.05',
+            '-reset_timestamps', '1',
+            '-segment_format', 'h264',
+
+            $segmentPattern
+        )
+
+        $lastPercent = -1
+
+        & $Ffmpeg @fullArgs 2>&1 |
+            ForEach-Object {
+
+                $line =
+                    $_.ToString().Trim()
+
+                if (
+                    $line -match
+                    '^out_time_(?:us|ms)=(\d+)$'
+                ) {
+                    $outUs =
+                        [double]$Matches[1]
+
+                    $pct =
+                        100.0 *
+                        $outUs /
+                        (
+                            $DurationSec *
+                            1000000.0
+                        )
+
+                    $pct =
+                        [Math]::Min(
+                            100.0,
+                            [Math]::Max(
+                                0.0,
+                                $pct
+                            )
+                        )
+
+                    $whole =
+                        [int][Math]::Floor(
+                            $pct
+                        )
+
+                    if (
+                        $whole -gt
+                        $lastPercent
+                    ) {
+                        $lastPercent =
+                            $whole
+
+                        Write-Progress `
+                            -Activity 'ONE full G2 video encode' `
+                            -Status (
+                                "{0:N1}% - only full-source encode" -f
+                                $pct
+                            ) `
+                            -PercentComplete $whole
+                    }
+                }
+                elseif (
+                    $line -and
+                    $line -notmatch
+                    '^(frame|fps|stream_.+|bitrate|total_size|out_time|dup_frames|drop_frames|speed|progress)='
+                ) {
+                    Write-Host $line
+                }
+            }
+
+        $fullExit =
+            $LASTEXITCODE
+
+        Write-Progress `
+            -Activity 'ONE full G2 video encode' `
+            -Completed
+
+        if ($fullExit -ne 0) {
+            throw (
+                "Initial full encode failed with exit code $fullExit."
+            )
+        }
+    }
+
+    # ============================================================
+    # LOCAL WHOLE-GOP VBV REPAIR
+    #
+    # This is the repair behavior from the second recovered script.
+    # CRF stays 12. Only the short affected GOP gets a tighter VBV.
+    # ============================================================
+
+    $SegmentRate =
+        Load-G2RateState
+
+    $SegmentsTouched =
+        [System.Collections.Generic.HashSet[int]]::new()
+
+    foreach ($savedIndex in $SegmentRate.Keys) {
+        [void]$SegmentsTouched.Add(
+            [int]$savedIndex
+        )
+    }
+
+    $State = [pscustomobject]@{
+        LocalEncodes = 0
+    }
+
+    function Repair-G2WholeSegment {
+        param(
+            $Meta
+        )
+
+        $segmentIndex =
+            [int]$Meta.Index
+
+        $current =
+            Invoke-G2Audit $Meta.Path
+
+        # Estimate a sensible first local cap from how far this
+        # current GOP is over any local gate.
+        $ratio = 1.0
+
+        if (
+            $current.Worst5WritesPerSec -gt
+            $Max5SecWrites
+        ) {
+            $ratio =
+                [Math]::Min(
+                    $ratio,
+                    $Max5SecWrites /
+                    $current.Worst5WritesPerSec
+                )
+        }
+
+        if (
+            $current.Worst1WritesPerSec -gt
+            $Max1SecWrites
+        ) {
+            $ratio =
+                [Math]::Min(
+                    $ratio,
+                    $Max1SecWrites /
+                    $current.Worst1WritesPerSec
+                )
+        }
+
+        if (
+            $current.MaxTransport -gt
+            $NalCeiling
+        ) {
+            $ratio =
+                [Math]::Min(
+                    $ratio,
+                    $NalCeiling /
+                    [double]$current.MaxTransport
+                )
+        }
+
+        if (
+            $SegmentRate.ContainsKey(
+                $segmentIndex
+            )
+        ) {
+            # IMPORTANT MERGE FIX:
+            # Never raise a previously tightened segment back toward 60k.
+            # Continue downward from its last accepted local cap.
+            $startRate =
+                [int]$SegmentRate[$segmentIndex] -
+                4
+
+            if (
+                $startRate -lt
+                $MinimumLocalRate
+            ) {
+                $startRate =
+                    $MinimumLocalRate
+            }
+        }
+        elseif ($ratio -lt 0.999) {
+            $startRate =
+                [int][Math]::Floor(
+                    $NormalMaxRate *
+                    $ratio *
+                    0.97
+                )
+
+            if ($startRate -gt 106) {
+                $startRate = 106
+            }
+
+            # This 60k floor is only for the FIRST attempt on a
+            # previously untouched segment. Later rounds may go lower.
+            if ($startRate -lt 60) {
+                $startRate = 60
+            }
+        }
+        else {
+            # The GOP passes by itself but participates in a failing
+            # global window crossing a GOP boundary.
+            $startRate = 106
+        }
+
+        for (
+            $localTry = 1;
+            $localTry -le $MaxLocalTries;
+            $localTry++
+        ) {
+            $localRate =
+                $startRate -
+                (($localTry - 1) * 4)
+
+            if (
+                $localRate -lt
+                $MinimumLocalRate
+            ) {
+                $localRate =
+                    $MinimumLocalRate
+            }
+
+            $localBuffer =
+                [int][Math]::Round(
+                    $NormalBufSize *
+                    $localRate /
+                    [double]$NormalMaxRate
+                )
+
+            if ($localBuffer -lt 8) {
+                $localBuffer = 8
+            }
+
+            $startSec =
+                $Meta.StartFrame /
+                [double]$Fps
+
+            $startText =
+                $startSec.ToString(
+                    '0.000000',
+                    [Globalization.CultureInfo]::InvariantCulture
+                )
+
+            $candidate =
+                Join-Path $Work (
+                    'local_{0:D5}.h264' -f
+                    $segmentIndex
+                )
+
+            if (
+                Test-Path `
+                    -LiteralPath $candidate
+            ) {
+                Remove-Item `
+                    -LiteralPath $candidate `
+                    -Force
+            }
+
+            $x264 =
+                Get-G2X264Params `
+                    -MaxRate $localRate `
+                    -Buffer $localBuffer
+
+            Write-Host ''
+            Write-Host (
+                "LOCAL SEGMENT {0:D5}  time {1}" -f
+                $segmentIndex,
+                (Format-G2Time $Meta.StartFrame)
+            )
+
+            Write-Host (
+                "try={0}  frames={1}  CRF=12  local maxrate={2}k  buf={3}k" -f
+                $localTry,
+                $Meta.FrameCount,
+                $localRate,
+                $localBuffer
+            )
+
+            $ffArgs = @(
+                '-hide_banner',
+                '-y',
+                '-loglevel', 'error',
+
+                '-ss', $startText,
+                '-i', $Source,
+
+                '-map', '0:v:0',
+
+                '-vf',
+                "fps=$Fps,scale=${Width}:${Height}:flags=lanczos+accurate_rnd+full_chroma_int",
+
+                '-frames:v',
+                "$($Meta.FrameCount)",
+
+                '-an',
+
+                '-c:v', 'libx264',
+
+                '-preset', 'slow',
+                '-crf', "$Crf",
+
+                '-pix_fmt', 'yuv420p',
+                '-profile:v', 'baseline',
+                '-level:v', '3.0',
+
+                '-threads', '0',
+
+                '-x264-params',
+                $x264,
+
+                '-f', 'h264',
+
+                $candidate
+            )
+
+            & $Ffmpeg @ffArgs
+
+            if ($LASTEXITCODE -ne 0) {
+                throw (
+                    "FFmpeg failed repairing segment $segmentIndex."
+                )
+            }
+
+            $State.LocalEncodes++
+
+            $candidateAudit =
+                Invoke-G2Audit $candidate
+
+            Write-Host (
+                "  maxNAL={0}B  1sec={1:N2}  5sec={2:N2}" -f
+                $candidateAudit.MaxTransport,
+                $candidateAudit.Worst1WritesPerSec,
+                $candidateAudit.Worst5WritesPerSec
+            )
+
+            if (
+                $candidateAudit.VclFrames -ne
+                $Meta.FrameCount
+            ) {
+                throw (
+                    "Segment $segmentIndex frame count mismatch: expected $($Meta.FrameCount), got $($candidateAudit.VclFrames)."
+                )
+            }
+
+            if (
+                $candidateAudit.IdrFrames -ne 1
+            ) {
+                throw (
+                    "Segment $segmentIndex produced $($candidateAudit.IdrFrames) IDRs; expected exactly 1."
+                )
+            }
+
+            if (
+                Test-G2Pass $candidateAudit
+            ) {
+                Move-Item `
+                    -LiteralPath $candidate `
+                    -Destination $Meta.Path `
+                    -Force
+
+                $SegmentRate[$segmentIndex] =
+                    $localRate
+
+                Save-G2RateState `
+                    -Rates $SegmentRate
+
+                [void]$SegmentsTouched.Add(
+                    $segmentIndex
+                )
+
+                Write-Host (
+                    "LOCAL SEGMENT {0:D5}: PASS at {1}k" -f
+                    $segmentIndex,
+                    $localRate
+                )
+
+                return
+            }
+
+            Remove-Item `
+                -LiteralPath $candidate `
+                -Force
+
+            if (
+                $localRate -le
+                $MinimumLocalRate
+            ) {
+                throw (
+                    "Segment $segmentIndex still fails at local maxrate ${MinimumLocalRate}k."
+                )
+            }
+        }
+
+        throw (
+            "Segment $segmentIndex exhausted local repair attempts."
+        )
+    }
+
+    # ============================================================
+    # PREPARE OR RESUME COMPLETE GOP SET
+    # ============================================================
+
+    $FullEncodeCount = 0
+    $ResumeMode = $false
+    $globalAudit = $null
+    $Metadata = $null
+
+    if (
+        Test-Path `
+            -LiteralPath $SegmentsDir `
+            -PathType Container
+    ) {
+        $existingSegments =
+            Get-G2SegmentFiles
+
+        if ($existingSegments.Count -gt 0) {
+            Write-Host ''
+            Write-Host 'Found preserved GOP segments.'
+            Write-Host 'Validating them before deciding whether to resume...'
+
+            try {
+                $temporaryMetadata = @()
+
+                for (
+                    $index = 0;
+                    $index -lt $existingSegments.Count;
+                    $index++
+                ) {
+                    $temporaryMetadata +=
+                        [pscustomobject]@{
+                            Index = $index
+                            Path = $existingSegments[$index].FullName
+                            StartFrame = $index * $SegmentFrames
+                            FrameCount = $SegmentFrames
+                        }
+                }
+
+                Join-G2Segments `
+                    -Metadata $temporaryMetadata `
+                    -Destination $Assembled
+
+                $resumeAudit =
+                    Invoke-G2Audit $Assembled
+
+                $resumeMetadata =
+                    @(
+                        New-G2Metadata `
+                            -SegmentFiles $existingSegments `
+                            -Audit $resumeAudit
+                    )
+
+                $encodedDuration =
+                    $resumeAudit.VclFrames /
+                    [double]$Fps
+
+                $durationDelta =
+                    [Math]::Abs(
+                        $encodedDuration -
+                        $DurationSec
+                    )
+
+                if (
+                    $durationDelta -gt
+                    $ResumeDurationToleranceSec
+                ) {
+                    throw (
+                        "Preserved segment duration is incomplete or mismatched. Source=$($DurationSec.ToString('0.000')) sec, encoded=$($encodedDuration.ToString('0.000')) sec, delta=$($durationDelta.ToString('0.000')) sec."
+                    )
+                }
+
+                $ResumeMode = $true
+                $globalAudit = $resumeAudit
+                $Metadata = $resumeMetadata
+
+                Write-Host ''
+                Write-Host 'PRESERVED WORK VALIDATION = PASS'
+                Write-Host "PRESERVED SEGMENTS        = $($existingSegments.Count)"
+                Write-Host "DURATION DELTA             = $($durationDelta.ToString('0.000')) sec"
+                Write-Host 'FULL SOURCE RE-ENCODE      = NO'
+            }
+            catch {
+                Write-Host ''
+                Write-Host 'Preserved work did not validate as a complete encode.'
+                Write-Host $_.Exception.Message
+                Write-Host 'It will be preserved under a timestamped name.'
+
+                $invalidStamp =
+                    Get-Date -Format 'yyyyMMdd_HHmmss'
+
+                $invalidWork =
+                    "$Work.incomplete_$invalidStamp"
+
+                if (Test-Path -LiteralPath $invalidWork) {
+                    throw "Cannot preserve invalid work because destination exists: $invalidWork"
+                }
+
+                Move-Item `
+                    -LiteralPath $Work `
+                    -Destination $invalidWork
+
+                Write-Host "PRESERVED AS = $invalidWork"
+
+                $ResumeMode = $false
+                $globalAudit = $null
+                $Metadata = $null
+                $SegmentRate = @{}
+                $SegmentsTouched.Clear()
+
+                New-Item `
+                    -ItemType Directory `
+                    -Path $SegmentsDir `
+                    -Force |
+                    Out-Null
+            }
+        }
+    }
+
+    if (-not $ResumeMode) {
+        if (Test-Path -LiteralPath $Work -PathType Container) {
+            $remaining =
+                @(
+                    Get-ChildItem `
+                        -LiteralPath $Work `
+                        -Force `
+                        -ErrorAction SilentlyContinue
+                )
+
+            if ($remaining.Count -gt 0) {
+                $freshStamp =
+                    Get-Date -Format 'yyyyMMdd_HHmmss'
+
+                $oldWork =
+                    "$Work.pre_new_encode_$freshStamp"
+
+                Move-Item `
+                    -LiteralPath $Work `
+                    -Destination $oldWork
+
+                Write-Host "Previous work preserved as: $oldWork"
+            }
+        }
+
+        New-Item `
+            -ItemType Directory `
+            -Path $SegmentsDir `
+            -Force |
+            Out-Null
+
+        $RateState =
+            Join-Path $Work 'local_segment_rates.json'
+
+        $SegmentRate = @{}
+        $SegmentsTouched.Clear()
+
+        Invoke-G2FullEncode
+
+        $FullEncodeCount = 1
+
+        $segmentFiles =
+            Get-G2SegmentFiles
+
+        if ($segmentFiles.Count -lt 1) {
+            throw 'No H264 segments were generated.'
+        }
+
+        Write-Host ''
+        Write-Host (
+            "Initial full encode complete: {0} GOP segments." -f
+            $segmentFiles.Count
+        )
+
+        $temporaryMetadata = @()
+
+        for (
+            $index = 0;
+            $index -lt $segmentFiles.Count;
+            $index++
+        ) {
+            $temporaryMetadata +=
+                [pscustomobject]@{
+                    Index = $index
+                    Path = $segmentFiles[$index].FullName
+                    StartFrame = $index * $SegmentFrames
+                    FrameCount = $SegmentFrames
+                }
+        }
+
+        Join-G2Segments `
+            -Metadata $temporaryMetadata `
+            -Destination $Assembled
+
+        $globalAudit =
+            Invoke-G2Audit $Assembled
+
+        Show-G2Audit `
+            -Audit $globalAudit `
+            -Title 'INITIAL FULL AUDIT'
+
+        $Metadata =
+            @(
+                New-G2Metadata `
+                    -SegmentFiles $segmentFiles `
+                    -Audit $globalAudit
+            )
+
+        $encodedDuration =
+            $globalAudit.VclFrames /
+            [double]$Fps
+
+        $durationDelta =
+            [Math]::Abs(
+                $encodedDuration -
+                $DurationSec
+            )
+
+        if (
+            $durationDelta -gt
+            $ResumeDurationToleranceSec
+        ) {
+            throw (
+                "Fresh encode duration mismatch. Source=$($DurationSec.ToString('0.000')) sec, encoded=$($encodedDuration.ToString('0.000')) sec, delta=$($durationDelta.ToString('0.000')) sec."
+            )
+        }
+    }
+    else {
+        Show-G2Audit `
+            -Audit $globalAudit `
+            -Title 'CURRENT PRESERVED VIDEO AUDIT'
+    }
+
+    # ============================================================
+    # GLOBAL AUDIT -> SHORT LOCAL REPAIRS
+    # ============================================================
+
+    $Passed = $false
+
+    for (
+        $round = 1;
+        $round -le $MaxGlobalRounds;
+        $round++
+    ) {
+        if (
+            Test-G2Pass $globalAudit
+        ) {
+            $Passed = $true
+            break
+        }
+
+        Write-Host ''
+        Write-Host '============================================================'
+        Write-Host "LOCAL REPAIR ROUND $round"
+        Write-Host '============================================================'
+
+        $affected = @{}
+
+        foreach (
+            $problem in
+            @($globalAudit.Problems)
+        ) {
+            Write-Host (
+                "BAD {0} -> {1}  {2}" -f
+                (Format-G2Time $problem.StartFrame),
+                (Format-G2Time $problem.EndFrame),
+                $problem.Reason
+            )
+
+            $firstSegment =
+                [int][Math]::Floor(
+                    $problem.StartFrame /
+                    [double]$SegmentFrames
+                )
+
+            $lastSegment =
+                [int][Math]::Floor(
+                    $problem.EndFrame /
+                    [double]$SegmentFrames
+                )
+
+            if ($firstSegment -lt 0) {
+                $firstSegment = 0
+            }
+
+            if (
+                $lastSegment -ge
+                $Metadata.Count
+            ) {
+                $lastSegment =
+                    $Metadata.Count - 1
+            }
+
+            for (
+                $segmentIndex =
+                    $firstSegment;
+                $segmentIndex -le
+                    $lastSegment;
+                $segmentIndex++
+            ) {
+                $affected[$segmentIndex] =
+                    $Metadata[$segmentIndex]
+            }
+        }
+
+        if ($affected.Count -eq 0) {
+            throw (
+                'Global audit failed but mapped no segments.'
+            )
+        }
+
+        Write-Host ''
+        Write-Host (
+            "SHORT SEGMENTS TO REPAIR = {0}" -f
+            $affected.Count
+        )
+
+        foreach (
+            $segmentIndex in
+            (
+                $affected.Keys |
+                Sort-Object
+            )
+        ) {
+            Repair-G2WholeSegment `
+                $affected[$segmentIndex]
+        }
+
+        Write-Host ''
+        Write-Host 'Reassembling after local repairs...'
+
+        Join-G2Segments `
+            -Metadata $Metadata `
+            -Destination $Assembled
+
+        $globalAudit =
+            Invoke-G2Audit $Assembled
+
+        Show-G2Audit `
+            -Audit $globalAudit `
+            -Title (
+                "GLOBAL AUDIT AFTER LOCAL ROUND $round"
+            )
+    }
+
+    if (
+        -not (Test-G2Pass $globalAudit)
+    ) {
+        throw (
+            'Video still fails after maximum local repair rounds. Existing final was not replaced.'
+        )
+    }
+
+    $Passed = $true
+
+    # ============================================================
+    # FINAL PROMOTION - EXISTING FINAL IS TOUCHED ONLY NOW
+    # ============================================================
+
+    $hash =
+        (
+            Get-FileHash `
+                -LiteralPath $Assembled `
+                -Algorithm SHA256
+        ).Hash.ToLowerInvariant()
+
+    $bytes =
+        (
+            Get-Item `
+                -LiteralPath $Assembled
+        ).Length
+
+    $Backup = $null
+    $Promoted = $false
+
+    try {
+        if (Test-Path -LiteralPath $Final -PathType Leaf) {
+            $stamp =
+                Get-Date -Format 'yyyyMMdd_HHmmss'
+
+            $Backup =
+                "$Final.backup_$stamp"
+
+            Move-Item `
+                -LiteralPath $Final `
+                -Destination $Backup
+
+            Write-Host "Previous final backed up: $Backup"
+        }
+
+        Move-Item `
+            -LiteralPath $Assembled `
+            -Destination $Final `
+            -Force
+
+        $Promoted = $true
+
+        # One final audit of the actual promoted pathname.
+        $finalAudit =
+            Invoke-G2Audit $Final
+
+        if (
+            -not (Test-G2Pass $finalAudit)
+        ) {
+            throw (
+                'Promoted final file unexpectedly failed verification.'
+            )
+        }
+
+        $finalHash =
+            (
+                Get-FileHash `
+                    -LiteralPath $Final `
+                    -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+
+        if ($finalHash -ne $hash) {
+            throw (
+                "Promoted final hash mismatch. Before=$hash After=$finalHash"
+            )
+        }
+
+        Write-Host ''
+        Write-Host '============================================================'
+        Write-Host 'G2 VIDEO: PASS / CLOSED'
+        Write-Host '============================================================'
+        Write-Host "FILE                    = $Final"
+
+        Write-Host (
+            "SIZE                    = {0:N2} MB" -f
+            ($bytes / 1MB)
+        )
+
+        Write-Host "SHA256                  = $finalHash"
+
+        Write-Host ''
+        Write-Host (
+            "FULL SOURCE ENCODES     = {0} THIS RUN" -f
+            $FullEncodeCount
+        )
+
+        Write-Host (
+            "RESUMED PRESERVED WORK  = {0}" -f
+            $ResumeMode
+        )
+
+        Write-Host 'FULL SOURCE REDOS       = 0'
+
+        Write-Host (
+            "LOCAL SEGMENT ENCODES   = {0}" -f
+            $State.LocalEncodes
+        )
+
+        Write-Host (
+            "UNIQUE SEGMENTS TOUCHED = {0} / {1}" -f
+            $SegmentsTouched.Count,
+            $Metadata.Count
+        )
+
+        Write-Host ''
+
+        Write-Host (
+            "MAX VCL                 = {0} B" -f
+            $finalAudit.MaxVcl
+        )
+
+        Write-Host (
+            "MAX TRANSPORT NAL       = {0} B" -f
+            $finalAudit.MaxTransport
+        )
+
+        Write-Host (
+            "NALs >2980              = {0}" -f
+            $finalAudit.TransportOverCeiling
+        )
+
+        Write-Host (
+            "WORST 1-SEC BLE         = {0:N2} writes/sec" -f
+            $finalAudit.Worst1WritesPerSec
+        )
+
+        Write-Host (
+            "WORST 5-SEC BLE         = {0:N2} writes/sec" -f
+            $finalAudit.Worst5WritesPerSec
+        )
+
+        Write-Host ''
+        Write-Host '2980 NAL CEILING        = PASS'
+        Write-Host '1-SEC BLE DENSITY       = PASS'
+        Write-Host '5-SEC BLE DENSITY       = PASS'
+        Write-Host "FPS                     = $Fps"
+        Write-Host "RESOLUTION              = ${Width}x${Height}"
+        Write-Host "NORMAL QUALITY          = CRF $Crf"
+        Write-Host "NORMAL MAXRATE          = ${NormalMaxRate}k"
+        Write-Host 'SLICES                  = 1'
+        Write-Host 'REPAIR SCOPE            = LOCAL GOPS ONLY'
+        Write-Host 'FIRMWARE CHANGE         = NO'
+        Write-Host 'APK CHANGE              = NO'
+        Write-Host '============================================================'
+
+        # Delete work only after final-path audit and hash verification.
+        Remove-Item `
+            -LiteralPath $Work `
+            -Recurse `
+            -Force
+    }
+    catch {
+        Write-Host ''
+        Write-Host 'FINAL PROMOTION FAILED.'
+        Write-Host $_.Exception.Message
+
+        if (
+            $Promoted -and
+            (Test-Path -LiteralPath $Final -PathType Leaf)
+        ) {
+            $failedStamp =
+                Get-Date -Format 'yyyyMMdd_HHmmss'
+
+            $failedFinal =
+                "$Final.failed_$failedStamp"
+
+            Move-Item `
+                -LiteralPath $Final `
+                -Destination $failedFinal `
+                -Force
+
+            Write-Host "Failed promoted file preserved as: $failedFinal"
+        }
+
+        if (
+            $Backup -and
+            (Test-Path -LiteralPath $Backup -PathType Leaf) -and
+            -not (Test-Path -LiteralPath $Final -PathType Leaf)
+        ) {
+            Move-Item `
+                -LiteralPath $Backup `
+                -Destination $Final
+
+            Write-Host 'Previous final restored.'
+        }
+
+        Write-Host "Work folder preserved: $Work"
+
+        throw
+    }
+}

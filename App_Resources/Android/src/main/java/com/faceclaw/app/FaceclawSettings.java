@@ -76,6 +76,17 @@ public final class FaceclawSettings {
         notifyChanged(key);
     }
 
+    public boolean setStringSync(String key, String value) {
+        boolean committed =
+                prefs.edit().putString(key, value).commit();
+
+        if (committed) {
+            notifyChanged(key);
+        }
+
+        return committed;
+    }
+
     public boolean getBoolean(String key, boolean defaultValue) {
         return prefs.getBoolean(key, defaultValue);
     }

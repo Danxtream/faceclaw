@@ -32,6 +32,18 @@ export function setStringSetting(key: string, value: string): void {
   getJava().setString(key, value);
 }
 
+export function setStringSettingSync(
+  key: string,
+  value: string,
+): boolean {
+  return Boolean(
+    getJava().setStringSync(
+      key,
+      value,
+    ),
+  );
+}
+
 export function getBooleanSetting(key: string, defaultValue: boolean): boolean {
   return Boolean(getJava().getBoolean(key, defaultValue));
 }

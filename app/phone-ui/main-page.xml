@@ -57,7 +57,7 @@
                             <Button col="4" text="+30s" tap="{{ onVideoForward30Tap }}" />
                             <Button col="5" text="Stop" tap="{{ onVideoStopTap }}" />
                         </GridLayout>
-                        <Slider minValue="0" maxValue="{{ videoDurationSeconds }}" value="{{ videoSeekSeconds }}" valueChange="{{ onVideoSeekValueChange }}" />
+                        <Slider minValue="0" maxValue="{{ videoDurationSeconds }}" value="{{ videoSeekSeconds }}" valueChange="{{ onVideoSeekValueChange }}" touch="{{ onVideoSeekTouch }}" />
                         <GridLayout columns="140,*" class="m-t-4">
                             <TextField
                                 col="0"
@@ -130,7 +130,7 @@
                             <Button col="4" text="+30s" tap="{{ onVideoForward30Tap }}" />
                             <Button col="5" text="Stop" tap="{{ onVideoStopTap }}" />
                         </GridLayout>
-                        <Slider minValue="0" maxValue="{{ videoDurationSeconds }}" value="{{ videoSeekSeconds }}" valueChange="{{ onVideoSeekValueChange }}" />
+                        <Slider minValue="0" maxValue="{{ videoDurationSeconds }}" value="{{ videoSeekSeconds }}" valueChange="{{ onVideoSeekValueChange }}" touch="{{ onVideoSeekTouch }}" />
                         <GridLayout columns="140,*" class="m-t-4">
                             <TextField
                                 col="0"

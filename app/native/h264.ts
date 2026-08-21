@@ -104,6 +104,45 @@ function writeUint32Le(target: Uint8Array, offset: number, value: number): void 
   target[offset + 3] = (value >>> 24) & 0xff;
 }
 
+
+/**
+ * Select the BLE PHY used by an active Video session.
+ *
+ * 1M restores the stock G2 controller feature mask.
+ * 2M temporarily enables LE 2M through Packetcraft 0xFFF2,
+ * then asks both links to switch PHY.
+ */
+export async function h264SetBlePhy2m(
+  enabled: boolean,
+): Promise<boolean> {
+  const active = activeCommunicator();
+
+  if (!active) {
+    return false;
+  }
+
+  const requestId =
+    Number(
+      active.requestVideoBlePhy(
+        enabled ? 2 : 1,
+      ),
+    );
+
+  if (requestId <= 0) {
+    return false;
+  }
+
+  return pollUntil(
+    () =>
+      Number(
+        active.pollVideoBlePhy(
+          requestId,
+        ),
+      ),
+    H264_OPERATION_TIMEOUT_MS,
+  );
+}
+
 export function h264Start(streamId: number): Promise<boolean> {
   const payload = new Uint8Array(6);
   payload[0] = 11;

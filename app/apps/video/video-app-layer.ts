@@ -12,6 +12,8 @@ import { shell } from "../../ui/shell/shell";
 import { FileBrowserLayer } from "../files/file-browser";
 import type { AppContext } from "../app-definition";
 import { VideoPlaybackController, type PauseOverlaySelection } from "./playback-controller";
+import { DebugVideoPlaybackController } from "./debug-playback-controller";
+import { configuredVideoDebugging } from "./video-settings";
 
 const PAUSE_ACTIONS: readonly { label: string; deltaMs?: number }[] = [
   { label: "PLAY" },
@@ -26,7 +28,7 @@ type VideoMode = "browser" | "loading" | "playing";
 export class VideoAppLayer implements Layer {
   private mode: VideoMode = "browser";
   private readonly browser: FileBrowserLayer;
-  private controller: VideoPlaybackController | null = null;
+  private controller: VideoPlaybackController | DebugVideoPlaybackController | null = null;
   private pauseSelection: PauseOverlaySelection = 0;
   private loadingLabel = "Opening video...";
 
@@ -143,11 +145,25 @@ export class VideoAppLayer implements Layer {
     this.loadingLabel = `Opening ${path.slice(path.lastIndexOf("/") + 1)}...`;
     ctx.actions.requestRender();
 
-    const controller = new VideoPlaybackController(
-      this.appCtx,
-      path,
-      () => { void this.finishNaturalPlayback(ctx); },
-      () => { void this.exitPlayback(ctx); },
+    const onEnded = () => { void this.finishNaturalPlayback(ctx); };
+    const onExitRequested = () => { void this.exitPlayback(ctx); };
+    const debugMode = configuredVideoDebugging();
+
+    const controller = debugMode
+      ? new DebugVideoPlaybackController(
+          this.appCtx,
+          path,
+          onEnded,
+        )
+      : new VideoPlaybackController(
+          this.appCtx,
+          path,
+          onEnded,
+          onExitRequested,
+        );
+
+    this.appCtx.appendLog(
+      `VIDEO_OPEN debugMode=${debugMode} path=${path}`,
     );
     this.controller = controller;
     this.pauseSelection = 0;
