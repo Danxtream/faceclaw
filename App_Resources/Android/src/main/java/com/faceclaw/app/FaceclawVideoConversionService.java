@@ -8,7 +8,6 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
-import android.media.MediaCodecInfo;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.os.Build;
@@ -26,14 +25,12 @@ import androidx.media3.common.audio.AudioProcessor;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.effect.Presentation;
 import androidx.media3.transformer.Composition;
-import androidx.media3.transformer.DefaultEncoderFactory;
 import androidx.media3.transformer.EditedMediaItem;
 import androidx.media3.transformer.Effects;
 import androidx.media3.transformer.ExportException;
 import androidx.media3.transformer.ExportResult;
 import androidx.media3.transformer.ProgressHolder;
 import androidx.media3.transformer.Transformer;
-import androidx.media3.transformer.VideoEncoderSettings;
 
 import com.tns.NativeScriptActivity;
 
@@ -64,6 +61,7 @@ public class FaceclawVideoConversionService extends Service {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private Transformer transformer;
+    private FaceclawG2EncoderFactory encoderFactory;
     private ProgressHolder progressHolder;
     private Runnable progressPoll;
     private File inputFile;
@@ -150,7 +148,7 @@ public class FaceclawVideoConversionService extends Service {
             cancelled = false;
             startedAtMs = System.currentTimeMillis();
             acquireWakeLock();
-            publish("encoding", 0, true, "Hardware encoding", null);
+            publish("encoding", 0, true, "G2 Baseline encoding", null);
             startTransformer();
         } catch (Throwable error) {
             fail(errorMessage(error));
@@ -158,16 +156,11 @@ public class FaceclawVideoConversionService extends Service {
     }
 
     private void startTransformer() {
-        VideoEncoderSettings settings = new VideoEncoderSettings.Builder()
-                .setBitrate(VIDEO_BITRATE)
-                .setBitrateMode(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
-                .setMaxBFrames(0)
-                .setiFrameIntervalSeconds(128f / fps)
-                .build();
-        DefaultEncoderFactory encoderFactory = new DefaultEncoderFactory.Builder(this)
-                .setRequestedVideoEncoderSettings(settings)
-                .setEnableFallback(false)
-                .build();
+        encoderFactory = new FaceclawG2EncoderFactory(
+                this,
+                VIDEO_BITRATE,
+                fps,
+                128f / fps);
         Effect presentation = Presentation.createForWidthAndHeight(
                 FaceclawG2VideoBitstream.WIDTH,
                 FaceclawG2VideoBitstream.HEIGHT,
@@ -194,7 +187,7 @@ public class FaceclawVideoConversionService extends Service {
                     @Override
                     public void onError(Composition composition, ExportResult exportResult, ExportException error) {
                         stopProgressPolling();
-                        if (!cancelled) fail("Hardware conversion failed: " + errorMessage(error));
+                        if (!cancelled) fail("G2 conversion failed: " + errorMessage(error));
                     }
                 }).build();
 
@@ -207,7 +200,7 @@ public class FaceclawVideoConversionService extends Service {
                 if (active == null || cancelled) return;
                 if (active.getProgress(progressHolder) == Transformer.PROGRESS_STATE_AVAILABLE) {
                     int p = Math.max(0, Math.min(87, Math.round(progressHolder.progress * 0.87f)));
-                    publish("encoding", p, true, "Hardware encoding " + progressHolder.progress + "%", null);
+                    publish("encoding", p, true, "G2 Baseline encoding " + progressHolder.progress + "%", null);
                 }
                 main.postDelayed(this, PROGRESS_INTERVAL_MS);
             }
@@ -245,7 +238,8 @@ public class FaceclawVideoConversionService extends Service {
         json.put("fps", fps);
         json.put("width", FaceclawG2VideoBitstream.WIDTH);
         json.put("height", FaceclawG2VideoBitstream.HEIGHT);
-        json.put("backend", "android-mediacodec");
+        json.put("backend", "android-mediacodec-baseline");
+        json.put("encoderName", encoderFactory != null ? encoderFactory.getSelectedEncoderName() : "");
         json.put("bitrate", VIDEO_BITRATE);
         json.put("frames", result.frames);
         json.put("idrFrames", result.idrFrames);
@@ -329,6 +323,7 @@ public class FaceclawVideoConversionService extends Service {
             json.put("fps", fps);
             json.put("inputPath", inputFile != null ? inputFile.getAbsolutePath() : JSONObject.NULL);
             json.put("outputPath", finalH264 != null ? finalH264.getAbsolutePath() : JSONObject.NULL);
+            json.put("encoderName", encoderFactory != null ? encoderFactory.getSelectedEncoderName() : "");
             json.put("message", message != null ? message : "");
             if (error != null) json.put("error", error);
             synchronized (STATE_LOCK) { stateJson = json.toString(); }
@@ -398,6 +393,7 @@ public class FaceclawVideoConversionService extends Service {
     private void cleanupAndStop(boolean removeNotification) {
         releaseWakeLock();
         transformer = null;
+        encoderFactory = null;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N)
             stopForeground(removeNotification ? STOP_FOREGROUND_REMOVE : STOP_FOREGROUND_DETACH);
         else
