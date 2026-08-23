@@ -17,6 +17,11 @@ dependencies {
   // The normal full-source conversion remains on MediaCodec hardware. This GPL
   // package is compatible with Faceclaw's GPLv3 license and is SDK-35/arm64 ready.
   implementation 'dev.ffmpegkit-maintained:ffmpeg-kit-min-gpl:8.1.7'
+
+  // FFmpegKit initializes through Smart Exception. NativeScript's Android
+  // packaging dropped the transitive jars on-device, so pin both explicitly.
+  implementation 'com.arthenica:smart-exception-java:0.2.1'
+  implementation 'com.arthenica:smart-exception-common:0.2.1'
 }
 
 def faceclawSherpaOnnxVersion = "1.13.0"
