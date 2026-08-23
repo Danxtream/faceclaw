@@ -12,6 +12,11 @@ dependencies {
   // Media3 1.9.4 stays compatible with this project's compileSdk 35.
   implementation 'androidx.media3:media3-transformer:1.9.4'
   implementation 'androidx.media3:media3-effect:1.9.4'
+
+  // Desktop-equivalent x264 is deliberately reserved for short GOP repair only.
+  // The normal full-source conversion remains on MediaCodec hardware. This GPL
+  // package is compatible with Faceclaw's GPLv3 license and is SDK-35/arm64 ready.
+  implementation 'dev.ffmpegkit-maintained:ffmpeg-kit-min-gpl:8.1.7'
 }
 
 def faceclawSherpaOnnxVersion = "1.13.0"
