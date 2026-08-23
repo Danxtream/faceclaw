@@ -11,9 +11,10 @@ import java.util.Locale;
  * Desktop-equivalent libx264 fallback for short G2 GOP repairs only.
  *
  * The normal full-source conversion remains on MediaCodec hardware. This helper mirrors the
- * G2_VIDEO_MERGED.ps.txt local repair command: seek to StartFrame/FPS in the original source,
- * encode exactly FrameCount frames at CRF 12, keep Baseline/CAVLC/single-slice GOP settings, and
- * tighten only the local VBV maxrate/bufsize until the repaired GOP passes the G2 audit.
+ * G2_VIDEO_MERGED.ps.txt local repair command: seek to the actual encoded GOP presentation time in
+ * the original source, encode exactly FrameCount frames at CRF 12, keep Baseline/CAVLC/single-slice
+ * GOP settings, and tighten only the local VBV maxrate/bufsize until the repaired GOP passes the
+ * G2 audit.
  */
 public final class FaceclawG2X264Repair {
     public static final int CRF = 12;
@@ -40,13 +41,14 @@ public final class FaceclawG2X264Repair {
         }
     }
 
-    public static Execution encode(File source, File output, int fps, int startFrame,
+    public static Execution encode(File source, File output, int fps, long startUs, int startFrame,
                                    int frameCount, int maxRateKbps) {
         if (source == null || !source.isFile()) {
             throw new IllegalArgumentException("x264 repair source is missing");
         }
         if (output == null) throw new IllegalArgumentException("x264 repair output is missing");
         if (fps <= 0) throw new IllegalArgumentException("Invalid repair FPS " + fps);
+        if (startUs < 0) throw new IllegalArgumentException("Invalid repair start PTS " + startUs);
         if (startFrame < 0) throw new IllegalArgumentException("Invalid repair start frame " + startFrame);
         if (frameCount <= 0) throw new IllegalArgumentException("Invalid repair frame count " + frameCount);
         if (maxRateKbps < FaceclawG2LocalRepair.MINIMUM_LOCAL_RATE_KBPS) {
@@ -64,7 +66,12 @@ public final class FaceclawG2X264Repair {
         int bufferKbps = Math.max(8, (int) Math.round(
                 NORMAL_BUFSIZE_KBPS * maxRateKbps / (double) NORMAL_MAXRATE_KBPS));
 
-        double targetSeconds = startFrame / (double) fps;
+        // Android's repair plan records the actual presentation timestamp of every MediaCodec IDR.
+        // Use that timestamp as the source seek point. startFrame/fps is only a diagnostic now: in
+        // Media3 1.9.4 setFrameRate() is ignored for video inputs, so deriving time from frame count
+        // was able to seek far past the real source position before FrameDropEffect was added.
+        double targetSeconds = startUs / 1_000_000.0;
+        double frameDerivedSeconds = startFrame / (double) fps;
         double coarseSeekSeconds = Math.max(0.0, targetSeconds - SEEK_PREROLL_SECONDS);
         double fineSeekSeconds = Math.max(0.0, targetSeconds - coarseSeekSeconds);
         String coarseSeekText = String.format(Locale.US, "%.6f", coarseSeekSeconds);
@@ -74,9 +81,7 @@ public final class FaceclawG2X264Repair {
         // yields one IDR in every repair file. MediaCodec uses a time-based I-frame interval and
         // can legally produce an actual hardware GOP one frame longer (for example 129 frames).
         // Preserve the desktop 128-frame keyint for normal/short GOPs, but never let x264's
-        // periodic keyframe interval fall inside the actual replacement GOP. Otherwise a
-        // 129-frame replacement with keyint=128 contains IDRs at frames 0 and 128 and can never
-        // satisfy the one-IDR-per-GOP stitch contract regardless of VBV bitrate.
+        // periodic keyframe interval fall inside the actual replacement GOP.
         int localKeyint = Math.max(128, frameCount);
 
         String x264Params = "cabac=0"
@@ -96,11 +101,9 @@ public final class FaceclawG2X264Repair {
                 + ":annexb=1"
                 + ":stitchable=1";
 
-        // Do not perform one large direct seek to the repair point. Some mobile MP4 demux/index
-        // combinations can return an empty successful transcode for a later GOP. Seek quickly to
-        // five seconds before the target, then use FFmpeg's output-side -ss to decode/discard the
-        // short preroll accurately. This keeps a ten-hour source practical while avoiding the
-        // empty-output behavior seen on later Android GOP repairs.
+        // Seek quickly to five seconds before the actual GOP PTS, then decode/discard the short
+        // preroll accurately. This keeps long sources practical without using frame-count-derived
+        // timestamps for the source seek.
         String[] args = new String[] {
                 "-hide_banner",
                 "-y",
@@ -149,22 +152,25 @@ public final class FaceclawG2X264Repair {
                     success = false;
                     detail = String.format(Locale.US,
                             "x264 structural repair failure: frame count %d != %d "
-                                    + "(keyint=%d target=%.3fs coarse=%.3fs fine=%.3fs)",
+                                    + "(keyint=%d ptsTarget=%.3fs frameTarget=%.3fs "
+                                    + "coarse=%.3fs fine=%.3fs)",
                             shape.frames,
                             frameCount,
                             localKeyint,
                             targetSeconds,
+                            frameDerivedSeconds,
                             coarseSeekSeconds,
                             fineSeekSeconds);
                 } else if (shape.idrFrames != 1) {
                     success = false;
                     detail = String.format(Locale.US,
                             "x264 structural repair failure: produced %d IDRs; expected 1 "
-                                    + "(frames=%d keyint=%d target=%.3fs)",
+                                    + "(frames=%d keyint=%d ptsTarget=%.3fs frameTarget=%.3fs)",
                             shape.idrFrames,
                             frameCount,
                             localKeyint,
-                            targetSeconds);
+                            targetSeconds,
+                            frameDerivedSeconds);
                 }
             } catch (Throwable error) {
                 success = false;
