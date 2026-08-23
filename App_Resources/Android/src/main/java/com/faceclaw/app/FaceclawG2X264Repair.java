@@ -63,11 +63,21 @@ public final class FaceclawG2X264Repair {
         int bufferKbps = Math.max(8, (int) Math.round(
                 NORMAL_BUFSIZE_KBPS * maxRateKbps / (double) NORMAL_MAXRATE_KBPS));
         String startText = String.format(Locale.US, "%.6f", startFrame / (double) fps);
+
+        // The desktop full encode creates exact 128-frame GOP files, so keyint=128 naturally
+        // yields one IDR in every repair file. MediaCodec uses a time-based I-frame interval and
+        // can legally produce an actual hardware GOP one frame longer (for example 129 frames).
+        // Preserve the desktop 128-frame keyint for normal/short GOPs, but never let x264's
+        // periodic keyframe interval fall inside the actual replacement GOP. Otherwise a
+        // 129-frame replacement with keyint=128 contains IDRs at frames 0 and 128 and can never
+        // satisfy the one-IDR-per-GOP stitch contract regardless of VBV bitrate.
+        int localKeyint = Math.max(128, frameCount);
+
         String x264Params = "cabac=0"
                 + ":ref=1"
                 + ":bframes=0"
                 + ":weightp=0"
-                + ":keyint=128"
+                + ":keyint=" + localKeyint
                 + ":min-keyint=65"
                 + ":scenecut=0"
                 + ":slices=1"
@@ -100,6 +110,9 @@ public final class FaceclawG2X264Repair {
                 "-profile:v", "baseline",
                 "-level:v", "3.0",
                 "-threads", "0",
+                // Keep FFmpeg's codec-level GOP controls aligned with the x264 private options.
+                "-g", Integer.toString(localKeyint),
+                "-sc_threshold", "0",
                 "-x264-params", x264Params,
                 "-f", "h264",
                 output.getAbsolutePath()
