@@ -286,9 +286,12 @@ public class FaceclawVideoConversionService extends Service {
     }
 
     private boolean isRepairableTransportFailure(FaceclawG2VideoBitstream.Result result) {
+        // Transport failures must be allowed into the desktop-style local repair pipeline even if
+        // the same full-file preflight also reports duration drift. The visible failure is ordered
+        // NAL/density first, and the final reassembled stream is still subjected to the FPS-sync
+        // gate by FaceclawG2LocalRepair.toResult(). Reject here only for non-repairable codec/frame
+        // contract failures.
         if (result.frames <= 0 || result.profileIdc != 66 || result.cabac) return false;
-        double allowedDriftMs = Math.max(100.0, 2000.0 / fps);
-        if (result.durationUs > 0 && result.durationDriftMs > allowedDriftMs) return false;
         return result.transportOverCeiling > 0
                 || result.worst1WritesPerSec > FaceclawG2VideoBitstream.MAX_1SEC_WRITES + 1e-6
                 || result.worst5WritesPerSec > FaceclawG2VideoBitstream.MAX_5SEC_WRITES + 1e-6;
