@@ -126,6 +126,32 @@ public final class FaceclawG2X264Repair {
         if (detail == null) detail = "";
         detail = compact(detail);
 
+        // Match the desktop repair script's behavior: frame-count and IDR-count mismatches are
+        // structural failures, not VBV failures. They must stop immediately instead of burning
+        // all 16 bitrate retries, because changing maxrate/bufsize cannot fix GOP structure.
+        if (success) {
+            try {
+                FaceclawG2LocalRepair.Audit shape =
+                        FaceclawG2LocalRepair.auditAnnexB(output, fps);
+                if (shape.frames != frameCount) {
+                    success = false;
+                    detail = "x264 structural repair failure: frame count " + shape.frames
+                            + " != " + frameCount + " (keyint=" + localKeyint + ")";
+                } else if (shape.idrFrames != 1) {
+                    success = false;
+                    detail = "x264 structural repair failure: produced " + shape.idrFrames
+                            + " IDRs; expected 1 (frames=" + frameCount
+                            + ", keyint=" + localKeyint + ")";
+                }
+            } catch (Throwable error) {
+                success = false;
+                String message = error.getMessage();
+                detail = "x264 structural repair audit failed: "
+                        + (message != null && !message.trim().isEmpty()
+                        ? message : error.getClass().getSimpleName());
+            }
+        }
+
         if (!success && output.exists()) output.delete();
         return new Execution(success, cancelled, maxRateKbps, bufferKbps, detail);
     }
