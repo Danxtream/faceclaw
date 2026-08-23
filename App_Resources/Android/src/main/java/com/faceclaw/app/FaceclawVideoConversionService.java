@@ -10,6 +10,7 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -39,8 +40,12 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -54,21 +59,39 @@ public class FaceclawVideoConversionService extends Service {
     private static final String CHANNEL_ID = "faceclaw-video-conversion";
     private static final int NOTIFICATION_ID = 4202;
     private static final int VIDEO_BITRATE = 90_000;
+    private static final int NORMAL_RATE_KBPS = VIDEO_BITRATE / 1000;
     private static final int PROGRESS_INTERVAL_MS = 500;
     private static final Object STATE_LOCK = new Object();
     private static String stateJson = "{\"running\":false,\"stage\":\"idle\",\"progress\":0}";
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final Map<Integer, Integer> repairRates = new HashMap<>();
+
     private Transformer transformer;
     private FaceclawG2EncoderFactory encoderFactory;
     private ProgressHolder progressHolder;
     private Runnable progressPoll;
+
     private File inputFile;
+    private File workDir;
     private File workMp4;
+    private File segmentsDir;
+    private File repairMp4;
+    private File repairRaw;
     private File candidateH264;
     private File finalH264;
     private File metadataFile;
+
+    private FaceclawG2LocalRepair.Plan repairPlan;
+    private List<Integer> repairQueue = new ArrayList<>();
+    private int repairQueuePosition;
+    private int repairRound;
+    private int repairTry;
+    private int repairStartRateKbps;
+    private int repairedSegments;
+    private FaceclawG2LocalRepair.Segment currentRepairSegment;
+
     private int fps;
     private long startedAtMs;
     private PowerManager.WakeLock wakeLock;
@@ -117,9 +140,12 @@ public class FaceclawVideoConversionService extends Service {
         ensureChannel();
         startAsForeground(buildNotification("Preparing video", 0, true));
         try {
-            if (inputPath == null || !inputPath.toLowerCase(Locale.US).endsWith(".mp4"))
+            if (inputPath == null || !inputPath.toLowerCase(Locale.US).endsWith(".mp4")) {
                 throw new IllegalArgumentException("Input must be an MP4 file");
-            if (!supportedFps(requestedFps)) throw new IllegalArgumentException("Unsupported FPS: " + requestedFps);
+            }
+            if (!supportedFps(requestedFps)) {
+                throw new IllegalArgumentException("Unsupported FPS: " + requestedFps);
+            }
             inputFile = new File(inputPath);
             if (!inputFile.isFile()) throw new IllegalArgumentException("MP4 not found: " + inputPath);
             fps = requestedFps;
@@ -127,7 +153,8 @@ public class FaceclawVideoConversionService extends Service {
             double sourceFps = probeSourceFps(inputFile);
             if (sourceFps > 0 && sourceFps + 0.25 < fps) {
                 throw new IllegalArgumentException(String.format(Locale.US,
-                        "Source is about %.2f FPS. Choose %d FPS or lower.", sourceFps, largestChoiceAtOrBelow(sourceFps)));
+                        "Source is about %.2f FPS. Choose %d FPS or lower.",
+                        sourceFps, largestChoiceAtOrBelow(sourceFps)));
             }
 
             String base = inputFile.getName().replaceFirst("(?i)\\.mp4$", "");
@@ -136,111 +163,351 @@ public class FaceclawVideoConversionService extends Service {
             finalH264 = new File(parent, base + ".h264");
             metadataFile = new File(parent, base + ".g2.json");
             candidateH264 = new File(parent, "." + base + ".h264.part");
-            if (finalH264.exists()) throw new IllegalStateException("Output already exists: " + finalH264.getName());
+            if (finalH264.exists()) {
+                throw new IllegalStateException("Output already exists: " + finalH264.getName());
+            }
 
             File external = getExternalFilesDir(null);
             if (external == null) throw new IllegalStateException("External app storage unavailable");
-            File workDir = new File(external, "video-convert");
-            if (!workDir.isDirectory() && !workDir.mkdirs()) throw new IllegalStateException("Could not create conversion work directory");
-            workMp4 = new File(workDir, base + ".work.mp4");
-            deleteQuietly(workMp4);
+            File root = new File(external, "video-convert");
+            workDir = new File(root, base);
+            FaceclawG2LocalRepair.deleteTree(workDir);
+            if (!workDir.isDirectory() && !workDir.mkdirs()) {
+                throw new IllegalStateException("Could not create conversion work directory");
+            }
+            workMp4 = new File(workDir, "full.work.mp4");
+            segmentsDir = new File(workDir, "segments");
             deleteQuietly(candidateH264);
+            deleteQuietly(metadataFile);
+
+            repairPlan = null;
+            repairQueue.clear();
+            repairRates.clear();
+            repairQueuePosition = 0;
+            repairRound = 0;
+            repairTry = 0;
+            repairedSegments = 0;
+            currentRepairSegment = null;
             cancelled = false;
             startedAtMs = System.currentTimeMillis();
             acquireWakeLock();
             publish("encoding", 0, true, "G2 Baseline encoding", null);
-            startTransformer();
+            startFullTransformer();
         } catch (Throwable error) {
             fail(errorMessage(error));
         }
     }
 
-    private void startTransformer() {
-        encoderFactory = new FaceclawG2EncoderFactory(
-                this,
-                VIDEO_BITRATE,
-                fps,
-                128f / fps);
+    private void startFullTransformer() {
+        encoderFactory = new FaceclawG2EncoderFactory(this, VIDEO_BITRATE, fps, 128f / fps);
+        EditedMediaItem item = buildEditedItem(MediaItem.fromUri(Uri.fromFile(inputFile)));
+        transformer = buildTransformer(item, workMp4, new Transformer.Listener() {
+            @Override
+            public void onCompleted(Composition composition, ExportResult exportResult) {
+                stopProgressPolling();
+                if (cancelled) return;
+                publish("auditing", 88, true, "Auditing full G2 encode", null);
+                worker.execute(() -> finishFullEncode());
+            }
+
+            @Override
+            public void onError(Composition composition, ExportResult exportResult, ExportException error) {
+                stopProgressPolling();
+                if (!cancelled) fail("G2 conversion failed: " + errorMessage(error));
+            }
+        });
+        transformer.start(item, workMp4.getAbsolutePath());
+        startFullProgressPolling();
+    }
+
+    private Transformer buildTransformer(EditedMediaItem item, File destination,
+                                         Transformer.Listener listener) {
+        return new Transformer.Builder(this)
+                .setEncoderFactory(encoderFactory)
+                .setVideoMimeType(MimeTypes.VIDEO_H264)
+                .addListener(listener)
+                .build();
+    }
+
+    private EditedMediaItem buildEditedItem(MediaItem mediaItem) {
         Effect presentation = Presentation.createForWidthAndHeight(
                 FaceclawG2VideoBitstream.WIDTH,
                 FaceclawG2VideoBitstream.HEIGHT,
                 Presentation.LAYOUT_STRETCH_TO_FIT);
-        Effects effects = new Effects(Collections.<AudioProcessor>emptyList(), Collections.singletonList(presentation));
-        EditedMediaItem item = new EditedMediaItem.Builder(MediaItem.fromUri(android.net.Uri.fromFile(inputFile)))
+        Effects effects = new Effects(
+                Collections.<AudioProcessor>emptyList(),
+                Collections.singletonList(presentation));
+        return new EditedMediaItem.Builder(mediaItem)
                 .setRemoveAudio(true)
                 .setFrameRate(fps)
                 .setEffects(effects)
                 .build();
-
-        transformer = new Transformer.Builder(this)
-                .setEncoderFactory(encoderFactory)
-                .setVideoMimeType(MimeTypes.VIDEO_H264)
-                .addListener(new Transformer.Listener() {
-                    @Override
-                    public void onCompleted(Composition composition, ExportResult exportResult) {
-                        stopProgressPolling();
-                        if (cancelled) return;
-                        publish("auditing", 88, true, "Extracting and auditing G2 stream", null);
-                        worker.execute(() -> finishBitstream());
-                    }
-
-                    @Override
-                    public void onError(Composition composition, ExportResult exportResult, ExportException error) {
-                        stopProgressPolling();
-                        if (!cancelled) fail("G2 conversion failed: " + errorMessage(error));
-                    }
-                }).build();
-
-        transformer.start(item, workMp4.getAbsolutePath());
-        progressHolder = new ProgressHolder();
-        progressPoll = new Runnable() {
-            @Override
-            public void run() {
-                Transformer active = transformer;
-                if (active == null || cancelled) return;
-                if (active.getProgress(progressHolder) == Transformer.PROGRESS_STATE_AVAILABLE) {
-                    int p = Math.max(0, Math.min(87, Math.round(progressHolder.progress * 0.87f)));
-                    publish("encoding", p, true, "G2 Baseline encoding " + progressHolder.progress + "%", null);
-                }
-                main.postDelayed(this, PROGRESS_INTERVAL_MS);
-            }
-        };
-        main.post(progressPoll);
     }
 
-    private void finishBitstream() {
+    private void finishFullEncode() {
         try {
             if (cancelled) return;
-            FaceclawG2VideoBitstream.Result result = FaceclawG2VideoBitstream.extractAndAudit(workMp4, candidateH264, fps);
-            if (!result.passed) throw new IllegalStateException(result.failure);
-            publish("finalizing", 97, true, "Finalizing verified G2 stream", null);
 
-            // Metadata must exist before the H264 becomes visible to the player.
-            writeMetadata(result);
-            if (finalH264.exists()) throw new IllegalStateException("Output appeared while conversion was running: " + finalH264.getName());
-            if (!candidateH264.renameTo(finalH264)) throw new IllegalStateException("Could not promote verified .h264 output");
-            deleteQuietly(workMp4);
+            FaceclawG2VideoBitstream.Result preflight =
+                    FaceclawG2VideoBitstream.extractAndAudit(workMp4, candidateH264, fps);
+            if (preflight.passed) {
+                completeVerified(preflight);
+                return;
+            }
+            if (!isRepairableTransportFailure(preflight)) {
+                throw new IllegalStateException(preflight.failure);
+            }
 
-            long elapsed = Math.max(1, System.currentTimeMillis() - startedAtMs);
-            double speed = (result.durationUs / 1_000_000.0) / (elapsed / 1000.0);
-            String message = String.format(Locale.US, "%s ready - %.2fx realtime - %.2f fps", finalH264.getName(), speed, result.actualFps);
-            publish("complete", 100, false, message, null);
-            notifyFinished("Video converted", message);
-            cleanupAndStop(false);
+            publish("repairing", 89, true,
+                    "Mapping failing GOPs for local repair", null);
+            repairPlan = FaceclawG2LocalRepair.extractInitialGops(
+                    workMp4, segmentsDir, candidateH264, fps);
+            FaceclawG2LocalRepair.Audit global =
+                    FaceclawG2LocalRepair.auditAnnexB(candidateH264, fps);
+
+            if (global.passesTransport()) {
+                FaceclawG2VideoBitstream.Result result =
+                        FaceclawG2LocalRepair.toResult(global, candidateH264, fps, repairPlan.durationUs);
+                if (!result.passed) throw new IllegalStateException(result.failure);
+                completeVerified(result);
+                return;
+            }
+
+            List<Integer> affected = FaceclawG2LocalRepair.affectedSegments(repairPlan, global);
+            if (affected.isEmpty()) {
+                throw new IllegalStateException("G2 audit failed but no repairable GOP was identified: "
+                        + global.failure());
+            }
+            repairRound = 1;
+            main.post(() -> beginRepairRound(affected, global));
         } catch (Throwable error) {
-            fail(errorMessage(error));
+            postFail(errorMessage(error));
         }
+    }
+
+    private boolean isRepairableTransportFailure(FaceclawG2VideoBitstream.Result result) {
+        if (result.frames <= 0 || result.profileIdc != 66 || result.cabac) return false;
+        double allowedDriftMs = Math.max(100.0, 2000.0 / fps);
+        if (result.durationUs > 0 && result.durationDriftMs > allowedDriftMs) return false;
+        return result.transportOverCeiling > 0
+                || result.worst1WritesPerSec > FaceclawG2VideoBitstream.MAX_1SEC_WRITES + 1e-6
+                || result.worst5WritesPerSec > FaceclawG2VideoBitstream.MAX_5SEC_WRITES + 1e-6;
+    }
+
+    private void beginRepairRound(List<Integer> affected, FaceclawG2LocalRepair.Audit global) {
+        if (cancelled) return;
+        repairQueue = new ArrayList<>(affected);
+        repairQueuePosition = 0;
+        String message = String.format(Locale.US,
+                "Local repair round %d: %d GOP(s), max NAL %d B",
+                repairRound, repairQueue.size(), global.maxTransportNal);
+        publish("repairing", repairProgress(), true, message, null);
+        prepareNextRepairSegment();
+    }
+
+    private void prepareNextRepairSegment() {
+        if (cancelled) return;
+        if (repairQueuePosition >= repairQueue.size()) {
+            worker.execute(this::finishRepairRound);
+            return;
+        }
+
+        int segmentIndex = repairQueue.get(repairQueuePosition);
+        if (repairPlan == null || segmentIndex < 0 || segmentIndex >= repairPlan.segments.size()) {
+            postFail("Invalid local repair GOP index " + segmentIndex);
+            return;
+        }
+        currentRepairSegment = repairPlan.segments.get(segmentIndex);
+        worker.execute(() -> {
+            try {
+                FaceclawG2LocalRepair.Audit local =
+                        FaceclawG2LocalRepair.auditAnnexB(currentRepairSegment.path, fps);
+                Integer previousRate = repairRates.get(currentRepairSegment.index);
+                repairStartRateKbps = FaceclawG2LocalRepair.firstRepairRateKbps(
+                        local, previousRate, NORMAL_RATE_KBPS);
+                repairTry = 1;
+                main.post(this::startRepairAttempt);
+            } catch (Throwable error) {
+                postFail(errorMessage(error));
+            }
+        });
+    }
+
+    private void startRepairAttempt() {
+        if (cancelled || currentRepairSegment == null) return;
+
+        final int localRateKbps = FaceclawG2LocalRepair.retryRateKbps(
+                repairStartRateKbps, repairTry);
+        repairMp4 = new File(workDir, String.format(Locale.US,
+                "repair_%05d_try_%02d_%dk.mp4",
+                currentRepairSegment.index, repairTry, localRateKbps));
+        repairRaw = new File(workDir, String.format(Locale.US,
+                "repair_%05d_try_%02d_%dk.h264",
+                currentRepairSegment.index, repairTry, localRateKbps));
+        deleteQuietly(repairMp4);
+        deleteQuietly(repairRaw);
+
+        long startMs = Math.max(0, Math.round(currentRepairSegment.startUs / 1000.0));
+        long endMs = Math.max(startMs + 1, Math.round(currentRepairSegment.endUs / 1000.0));
+        if (endMs <= startMs + 1) {
+            endMs = startMs + Math.max(1,
+                    Math.round(currentRepairSegment.frameCount * 1000.0 / fps));
+        }
+
+        MediaItem clipped = new MediaItem.Builder()
+                .setUri(Uri.fromFile(inputFile))
+                .setClippingConfiguration(new MediaItem.ClippingConfiguration.Builder()
+                        .setStartPositionMs(startMs)
+                        .setEndPositionMs(endMs)
+                        .build())
+                .build();
+        EditedMediaItem item = buildEditedItem(clipped);
+        encoderFactory = new FaceclawG2EncoderFactory(
+                this, localRateKbps * 1000, fps, 128f / fps);
+
+        String message = String.format(Locale.US,
+                "Repair GOP %d/%d, try %d at %d kbps",
+                repairQueuePosition + 1, repairQueue.size(), repairTry, localRateKbps);
+        publish("repairing", repairProgress(), true, message, null);
+
+        transformer = buildTransformer(item, repairMp4, new Transformer.Listener() {
+            @Override
+            public void onCompleted(Composition composition, ExportResult exportResult) {
+                if (cancelled) return;
+                worker.execute(() -> verifyRepairAttempt(localRateKbps));
+            }
+
+            @Override
+            public void onError(Composition composition, ExportResult exportResult, ExportException error) {
+                if (!cancelled) {
+                    postFail("Local GOP encode failed: " + errorMessage(error));
+                }
+            }
+        });
+        transformer.start(item, repairMp4.getAbsolutePath());
+    }
+
+    private void verifyRepairAttempt(int localRateKbps) {
+        try {
+            if (cancelled) return;
+            FaceclawG2VideoBitstream.Result local =
+                    FaceclawG2VideoBitstream.extractAndAudit(repairMp4, repairRaw, fps);
+            boolean exactFrames = local.frames == currentRepairSegment.frameCount;
+            boolean oneIdr = local.idrFrames == 1;
+            if (local.passed && exactFrames && oneIdr) {
+                FaceclawG2LocalRepair.replaceSegment(repairRaw, currentRepairSegment);
+                repairRates.put(currentRepairSegment.index, localRateKbps);
+                repairedSegments++;
+                deleteQuietly(repairMp4);
+                deleteQuietly(repairRaw);
+                repairQueuePosition++;
+                main.post(this::prepareNextRepairSegment);
+                return;
+            }
+
+            String reason;
+            if (!exactFrames) {
+                reason = "repair frame count " + local.frames + " != " + currentRepairSegment.frameCount;
+            } else if (!oneIdr) {
+                reason = "repair produced " + local.idrFrames + " IDRs; expected 1";
+            } else {
+                reason = local.failure != null ? local.failure : "local G2 audit failed";
+            }
+
+            deleteQuietly(repairMp4);
+            deleteQuietly(repairRaw);
+            if (repairTry >= FaceclawG2LocalRepair.MAX_LOCAL_TRIES) {
+                throw new IllegalStateException(String.format(Locale.US,
+                        "GOP %d still fails after %d local tries: %s",
+                        currentRepairSegment.index,
+                        FaceclawG2LocalRepair.MAX_LOCAL_TRIES,
+                        reason));
+            }
+            repairTry++;
+            main.post(this::startRepairAttempt);
+        } catch (Throwable error) {
+            postFail(errorMessage(error));
+        }
+    }
+
+    private void finishRepairRound() {
+        try {
+            if (cancelled) return;
+            publish("auditing", 96, true,
+                    "Reassembling and auditing repaired G2 stream", null);
+            FaceclawG2LocalRepair.assemble(repairPlan, candidateH264);
+            FaceclawG2LocalRepair.Audit global =
+                    FaceclawG2LocalRepair.auditAnnexB(candidateH264, fps);
+
+            if (global.passesTransport()) {
+                FaceclawG2VideoBitstream.Result result =
+                        FaceclawG2LocalRepair.toResult(global, candidateH264, fps, repairPlan.durationUs);
+                if (!result.passed) throw new IllegalStateException(result.failure);
+                completeVerified(result);
+                return;
+            }
+
+            if (repairRound >= FaceclawG2LocalRepair.MAX_GLOBAL_ROUNDS) {
+                throw new IllegalStateException(
+                        "Video still fails after maximum local repair rounds: " + global.failure());
+            }
+            List<Integer> affected = FaceclawG2LocalRepair.affectedSegments(repairPlan, global);
+            if (affected.isEmpty()) {
+                throw new IllegalStateException(
+                        "Global G2 audit still fails but no affected GOP could be mapped: "
+                                + global.failure());
+            }
+            repairRound++;
+            main.post(() -> beginRepairRound(affected, global));
+        } catch (Throwable error) {
+            postFail(errorMessage(error));
+        }
+    }
+
+    private int repairProgress() {
+        if (repairQueue.isEmpty()) return 90;
+        double within = repairQueuePosition / (double) repairQueue.size();
+        double rounds = Math.min(1.0,
+                ((repairRound - 1) + within) / FaceclawG2LocalRepair.MAX_GLOBAL_ROUNDS);
+        return 90 + (int) Math.floor(rounds * 6.0);
+    }
+
+    private void completeVerified(FaceclawG2VideoBitstream.Result result) throws Exception {
+        if (cancelled) return;
+        publish("finalizing", 97, true, "Finalizing verified G2 stream", null);
+
+        writeMetadata(result);
+        if (finalH264.exists()) {
+            throw new IllegalStateException(
+                    "Output appeared while conversion was running: " + finalH264.getName());
+        }
+        if (!candidateH264.renameTo(finalH264)) {
+            throw new IllegalStateException("Could not promote verified .h264 output");
+        }
+        FaceclawG2LocalRepair.deleteTree(workDir);
+
+        long elapsed = Math.max(1, System.currentTimeMillis() - startedAtMs);
+        double speed = (result.durationUs / 1_000_000.0) / (elapsed / 1000.0);
+        String message = String.format(Locale.US,
+                "%s ready - %.2fx realtime - %.2f fps - %d local repair(s)",
+                finalH264.getName(), speed, result.actualFps, repairedSegments);
+        publish("complete", 100, false, message, null);
+        notifyFinished("Video converted", message);
+        cleanupAndStop(false);
     }
 
     private void writeMetadata(FaceclawG2VideoBitstream.Result result) throws Exception {
         JSONObject json = new JSONObject();
-        json.put("version", 1);
+        json.put("version", 2);
         json.put("fps", fps);
         json.put("width", FaceclawG2VideoBitstream.WIDTH);
         json.put("height", FaceclawG2VideoBitstream.HEIGHT);
-        json.put("backend", "android-mediacodec-baseline");
+        json.put("backend", "android-mediacodec-baseline-local-repair");
         json.put("encoderName", encoderFactory != null ? encoderFactory.getSelectedEncoderName() : "");
         json.put("bitrate", VIDEO_BITRATE);
+        json.put("repairRounds", repairRound);
+        json.put("repairedSegments", repairedSegments);
+        json.put("minimumRepairRateKbps", FaceclawG2LocalRepair.MINIMUM_LOCAL_RATE_KBPS);
         json.put("frames", result.frames);
         json.put("idrFrames", result.idrFrames);
         json.put("actualFps", result.actualFps);
@@ -257,6 +524,25 @@ public class FaceclawVideoConversionService extends Service {
         }
     }
 
+    private void startFullProgressPolling() {
+        progressHolder = new ProgressHolder();
+        progressPoll = new Runnable() {
+            @Override
+            public void run() {
+                Transformer active = transformer;
+                if (active == null || cancelled) return;
+                if (active.getProgress(progressHolder) == Transformer.PROGRESS_STATE_AVAILABLE) {
+                    int p = Math.max(0, Math.min(87,
+                            Math.round(progressHolder.progress * 0.87f)));
+                    publish("encoding", p, true,
+                            "G2 Baseline encoding " + progressHolder.progress + "%", null);
+                }
+                main.postDelayed(this, PROGRESS_INTERVAL_MS);
+            }
+        };
+        main.post(progressPoll);
+    }
+
     private static double probeSourceFps(File source) {
         MediaExtractor extractor = new MediaExtractor();
         try {
@@ -264,8 +550,10 @@ public class FaceclawVideoConversionService extends Service {
             for (int i = 0; i < extractor.getTrackCount(); i++) {
                 MediaFormat f = extractor.getTrackFormat(i);
                 String mime = f.getString(MediaFormat.KEY_MIME);
-                if (mime != null && mime.startsWith("video/") && f.containsKey(MediaFormat.KEY_FRAME_RATE))
+                if (mime != null && mime.startsWith("video/")
+                        && f.containsKey(MediaFormat.KEY_FRAME_RATE)) {
                     return f.getInteger(MediaFormat.KEY_FRAME_RATE);
+                }
             }
         } catch (Throwable ignored) {
         } finally {
@@ -275,12 +563,15 @@ public class FaceclawVideoConversionService extends Service {
     }
 
     private static boolean supportedFps(int value) {
-        return value == 5 || value == 10 || value == 15 || value == 20 || value == 25 || value == 30;
+        return value == 5 || value == 10 || value == 15
+                || value == 20 || value == 25 || value == 30;
     }
 
     private static int largestChoiceAtOrBelow(double sourceFps) {
         int result = 5;
-        for (int value : new int[]{5, 10, 15, 20, 25, 30}) if (value <= sourceFps + 0.25) result = value;
+        for (int value : new int[]{5, 10, 15, 20, 25, 30}) {
+            if (value <= sourceFps + 0.25) result = value;
+        }
         return result;
     }
 
@@ -289,9 +580,11 @@ public class FaceclawVideoConversionService extends Service {
         stopProgressPolling();
         Transformer active = transformer;
         transformer = null;
-        if (active != null) try { active.cancel(); } catch (Throwable ignored) {}
-        deleteQuietly(workMp4);
+        if (active != null) {
+            try { active.cancel(); } catch (Throwable ignored) {}
+        }
         deleteQuietly(candidateH264);
+        FaceclawG2LocalRepair.deleteTree(workDir);
         publish("cancelled", 0, false, reason, null);
         cleanupAndStop(true);
     }
@@ -301,12 +594,20 @@ public class FaceclawVideoConversionService extends Service {
         stopProgressPolling();
         Transformer active = transformer;
         transformer = null;
-        if (active != null) try { active.cancel(); } catch (Throwable ignored) {}
-        deleteQuietly(workMp4);
+        if (active != null) {
+            try { active.cancel(); } catch (Throwable ignored) {}
+        }
         deleteQuietly(candidateH264);
+        FaceclawG2LocalRepair.deleteTree(workDir);
         publish("failed", 0, false, message, message);
         notifyFinished("Video conversion failed", message);
         cleanupAndStop(false);
+    }
+
+    private void postFail(String message) {
+        main.post(() -> {
+            if (!cancelled) fail(message);
+        });
     }
 
     private void stopProgressPolling() {
@@ -314,16 +615,23 @@ public class FaceclawVideoConversionService extends Service {
         progressPoll = null;
     }
 
-    private void publish(String stage, int progress, boolean running, String message, String error) {
+    private void publish(String stage, int progress, boolean running,
+                         String message, String error) {
         try {
             JSONObject json = new JSONObject();
             json.put("running", running);
             json.put("stage", stage);
             json.put("progress", progress);
             json.put("fps", fps);
-            json.put("inputPath", inputFile != null ? inputFile.getAbsolutePath() : JSONObject.NULL);
-            json.put("outputPath", finalH264 != null ? finalH264.getAbsolutePath() : JSONObject.NULL);
-            json.put("encoderName", encoderFactory != null ? encoderFactory.getSelectedEncoderName() : "");
+            json.put("inputPath", inputFile != null
+                    ? inputFile.getAbsolutePath() : JSONObject.NULL);
+            json.put("outputPath", finalH264 != null
+                    ? finalH264.getAbsolutePath() : JSONObject.NULL);
+            json.put("encoderName", encoderFactory != null
+                    ? encoderFactory.getSelectedEncoderName() : "");
+            json.put("repairRound", repairRound);
+            json.put("repairTry", repairTry);
+            json.put("repairedSegments", repairedSegments);
             json.put("message", message != null ? message : "");
             if (error != null) json.put("error", error);
             synchronized (STATE_LOCK) { stateJson = json.toString(); }
@@ -333,7 +641,10 @@ public class FaceclawVideoConversionService extends Service {
 
     private void ensureChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-        NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Faceclaw video conversion", NotificationManager.IMPORTANCE_LOW);
+        NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID,
+                "Faceclaw video conversion",
+                NotificationManager.IMPORTANCE_LOW);
         channel.setDescription("Progress for long MP4 to G2 video conversions.");
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) manager.createNotificationChannel(channel);
@@ -345,10 +656,12 @@ public class FaceclawVideoConversionService extends Service {
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
         PendingIntent content = PendingIntent.getActivity(this, 20, launch, flags);
-        Intent cancel = new Intent(this, FaceclawVideoConversionService.class).setAction(ACTION_CANCEL);
+        Intent cancel = new Intent(this, FaceclawVideoConversionService.class)
+                .setAction(ACTION_CANCEL);
         PendingIntent cancelPending = PendingIntent.getService(this, 21, cancel, flags);
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
+                ? new Notification.Builder(this, CHANNEL_ID)
+                : new Notification.Builder(this);
         builder.setContentTitle("Faceclaw video converter")
                 .setContentText(text)
                 .setSmallIcon(getApplicationInfo().icon)
@@ -361,31 +674,44 @@ public class FaceclawVideoConversionService extends Service {
     }
 
     private void startAsForeground(Notification notification) {
-        // mediaProcessing is an API-35 service type. Do not pass its bit to old Android versions.
-        if (Build.VERSION.SDK_INT >= 35)
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING);
-        else
+        if (Build.VERSION.SDK_INT >= 35) {
+            startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING);
+        } else {
             startForeground(NOTIFICATION_ID, notification);
+        }
     }
 
     private void updateNotification(String text, int progress) {
         NotificationManager manager = getSystemService(NotificationManager.class);
-        if (manager != null) manager.notify(NOTIFICATION_ID, buildNotification(text, progress, true));
+        if (manager != null) {
+            manager.notify(NOTIFICATION_ID, buildNotification(text, progress, true));
+        }
     }
 
     private void notifyFinished(String title, String text) {
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager == null) return;
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
-        manager.notify(NOTIFICATION_ID, builder.setContentTitle(title).setContentText(text)
-                .setSmallIcon(getApplicationInfo().icon).setOnlyAlertOnce(false).setOngoing(false).build());
+                ? new Notification.Builder(this, CHANNEL_ID)
+                : new Notification.Builder(this);
+        manager.notify(NOTIFICATION_ID,
+                builder.setContentTitle(title)
+                        .setContentText(text)
+                        .setSmallIcon(getApplicationInfo().icon)
+                        .setOnlyAlertOnce(false)
+                        .setOngoing(false)
+                        .build());
     }
 
     private void acquireWakeLock() {
         PowerManager manager = (PowerManager) getSystemService(POWER_SERVICE);
         if (manager == null) return;
-        wakeLock = manager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "faceclaw:video-convert");
+        wakeLock = manager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "faceclaw:video-convert");
         wakeLock.setReferenceCounted(false);
         wakeLock.acquire();
     }
@@ -394,28 +720,34 @@ public class FaceclawVideoConversionService extends Service {
         releaseWakeLock();
         transformer = null;
         encoderFactory = null;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(removeNotification ? STOP_FOREGROUND_REMOVE : STOP_FOREGROUND_DETACH);
-        else
+        } else {
             stopForeground(removeNotification);
+        }
         stopSelf();
     }
 
     private void releaseWakeLock() {
         if (wakeLock != null) {
-            try { if (wakeLock.isHeld()) wakeLock.release(); } catch (Throwable ignored) {}
+            try {
+                if (wakeLock.isHeld()) wakeLock.release();
+            } catch (Throwable ignored) {}
             wakeLock = null;
         }
     }
 
     private static void deleteQuietly(File file) {
-        if (file != null && file.exists()) try { file.delete(); } catch (Throwable ignored) {}
+        if (file != null && file.exists()) {
+            try { file.delete(); } catch (Throwable ignored) {}
+        }
     }
 
     private static String errorMessage(Throwable error) {
         if (error == null) return "Unknown error";
         String message = error.getMessage();
-        return message != null && !message.trim().isEmpty() ? message : error.getClass().getSimpleName();
+        return message != null && !message.trim().isEmpty()
+                ? message : error.getClass().getSimpleName();
     }
 
     @Override
