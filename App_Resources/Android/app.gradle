@@ -9,8 +9,7 @@ dependencies {
   // Hardware-accelerated Android video transcoding. Transformer uses the
   // platform MediaCodec decoder/encoder and GPU effects path so long G2
   // conversions never shuttle frames through NativeScript/JavaScript.
-  // Media3 1.9.4 is the newest stable 1.9.x release and remains compatible
-  // with compileSdk 35. Media3 1.10.x and newer require compileSdk 36.
+  // Media3 1.9.4 stays compatible with this project's compileSdk 35.
   implementation 'androidx.media3:media3-transformer:1.9.4'
   implementation 'androidx.media3:media3-effect:1.9.4'
 }
@@ -109,7 +108,7 @@ tasks.register("prepareFaceclawNativeLibs") {
 
     def lc3Archive = file("$downloadsDir/liblc3-v${faceclawLibLc3Version}.tar.gz")
     faceclawDownload(
-      "https://github.com/google/liblc3/archive/refs/tags/v${faceclawLibLc3Version}/liblc3-v${faceclawLibLc3Version}.tar.gz",
+      "https://github.com/google/liblc3/archive/refs/tags/v${faceclawLibLc3Version}.tar.gz",
       lc3Archive
     )
     def lc3ExtractDir = file("$faceclawNativeBuildDir/liblc3")
@@ -140,7 +139,8 @@ tasks.register("prepareFaceclawNativeLibs") {
 
     def lc3Root = file("$lc3ExtractDir/liblc3-${faceclawLibLc3Version}")
     def lc3Sources = [
-      "attdet.c", "bits.c", "bwdet.c", "energy.c", "lc3.c", "ltpf.c", "mdct.c", "plc.c", "sns.c", "spec.c", "tables.c", "tns.c"
+      "attdet.c", "bits.c", "bwdet.c", "energy.c", "lc3.c", "ltpf.c",
+      "mdct.c", "plc.c", "sns.c", "spec.c", "tables.c", "tns.c"
     ].collect { file("$lc3Root/src/$it").absolutePath }
 
     exec {
