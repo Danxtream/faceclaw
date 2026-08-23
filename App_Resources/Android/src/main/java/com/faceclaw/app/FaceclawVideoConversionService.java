@@ -24,6 +24,7 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.audio.AudioProcessor;
 import androidx.media3.common.util.UnstableApi;
+import androidx.media3.effect.FrameDropEffect;
 import androidx.media3.effect.Presentation;
 import androidx.media3.transformer.Composition;
 import androidx.media3.transformer.EditedMediaItem;
@@ -207,7 +208,8 @@ public class FaceclawVideoConversionService extends Service {
             x264RepairActive = false;
             startedAtMs = System.currentTimeMillis();
             acquireWakeLock();
-            publish("encoding", 0, true, "G2 Baseline hardware encoding", null);
+            publish("encoding", 0, true,
+                    "G2 Baseline hardware encoding at " + fps + " FPS", null);
             startFullTransformer();
         } catch (Throwable error) {
             fail(errorMessage(error));
@@ -252,16 +254,22 @@ public class FaceclawVideoConversionService extends Service {
     }
 
     private EditedMediaItem buildEditedItem(MediaItem mediaItem) {
+        Effect frameDrop = FrameDropEffect.createDefaultFrameDropEffect((float) fps);
         Effect presentation = Presentation.createForWidthAndHeight(
                 FaceclawG2VideoBitstream.WIDTH,
                 FaceclawG2VideoBitstream.HEIGHT,
                 Presentation.LAYOUT_STRETCH_TO_FIT);
+        List<Effect> videoEffects = new ArrayList<>();
+        // Media3 1.9.4 ignores EditedMediaItem.Builder.setFrameRate() for video sources. Use the
+        // dedicated frame-drop effect so the selected G2 FPS actually controls the encoded stream.
+        // Drop before scaling so frames that will not be encoded do not pay the resize cost.
+        videoEffects.add(frameDrop);
+        videoEffects.add(presentation);
         Effects effects = new Effects(
                 Collections.<AudioProcessor>emptyList(),
-                Collections.singletonList(presentation));
+                videoEffects);
         return new EditedMediaItem.Builder(mediaItem)
                 .setRemoveAudio(true)
-                .setFrameRate(fps)
                 .setEffects(effects)
                 .build();
     }
@@ -278,6 +286,21 @@ public class FaceclawVideoConversionService extends Service {
             }
             if (!isRepairableTransportFailure(preflight)) {
                 throw new IllegalStateException(preflight.failure);
+            }
+
+            // Do not repair transport on top of a frame-rate-invalid full encode. In Media3 1.9.4
+            // setFrameRate() is ignored for video, which previously allowed a 30 FPS source to be
+            // encoded with every frame while the encoder was merely configured as 15 FPS. That
+            // made startFrame/fps repair seeks wrong and guaranteed the final FPS-sync audit would
+            // fail. FrameDropEffect should keep this drift inside one-to-two selected-frame periods.
+            double allowedDriftMs = Math.max(100.0, 2000.0 / fps);
+            if (preflight.durationUs > 0 && preflight.durationDriftMs > allowedDriftMs) {
+                throw new IllegalStateException(String.format(Locale.US,
+                        "Full encode FPS sync failed before local repair: %.1f ms duration drift "
+                                + "at requested %d FPS (actual %.5f FPS)",
+                        preflight.durationDriftMs,
+                        fps,
+                        preflight.actualFps));
             }
 
             publish("repairing", 89, true,
@@ -308,8 +331,6 @@ public class FaceclawVideoConversionService extends Service {
     }
 
     private boolean isRepairableTransportFailure(FaceclawG2VideoBitstream.Result result) {
-        // Transport gets repaired before final FPS-duration validation. Codec/frame contract failures
-        // still stop immediately. The final assembled file goes through the FPS-sync gate again.
         if (result.frames <= 0 || result.profileIdc != 66 || result.cabac) return false;
         return result.transportOverCeiling > 0
                 || result.worst1WritesPerSec > FaceclawG2VideoBitstream.MAX_1SEC_WRITES + 1e-6
@@ -400,6 +421,7 @@ public class FaceclawVideoConversionService extends Service {
                     inputFile,
                     repairRaw,
                     fps,
+                    currentRepairSegment.startUs,
                     currentRepairSegment.startFrame,
                     currentRepairSegment.frameCount,
                     localRateKbps);
@@ -559,14 +581,16 @@ public class FaceclawVideoConversionService extends Service {
 
     private void writeMetadata(FaceclawG2VideoBitstream.Result result) throws Exception {
         JSONObject json = new JSONObject();
-        json.put("version", 3);
+        json.put("version", 4);
         json.put("fps", fps);
         json.put("width", FaceclawG2VideoBitstream.WIDTH);
         json.put("height", FaceclawG2VideoBitstream.HEIGHT);
-        json.put("backend", "android-mediacodec-baseline+x264-local-vbv-repair");
+        json.put("backend", "android-mediacodec-baseline+framedrop+x264-local-vbv-repair");
         json.put("encoderName", encoderFactory != null
                 ? encoderFactory.getSelectedEncoderName() : "");
         json.put("bitrate", VIDEO_BITRATE);
+        json.put("frameRateControl", "media3-1.9.4-FrameDropEffect");
+        json.put("repairSeek", "hardware-gop-startUs");
         json.put("repairBackend", "libx264");
         json.put("repairCrf", FaceclawG2X264Repair.CRF);
         json.put("repairNormalMaxRateKbps", FaceclawG2X264Repair.NORMAL_MAXRATE_KBPS);
