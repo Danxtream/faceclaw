@@ -20,11 +20,13 @@ import java.util.Locale;
  *
  * The full source is encoded once. The encoded H.264 is split on actual IDR boundaries, audited
  * globally, and only GOPs participating in a failing NAL / 1-second / 5-second region are replaced.
- * Local retries step the CBR rate downward in 4 kbps increments, matching the desktop repair
- * strategy as closely as the Android MediaCodec rate controls allow.
+ * Local retries tighten x264 VBV maxrate in 4 kbps steps, while global problem multipliers can make
+ * a larger targeted cut when a window crossing GOP boundaries remains over the G2 transport gate.
  */
 public final class FaceclawG2LocalRepair {
-    public static final int MAX_GLOBAL_ROUNDS = 10;
+    // Normal convergence should stop because the global audit passes or every still-affected GOP
+    // reaches the 45k repair floor. This is only an emergency infinite-loop guard.
+    public static final int MAX_GLOBAL_ROUNDS = 32;
     public static final int MAX_LOCAL_TRIES = 16;
     public static final int MINIMUM_LOCAL_RATE_KBPS = 45;
 
@@ -333,12 +335,41 @@ public final class FaceclawG2LocalRepair {
         return new ArrayList<>(indexes);
     }
 
-    public static int firstRepairRateKbps(Audit localAudit, Integer previousRateKbps,
-                                           int normalRateKbps) {
-        if (previousRateKbps != null) {
-            return Math.max(MINIMUM_LOCAL_RATE_KBPS, previousRateKbps - 4);
+    /** Returns the strongest global problem multiplier touching this GOP, or 1.0 if none. */
+    public static double suggestedMultiplierForSegment(Plan plan, Audit audit, int segmentIndex) {
+        if (plan == null || audit == null || segmentIndex < 0 || segmentIndex >= plan.segments.size()) {
+            return 1.0;
         }
-        double ratio = 1.0;
+        Segment segment = plan.segments.get(segmentIndex);
+        double multiplier = 1.0;
+        for (ProblemRange problem : audit.problems) {
+            if (segment.endFrameInclusive() < problem.startFrame) continue;
+            if (segment.startFrame > problem.endFrame) continue;
+            multiplier = Math.min(multiplier, problem.suggestedMultiplier);
+        }
+        return Math.min(1.0, Math.max(0.55, multiplier));
+    }
+
+    public static int firstRepairRateKbps(Audit localAudit, Integer previousRateKbps,
+                                           int normalRateKbps, double globalMultiplier) {
+        globalMultiplier = Math.min(1.0, Math.max(0.55, globalMultiplier));
+
+        if (previousRateKbps != null) {
+            // Preserve the desktop 4k downward step, but if the global audit says the crossing
+            // window needs a larger reduction, take that stronger cut immediately.
+            int stepped = Math.max(MINIMUM_LOCAL_RATE_KBPS, previousRateKbps - 4);
+            int globalSuggested = previousRateKbps;
+            if (globalMultiplier < 0.999) {
+                globalSuggested = (int) Math.floor(previousRateKbps * globalMultiplier);
+                globalSuggested = Math.max(MINIMUM_LOCAL_RATE_KBPS, globalSuggested);
+                if (globalSuggested >= previousRateKbps) {
+                    globalSuggested = Math.max(MINIMUM_LOCAL_RATE_KBPS, previousRateKbps - 4);
+                }
+            }
+            return Math.max(MINIMUM_LOCAL_RATE_KBPS, Math.min(stepped, globalSuggested));
+        }
+
+        double ratio = globalMultiplier;
         if (localAudit.worst5WritesPerSec > FaceclawG2VideoBitstream.MAX_5SEC_WRITES) {
             ratio = Math.min(ratio,
                     FaceclawG2VideoBitstream.MAX_5SEC_WRITES / localAudit.worst5WritesPerSec);
@@ -356,6 +387,7 @@ public final class FaceclawG2LocalRepair {
         if (ratio < 0.999) {
             int start = (int) Math.floor(normalRateKbps * ratio * 0.97);
             start = Math.min(start, cap);
+            // As on desktop, 60k is only the floor for the first attempt on an untouched GOP.
             start = Math.max(60, start);
             return Math.max(MINIMUM_LOCAL_RATE_KBPS, start);
         }
