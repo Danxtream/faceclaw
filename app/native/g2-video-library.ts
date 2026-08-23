@@ -40,6 +40,11 @@ export function isG2VideoPickerFile(name: string): boolean {
   return /\.(h264|264|mp4)$/i.test(name);
 }
 
+/** True only for an MP4 that does not already have a same-name .h264/.264 output. */
+export function isUnconvertedG2Mp4(entry: DirectoryEntry): boolean {
+  return !entry.isDirectory && /\.mp4$/i.test(entry.name) && resolveG2H264Path(entry.path) === null;
+}
+
 /** Resolve the user-facing MP4/H264 selection to the elementary stream sent to the glasses. */
 export function resolveG2H264Path(selectedPath: string): string | null {
   try {
@@ -58,6 +63,16 @@ export function resolveG2H264Path(selectedPath: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Final path produced by the phone converter for an MP4 input. */
+export function g2ConvertedH264Path(mp4Path: string): string {
+  return mp4Path.replace(/\.mp4$/i, ".h264");
+}
+
+/** Per-video converter/playback metadata, kept beside the MP4/H264 pair. */
+export function g2VideoMetadataPath(path: string): string {
+  return path.replace(/\.(mp4|h264|264)$/i, ".g2.json");
 }
 
 /**
