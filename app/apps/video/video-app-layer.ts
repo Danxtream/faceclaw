@@ -3,6 +3,7 @@ import { GrayImage } from "../../graphics/image";
 import {
   ensureG2VideoDirectory,
   g2VideoDirectoryPath,
+  g2VideoPlaybackFps,
   isG2VideoPickerFile,
   resolveG2H264Path,
   shouldShowG2VideoEntry,
@@ -13,7 +14,7 @@ import { FileBrowserLayer } from "../files/file-browser";
 import type { AppContext } from "../app-definition";
 import { VideoPlaybackController, type PauseOverlaySelection } from "./playback-controller";
 import { DebugVideoPlaybackController } from "./debug-playback-controller";
-import { configuredVideoDebugging } from "./video-settings";
+import { configuredVideoDebugging, configuredVideoFps, videoPlaybackFpsSetting, type VideoFpsSetting } from "./video-settings";
 
 const PAUSE_ACTIONS: readonly { label: string; deltaMs?: number }[] = [
   { label: "PLAY" },
@@ -22,6 +23,8 @@ const PAUSE_ACTIONS: readonly { label: string; deltaMs?: number }[] = [
   { label: "-30", deltaMs: -30_000 },
   { label: "+30", deltaMs: 30_000 },
 ];
+
+const CONVERTER_FPS_VALUES = new Set<number>([5, 10, 15, 20, 25, 30]);
 
 type VideoMode = "browser" | "loading" | "playing";
 
@@ -145,6 +148,14 @@ export class VideoAppLayer implements Layer {
     this.loadingLabel = `Opening ${path.slice(path.lastIndexOf("/") + 1)}...`;
     ctx.actions.requestRender();
 
+    // Phone-converted movies carry their encode FPS beside the H264 stream.
+    // Apply it before constructing the controller so mixed-FPS videos play at
+    // the cadence they were actually encoded for and stay aligned to MP4 audio.
+    const metadataFps = g2VideoPlaybackFps(path, configuredVideoFps());
+    if (CONVERTER_FPS_VALUES.has(metadataFps)) {
+      videoPlaybackFpsSetting.set(String(metadataFps) as VideoFpsSetting);
+    }
+
     const onEnded = () => { void this.finishNaturalPlayback(ctx); };
     const onExitRequested = () => { void this.exitPlayback(ctx); };
     const debugMode = configuredVideoDebugging();
@@ -163,7 +174,7 @@ export class VideoAppLayer implements Layer {
         );
 
     this.appCtx.appendLog(
-      `VIDEO_OPEN debugMode=${debugMode} path=${path}`,
+      `VIDEO_OPEN debugMode=${debugMode} path=${path} fps=${metadataFps}`,
     );
     this.controller = controller;
     this.pauseSelection = 0;
