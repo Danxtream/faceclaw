@@ -23,6 +23,7 @@ import androidx.media3.common.MimeTypes;
 import androidx.media3.common.audio.AudioProcessor;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.effect.Presentation;
+import androidx.media3.transformer.Composition;
 import androidx.media3.transformer.DefaultEncoderFactory;
 import androidx.media3.transformer.EditedMediaItem;
 import androidx.media3.transformer.Effects;
@@ -44,13 +45,6 @@ import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/**
- * Long-running, hardware-accelerated MP4 -> G2 H.264 conversion service.
- *
- * Transformer/MediaCodec does decode, resize and encode without moving video
- * frames through NativeScript. The H.264 track is then converted to Annex-B
- * and accepted only if the strict G2 transport audit passes.
- */
 @UnstableApi
 public class FaceclawVideoConversionService extends Service {
     public static final String ACTION_START = "com.faceclaw.app.action.VIDEO_CONVERT_START";
@@ -103,9 +97,7 @@ public class FaceclawVideoConversionService extends Service {
 
     @Nullable
     @Override
-    public IBinder onBind(Intent intent) {
-        return null;
-    }
+    public IBinder onBind(Intent intent) { return null; }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -131,15 +123,11 @@ public class FaceclawVideoConversionService extends Service {
     private void begin(String inputPath, int requestedFps) {
         ensureChannel();
         startAsForeground(buildNotification("Preparing video", 0, true));
-
         try {
-            if (inputPath == null || !inputPath.toLowerCase(Locale.US).endsWith(".mp4")) {
+            if (inputPath == null || !inputPath.toLowerCase(Locale.US).endsWith(".mp4"))
                 throw new IllegalArgumentException("Input must be an MP4 file");
-            }
-            if (requestedFps != 5 && requestedFps != 10 && requestedFps != 15 &&
-                    requestedFps != 20 && requestedFps != 25 && requestedFps != 30) {
+            if (requestedFps != 5 && requestedFps != 10 && requestedFps != 15 && requestedFps != 20 && requestedFps != 25 && requestedFps != 30)
                 throw new IllegalArgumentException("Unsupported FPS: " + requestedFps);
-            }
             inputFile = new File(inputPath);
             if (!inputFile.isFile()) throw new IllegalArgumentException("MP4 not found: " + inputPath);
             fps = requestedFps;
@@ -151,7 +139,9 @@ public class FaceclawVideoConversionService extends Service {
             candidateH264 = new File(parent, "." + base + ".h264.part");
             if (finalH264.exists()) throw new IllegalStateException("Output already exists: " + finalH264.getName());
 
-            File workDir = new File(getExternalFilesDir(null), "video-convert");
+            File external = getExternalFilesDir(null);
+            if (external == null) throw new IllegalStateException("External app storage unavailable");
+            File workDir = new File(external, "video-convert");
             if (!workDir.isDirectory() && !workDir.mkdirs()) throw new IllegalStateException("Could not create conversion work directory");
             workMp4 = new File(workDir, base + ".work.mp4");
             deleteQuietly(workMp4);
@@ -183,9 +173,7 @@ public class FaceclawVideoConversionService extends Service {
                 FaceclawG2VideoBitstream.WIDTH,
                 FaceclawG2VideoBitstream.HEIGHT,
                 Presentation.LAYOUT_STRETCH_TO_FIT);
-        Effects effects = new Effects(
-                Collections.<AudioProcessor>emptyList(),
-                Collections.singletonList(presentation));
+        Effects effects = new Effects(Collections.<AudioProcessor>emptyList(), Collections.singletonList(presentation));
 
         EditedMediaItem item = new EditedMediaItem.Builder(MediaItem.fromUri(android.net.Uri.fromFile(inputFile)))
                 .setRemoveAudio(true)
@@ -198,7 +186,7 @@ public class FaceclawVideoConversionService extends Service {
                 .setVideoMimeType(MimeTypes.VIDEO_H264)
                 .addListener(new Transformer.Listener() {
                     @Override
-                    public void onCompleted(EditedMediaItem inputMediaItem, ExportResult exportResult) {
+                    public void onCompleted(Composition composition, ExportResult exportResult) {
                         stopProgressPolling();
                         if (cancelled) return;
                         publish("auditing", 88, true, "Extracting and auditing G2 stream", null);
@@ -206,7 +194,7 @@ public class FaceclawVideoConversionService extends Service {
                     }
 
                     @Override
-                    public void onError(EditedMediaItem inputMediaItem, ExportResult exportResult, ExportException exportException) {
+                    public void onError(Composition composition, ExportResult exportResult, ExportException exportException) {
                         stopProgressPolling();
                         if (!cancelled) fail("Hardware conversion failed: " + errorMessage(exportException));
                     }
@@ -223,8 +211,7 @@ public class FaceclawVideoConversionService extends Service {
                 int state = active.getProgress(progressHolder);
                 if (state == Transformer.PROGRESS_STATE_AVAILABLE) {
                     int encodePercent = Math.max(0, Math.min(87, Math.round(progressHolder.progress * 0.87f)));
-                    publish("encoding", encodePercent, true,
-                            "Hardware encoding " + progressHolder.progress + "%", null);
+                    publish("encoding", encodePercent, true, "Hardware encoding " + progressHolder.progress + "%", null);
                 }
                 main.postDelayed(this, PROGRESS_INTERVAL_MS);
             }
@@ -238,18 +225,14 @@ public class FaceclawVideoConversionService extends Service {
             FaceclawG2VideoBitstream.Result result = FaceclawG2VideoBitstream.extractAndAudit(workMp4, candidateH264, fps);
             if (!result.passed) throw new IllegalStateException(result.failure);
             publish("finalizing", 97, true, "Finalizing verified G2 stream", null);
-
             deleteQuietly(finalH264);
-            if (!candidateH264.renameTo(finalH264)) {
-                throw new IllegalStateException("Could not promote verified .h264 output");
-            }
+            if (!candidateH264.renameTo(finalH264)) throw new IllegalStateException("Could not promote verified .h264 output");
             writeMetadata(result);
             deleteQuietly(workMp4);
             long elapsed = Math.max(1, System.currentTimeMillis() - startedAtMs);
             double sourceSeconds = result.durationUs / 1_000_000.0;
             double speed = sourceSeconds / (elapsed / 1000.0);
-            String message = String.format(Locale.US,
-                    "%s ready • %.2fx realtime • %.2f fps", finalH264.getName(), speed, result.actualFps);
+            String message = String.format(Locale.US, "%s ready - %.2fx realtime - %.2f fps", finalH264.getName(), speed, result.actualFps);
             publish("complete", 100, false, message, null);
             notifyFinished("Video converted", message);
             cleanupAndStop(false);
@@ -286,9 +269,7 @@ public class FaceclawVideoConversionService extends Service {
         stopProgressPolling();
         Transformer active = transformer;
         transformer = null;
-        if (active != null) {
-            try { active.cancel(); } catch (Throwable ignored) {}
-        }
+        if (active != null) try { active.cancel(); } catch (Throwable ignored) {}
         deleteQuietly(workMp4);
         deleteQuietly(candidateH264);
         publish("cancelled", 0, false, reason, null);
@@ -300,9 +281,7 @@ public class FaceclawVideoConversionService extends Service {
         stopProgressPolling();
         Transformer active = transformer;
         transformer = null;
-        if (active != null) {
-            try { active.cancel(); } catch (Throwable ignored) {}
-        }
+        if (active != null) try { active.cancel(); } catch (Throwable ignored) {}
         deleteQuietly(workMp4);
         deleteQuietly(candidateH264);
         publish("failed", 0, false, message, message);
@@ -333,8 +312,7 @@ public class FaceclawVideoConversionService extends Service {
 
     private void ensureChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-        NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID, "Faceclaw video conversion", NotificationManager.IMPORTANCE_LOW);
+        NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Faceclaw video conversion", NotificationManager.IMPORTANCE_LOW);
         channel.setDescription("Progress for long MP4 to G2 video conversions.");
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) manager.createNotificationChannel(channel);
@@ -346,14 +324,10 @@ public class FaceclawVideoConversionService extends Service {
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
         PendingIntent contentIntent = PendingIntent.getActivity(this, 20, launchIntent, flags);
-
         Intent cancelIntent = new Intent(this, FaceclawVideoConversionService.class);
         cancelIntent.setAction(ACTION_CANCEL);
         PendingIntent cancelPending = PendingIntent.getService(this, 21, cancelIntent, flags);
-
-        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(this, CHANNEL_ID)
-                : new Notification.Builder(this);
+        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
         builder.setContentTitle("Faceclaw video converter")
                 .setContentText(text)
                 .setSmallIcon(getApplicationInfo().icon)
@@ -361,16 +335,14 @@ public class FaceclawVideoConversionService extends Service {
                 .setOnlyAlertOnce(true)
                 .setOngoing(ongoing)
                 .setProgress(100, Math.max(0, Math.min(100, progress)), false);
-        if (ongoing) builder.addAction(new Notification.Action.Builder(null, "Cancel", cancelPending).build());
+        if (ongoing) builder.addAction(0, "Cancel", cancelPending);
         return builder.build();
     }
 
     private void startAsForeground(Notification notification) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING);
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
-        }
+        else startForeground(NOTIFICATION_ID, notification);
     }
 
     private void updateNotification(String text, int progress) {
@@ -381,14 +353,8 @@ public class FaceclawVideoConversionService extends Service {
     private void notifyFinished(String title, String text) {
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager == null) return;
-        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(this, CHANNEL_ID)
-                : new Notification.Builder(this);
-        builder.setContentTitle(title)
-                .setContentText(text)
-                .setSmallIcon(getApplicationInfo().icon)
-                .setOnlyAlertOnce(false)
-                .setOngoing(false);
+        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
+        builder.setContentTitle(title).setContentText(text).setSmallIcon(getApplicationInfo().icon).setOnlyAlertOnce(false).setOngoing(false);
         manager.notify(NOTIFICATION_ID, builder.build());
     }
 
@@ -403,8 +369,11 @@ public class FaceclawVideoConversionService extends Service {
     private void cleanupAndStop(boolean removeNotification) {
         releaseWakeLock();
         transformer = null;
-        if (removeNotification) stopForeground(STOP_FOREGROUND_REMOVE);
-        else stopForeground(STOP_FOREGROUND_DETACH);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(removeNotification ? STOP_FOREGROUND_REMOVE : STOP_FOREGROUND_DETACH);
+        } else {
+            stopForeground(removeNotification);
+        }
         stopSelf();
     }
 
@@ -416,9 +385,7 @@ public class FaceclawVideoConversionService extends Service {
     }
 
     private static void deleteQuietly(File file) {
-        if (file != null && file.exists()) {
-            try { file.delete(); } catch (Throwable ignored) {}
-        }
+        if (file != null && file.exists()) try { file.delete(); } catch (Throwable ignored) {}
     }
 
     private static String errorMessage(Throwable error) {
