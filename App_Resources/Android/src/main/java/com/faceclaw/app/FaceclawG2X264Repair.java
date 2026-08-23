@@ -19,6 +19,7 @@ public final class FaceclawG2X264Repair {
     public static final int CRF = 12;
     public static final int NORMAL_MAXRATE_KBPS = 110;
     public static final int NORMAL_BUFSIZE_KBPS = 22;
+    private static final double SEEK_PREROLL_SECONDS = 5.0;
 
     private FaceclawG2X264Repair() {}
 
@@ -62,7 +63,12 @@ public final class FaceclawG2X264Repair {
 
         int bufferKbps = Math.max(8, (int) Math.round(
                 NORMAL_BUFSIZE_KBPS * maxRateKbps / (double) NORMAL_MAXRATE_KBPS));
-        String startText = String.format(Locale.US, "%.6f", startFrame / (double) fps);
+
+        double targetSeconds = startFrame / (double) fps;
+        double coarseSeekSeconds = Math.max(0.0, targetSeconds - SEEK_PREROLL_SECONDS);
+        double fineSeekSeconds = Math.max(0.0, targetSeconds - coarseSeekSeconds);
+        String coarseSeekText = String.format(Locale.US, "%.6f", coarseSeekSeconds);
+        String fineSeekText = String.format(Locale.US, "%.6f", fineSeekSeconds);
 
         // The desktop full encode creates exact 128-frame GOP files, so keyint=128 naturally
         // yields one IDR in every repair file. MediaCodec uses a time-based I-frame interval and
@@ -90,12 +96,19 @@ public final class FaceclawG2X264Repair {
                 + ":annexb=1"
                 + ":stitchable=1";
 
+        // Do not perform one large direct seek to the repair point. Some mobile MP4 demux/index
+        // combinations can return an empty successful transcode for a later GOP. Seek quickly to
+        // five seconds before the target, then use FFmpeg's output-side -ss to decode/discard the
+        // short preroll accurately. This keeps a ten-hour source practical while avoiding the
+        // empty-output behavior seen on later Android GOP repairs.
         String[] args = new String[] {
                 "-hide_banner",
                 "-y",
                 "-loglevel", "error",
-                "-ss", startText,
+                "-ss", coarseSeekText,
+                "-accurate_seek",
                 "-i", source.getAbsolutePath(),
+                "-ss", fineSeekText,
                 "-map", "0:v:0",
                 "-vf", "fps=" + fps + ",scale="
                         + FaceclawG2VideoBitstream.WIDTH + ":"
@@ -110,7 +123,6 @@ public final class FaceclawG2X264Repair {
                 "-profile:v", "baseline",
                 "-level:v", "3.0",
                 "-threads", "0",
-                // Keep FFmpeg's codec-level GOP controls aligned with the x264 private options.
                 "-g", Integer.toString(localKeyint),
                 "-sc_threshold", "0",
                 "-x264-params", x264Params,
@@ -135,13 +147,24 @@ public final class FaceclawG2X264Repair {
                         FaceclawG2LocalRepair.auditAnnexB(output, fps);
                 if (shape.frames != frameCount) {
                     success = false;
-                    detail = "x264 structural repair failure: frame count " + shape.frames
-                            + " != " + frameCount + " (keyint=" + localKeyint + ")";
+                    detail = String.format(Locale.US,
+                            "x264 structural repair failure: frame count %d != %d "
+                                    + "(keyint=%d target=%.3fs coarse=%.3fs fine=%.3fs)",
+                            shape.frames,
+                            frameCount,
+                            localKeyint,
+                            targetSeconds,
+                            coarseSeekSeconds,
+                            fineSeekSeconds);
                 } else if (shape.idrFrames != 1) {
                     success = false;
-                    detail = "x264 structural repair failure: produced " + shape.idrFrames
-                            + " IDRs; expected 1 (frames=" + frameCount
-                            + ", keyint=" + localKeyint + ")";
+                    detail = String.format(Locale.US,
+                            "x264 structural repair failure: produced %d IDRs; expected 1 "
+                                    + "(frames=%d keyint=%d target=%.3fs)",
+                            shape.idrFrames,
+                            frameCount,
+                            localKeyint,
+                            targetSeconds);
                 }
             } catch (Throwable error) {
                 success = false;
