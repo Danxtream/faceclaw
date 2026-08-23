@@ -75,6 +75,21 @@ export function g2VideoMetadataPath(path: string): string {
   return path.replace(/\.(mp4|h264|264)$/i, ".g2.json");
 }
 
+/** Use converter metadata when present so different-FPS videos can coexist. */
+export function g2VideoPlaybackFps(path: string, fallbackFps: number): number {
+  try {
+    const file = new java.io.File(g2VideoMetadataPath(path));
+    if (!file.isFile() || file.length() <= 0 || file.length() > 64 * 1024) return fallbackFps;
+    const bytes = java.nio.file.Files.readAllBytes(file.toPath());
+    const parsed = JSON.parse(String(new java.lang.String(bytes, "UTF-8")));
+    const fps = Number(parsed?.fps);
+    return Number.isFinite(fps) && fps >= 1 && fps <= 60 ? fps : fallbackFps;
+  } catch (error) {
+    console.warn(`G2 video metadata read failed for ${path}: ${error}`);
+    return fallbackFps;
+  }
+}
+
 /**
  * User-facing browser de-duplicates a paired movie: show movie.mp4 and hide
  * movie.h264. A standalone H264 remains visible so silent playback still works.
