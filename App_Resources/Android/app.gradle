@@ -9,8 +9,10 @@ dependencies {
   // Hardware-accelerated Android video transcoding. Transformer uses the
   // platform MediaCodec decoder/encoder and GPU effects path so long G2
   // conversions never shuttle frames through NativeScript/JavaScript.
-  implementation 'androidx.media3:media3-transformer:1.11.0'
-  implementation 'androidx.media3:media3-effect:1.11.0'
+  // Media3 1.10.1 is the newest stable line that remains compileSdk 35
+  // compatible; Media3 1.11 requires compileSdk 36.
+  implementation 'androidx.media3:media3-transformer:1.10.1'
+  implementation 'androidx.media3:media3-effect:1.10.1'
 }
 
 def faceclawSherpaOnnxVersion = "1.13.0"
@@ -168,6 +170,12 @@ android {
   compileSdkVersion 35
   buildToolsVersion "35"
   // ndkVersion ""
+
+  // Required by Media3 Transformer and harmless to the existing Java sources.
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_1_8
+    targetCompatibility JavaVersion.VERSION_1_8
+  }
 
   sourceSets.main {
     jniLibs.srcDirs += ["$projectDir/src/main/jniLibs"]
