@@ -166,7 +166,7 @@ public class FaceclawVideoConversionService extends Service {
                 .build();
         DefaultEncoderFactory encoderFactory = new DefaultEncoderFactory.Builder(this)
                 .setRequestedVideoEncoderSettings(settings)
-                .setEnableFormatFallback(false)
+                .setEnableFallback(false)
                 .build();
         Effect presentation = Presentation.createForWidthAndHeight(
                 FaceclawG2VideoBitstream.WIDTH,
