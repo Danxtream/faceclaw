@@ -71,6 +71,7 @@ public class FaceclawVideoConversionService extends Service {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Map<Integer, Integer> repairRates = new HashMap<>();
+    private final Map<Integer, Double> repairGlobalMultipliers = new HashMap<>();
 
     private Transformer transformer;
     private FaceclawG2EncoderFactory encoderFactory;
@@ -199,6 +200,7 @@ public class FaceclawVideoConversionService extends Service {
             repairPlan = null;
             repairQueue.clear();
             repairRates.clear();
+            repairGlobalMultipliers.clear();
             repairQueuePosition = 0;
             repairRound = 0;
             repairTry = 0;
@@ -341,11 +343,19 @@ public class FaceclawVideoConversionService extends Service {
         if (cancelled) return;
         repairQueue = new ArrayList<>(affected);
         repairQueuePosition = 0;
+        repairGlobalMultipliers.clear();
+        for (Integer segmentIndex : repairQueue) {
+            repairGlobalMultipliers.put(
+                    segmentIndex,
+                    FaceclawG2LocalRepair.suggestedMultiplierForSegment(
+                            repairPlan, global, segmentIndex));
+        }
         String message = String.format(Locale.US,
-                "x264 local repair round %d: %d GOP(s), max NAL %d B",
+                "x264 local repair round %d: %d GOP(s), max NAL %d B, 5sec %.2f",
                 repairRound,
                 repairQueue.size(),
-                global.maxTransportNal);
+                global.maxTransportNal,
+                global.worst5WritesPerSec);
         publish("repairing", repairProgress(), true, message, null);
         prepareNextRepairSegment();
     }
@@ -368,10 +378,14 @@ public class FaceclawVideoConversionService extends Service {
                 FaceclawG2LocalRepair.Audit local =
                         FaceclawG2LocalRepair.auditAnnexB(currentRepairSegment.path, fps);
                 Integer previousRate = repairRates.get(currentRepairSegment.index);
+                Double globalMultiplierValue = repairGlobalMultipliers.get(currentRepairSegment.index);
+                double globalMultiplier = globalMultiplierValue != null
+                        ? globalMultiplierValue : 1.0;
                 repairStartRateKbps = FaceclawG2LocalRepair.firstRepairRateKbps(
                         local,
                         previousRate,
-                        NORMAL_RATE_KBPS);
+                        NORMAL_RATE_KBPS,
+                        globalMultiplier);
                 repairTry = 1;
                 main.post(this::startRepairAttempt);
             } catch (Throwable error) {
@@ -392,6 +406,9 @@ public class FaceclawVideoConversionService extends Service {
                         FaceclawG2X264Repair.NORMAL_BUFSIZE_KBPS
                                 * localRateKbps
                                 / (double) FaceclawG2X264Repair.NORMAL_MAXRATE_KBPS));
+        Double globalMultiplierValue = repairGlobalMultipliers.get(currentRepairSegment.index);
+        final double globalMultiplier = globalMultiplierValue != null
+                ? globalMultiplierValue : 1.0;
 
         repairRaw = new File(workDir, String.format(Locale.US,
                 "x264_%05d_try_%02d_%dk_%dk.h264",
@@ -402,12 +419,13 @@ public class FaceclawVideoConversionService extends Service {
         deleteQuietly(repairRaw);
 
         String message = String.format(Locale.US,
-                "x264 repair GOP %d/%d, try %d: CRF 12, maxrate %dk, buf %dk",
+                "x264 repair GOP %d/%d, try %d: maxrate %dk, buf %dk, global x%.2f",
                 repairQueuePosition + 1,
                 repairQueue.size(),
                 repairTry,
                 localRateKbps,
-                localBufferKbps);
+                localBufferKbps,
+                globalMultiplier);
         publish("repairing", repairProgress(), true, message, null);
 
         worker.execute(() -> runX264RepairAttempt(localRateKbps));
@@ -526,16 +544,35 @@ public class FaceclawVideoConversionService extends Service {
                 return;
             }
 
-            if (repairRound >= FaceclawG2LocalRepair.MAX_GLOBAL_ROUNDS) {
-                throw new IllegalStateException(
-                        "Video still fails after maximum local repair rounds: " + global.failure());
-            }
             List<Integer> affected = FaceclawG2LocalRepair.affectedSegments(repairPlan, global);
             if (affected.isEmpty()) {
                 throw new IllegalStateException(
                         "Global G2 audit still fails but no affected GOP could be mapped: "
                                 + global.failure());
             }
+
+            boolean allAffectedAtFloor = true;
+            for (Integer segmentIndex : affected) {
+                Integer acceptedRate = repairRates.get(segmentIndex);
+                if (acceptedRate == null
+                        || acceptedRate > FaceclawG2LocalRepair.MINIMUM_LOCAL_RATE_KBPS) {
+                    allAffectedAtFloor = false;
+                    break;
+                }
+            }
+            if (allAffectedAtFloor) {
+                throw new IllegalStateException(String.format(Locale.US,
+                        "Video still fails with every affected GOP at x264 local floor %dk: %s",
+                        FaceclawG2LocalRepair.MINIMUM_LOCAL_RATE_KBPS,
+                        global.failure()));
+            }
+
+            if (repairRound >= FaceclawG2LocalRepair.MAX_GLOBAL_ROUNDS) {
+                throw new IllegalStateException(
+                        "Emergency local-repair round guard reached before convergence: "
+                                + global.failure());
+            }
+
             repairRound++;
             main.post(() -> beginRepairRound(affected, global));
         } catch (Throwable error) {
@@ -581,7 +618,7 @@ public class FaceclawVideoConversionService extends Service {
 
     private void writeMetadata(FaceclawG2VideoBitstream.Result result) throws Exception {
         JSONObject json = new JSONObject();
-        json.put("version", 4);
+        json.put("version", 5);
         json.put("fps", fps);
         json.put("width", FaceclawG2VideoBitstream.WIDTH);
         json.put("height", FaceclawG2VideoBitstream.HEIGHT);
@@ -595,6 +632,7 @@ public class FaceclawVideoConversionService extends Service {
         json.put("repairCrf", FaceclawG2X264Repair.CRF);
         json.put("repairNormalMaxRateKbps", FaceclawG2X264Repair.NORMAL_MAXRATE_KBPS);
         json.put("repairNormalBufferKbps", FaceclawG2X264Repair.NORMAL_BUFSIZE_KBPS);
+        json.put("repairPolicy", "global-problem-multiplier-until-affected-floor");
         json.put("repairRounds", repairRound);
         json.put("repairedSegments", repairedSegments);
         json.put("minimumRepairRateKbps", FaceclawG2LocalRepair.MINIMUM_LOCAL_RATE_KBPS);
