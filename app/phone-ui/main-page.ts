@@ -1,4 +1,4 @@
-import { Application, Color, EventData, isAndroid, Observable, Page, ScrollView, TextField } from '@nativescript/core'
+import { Application, Color, EventData, Frame, isAndroid, Observable, Page, ScrollView, TextField } from '@nativescript/core'
 import { MainViewModel } from './main-view-model'
 import { dashboardController } from '../g2/dashboard-controller'
 
@@ -9,6 +9,10 @@ const SETTINGS_PLACEHOLDER_COLOR = new Color('#666666')
 export function navigatingTo(args: EventData) {
   const page = <Page>args.object
   page.bindingContext = new MainViewModel()
+}
+
+export function onConvertVideoTap(): void {
+  Frame.topmost()?.navigate('phone-ui/video-convert-page')
 }
 
 type MainPageState = {
