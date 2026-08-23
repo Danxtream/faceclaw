@@ -9,10 +9,10 @@ dependencies {
   // Hardware-accelerated Android video transcoding. Transformer uses the
   // platform MediaCodec decoder/encoder and GPU effects path so long G2
   // conversions never shuttle frames through NativeScript/JavaScript.
-  // Media3 1.10.1 is the newest stable line that remains compileSdk 35
-  // compatible; Media3 1.11 requires compileSdk 36.
-  implementation 'androidx.media3:media3-transformer:1.10.1'
-  implementation 'androidx.media3:media3-effect:1.10.1'
+  // Media3 1.9.4 is the newest stable 1.9.x release and remains compatible
+  // with compileSdk 35. Media3 1.10.x and newer require compileSdk 36.
+  implementation 'androidx.media3:media3-transformer:1.9.4'
+  implementation 'androidx.media3:media3-effect:1.9.4'
 }
 
 def faceclawSherpaOnnxVersion = "1.13.0"
@@ -140,8 +140,7 @@ tasks.register("prepareFaceclawNativeLibs") {
 
     def lc3Root = file("$lc3ExtractDir/liblc3-${faceclawLibLc3Version}")
     def lc3Sources = [
-      "attdet.c", "bits.c", "bwdet.c", "energy.c", "lc3.c", "ltpf.c",
-      "mdct.c", "plc.c", "sns.c", "spec.c", "tables.c", "tns.c"
+      "attdet.c", "bits.c", "bwdet.c", "energy.c", "lc3.c", "ltpf.c", "mdct.c", "plc.c", "sns.c", "spec.c", "tables.c", "tns.c"
     ].collect { file("$lc3Root/src/$it").absolutePath }
 
     exec {
