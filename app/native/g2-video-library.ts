@@ -65,28 +65,30 @@ export function resolveG2H264Path(selectedPath: string): string | null {
   }
 }
 
-/** Final path produced by the phone converter for an MP4 input. */
 export function g2ConvertedH264Path(mp4Path: string): string {
   return mp4Path.replace(/\.mp4$/i, ".h264");
 }
 
-/** Per-video converter/playback metadata, kept beside the MP4/H264 pair. */
 export function g2VideoMetadataPath(path: string): string {
   return path.replace(/\.(mp4|h264|264)$/i, ".g2.json");
 }
 
 /** Use converter metadata when present so different-FPS videos can coexist. */
 export function g2VideoPlaybackFps(path: string, fallbackFps: number): number {
+  let scanner: any = null;
   try {
     const file = new java.io.File(g2VideoMetadataPath(path));
     if (!file.isFile() || file.length() <= 0 || file.length() > 64 * 1024) return fallbackFps;
-    const bytes = java.nio.file.Files.readAllBytes(file.toPath());
-    const parsed = JSON.parse(String(new java.lang.String(bytes, "UTF-8")));
+    scanner = new java.util.Scanner(file, "UTF-8").useDelimiter("\\A");
+    const raw = scanner.hasNext() ? String(scanner.next()) : "";
+    const parsed = JSON.parse(raw);
     const fps = Number(parsed?.fps);
     return Number.isFinite(fps) && fps >= 1 && fps <= 60 ? fps : fallbackFps;
   } catch (error) {
     console.warn(`G2 video metadata read failed for ${path}: ${error}`);
     return fallbackFps;
+  } finally {
+    try { scanner?.close(); } catch {}
   }
 }
 
