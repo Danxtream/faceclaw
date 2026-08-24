@@ -1,0 +1,200 @@
+package com.faceclaw.app;
+
+import com.arthenica.ffmpegkit.FFmpegKit;
+import com.arthenica.ffmpegkit.FFmpegSession;
+import com.arthenica.ffmpegkit.ReturnCode;
+
+import java.io.File;
+import java.util.Locale;
+
+/**
+ * Desktop-equivalent libx264 fallback for short G2 GOP repairs only.
+ *
+ * The normal full-source conversion remains on MediaCodec hardware. This helper mirrors the
+ * G2_VIDEO_MERGED.ps.txt local repair command: seek to the actual encoded GOP presentation time in
+ * the original source, encode exactly FrameCount frames at CRF 12, keep Baseline/CAVLC/single-slice
+ * GOP settings, and tighten only the local VBV maxrate/bufsize until the repaired GOP passes the
+ * G2 audit.
+ */
+public final class FaceclawG2X264Repair {
+    public static final int CRF = 12;
+    public static final int NORMAL_MAXRATE_KBPS = 110;
+    public static final int NORMAL_BUFSIZE_KBPS = 22;
+    private static final double SEEK_PREROLL_SECONDS = 5.0;
+
+    private FaceclawG2X264Repair() {}
+
+    public static final class Execution {
+        public final boolean success;
+        public final boolean cancelled;
+        public final int maxRateKbps;
+        public final int bufferKbps;
+        public final String detail;
+
+        Execution(boolean success, boolean cancelled, int maxRateKbps, int bufferKbps,
+                  String detail) {
+            this.success = success;
+            this.cancelled = cancelled;
+            this.maxRateKbps = maxRateKbps;
+            this.bufferKbps = bufferKbps;
+            this.detail = detail;
+        }
+    }
+
+    public static Execution encode(File source, File output, int fps, long startUs, int startFrame,
+                                   int frameCount, int maxRateKbps) {
+        if (source == null || !source.isFile()) {
+            throw new IllegalArgumentException("x264 repair source is missing");
+        }
+        if (output == null) throw new IllegalArgumentException("x264 repair output is missing");
+        if (fps <= 0) throw new IllegalArgumentException("Invalid repair FPS " + fps);
+        if (startUs < 0) throw new IllegalArgumentException("Invalid repair start PTS " + startUs);
+        if (startFrame < 0) throw new IllegalArgumentException("Invalid repair start frame " + startFrame);
+        if (frameCount <= 0) throw new IllegalArgumentException("Invalid repair frame count " + frameCount);
+        if (maxRateKbps < FaceclawG2LocalRepair.MINIMUM_LOCAL_RATE_KBPS) {
+            throw new IllegalArgumentException("Invalid local repair rate " + maxRateKbps + " kbps");
+        }
+
+        File parent = output.getParentFile();
+        if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
+            throw new IllegalStateException("Could not create x264 repair work directory");
+        }
+        if (output.exists() && !output.delete()) {
+            throw new IllegalStateException("Could not remove previous x264 repair candidate");
+        }
+
+        int bufferKbps = Math.max(8, (int) Math.round(
+                NORMAL_BUFSIZE_KBPS * maxRateKbps / (double) NORMAL_MAXRATE_KBPS));
+
+        // Android's repair plan records the actual presentation timestamp of every MediaCodec IDR.
+        // Use that timestamp as the source seek point. startFrame/fps is only a diagnostic now: in
+        // Media3 1.9.4 setFrameRate() is ignored for video inputs, so deriving time from frame count
+        // was able to seek far past the real source position before FrameDropEffect was added.
+        double targetSeconds = startUs / 1_000_000.0;
+        double frameDerivedSeconds = startFrame / (double) fps;
+        double coarseSeekSeconds = Math.max(0.0, targetSeconds - SEEK_PREROLL_SECONDS);
+        double fineSeekSeconds = Math.max(0.0, targetSeconds - coarseSeekSeconds);
+        String coarseSeekText = String.format(Locale.US, "%.6f", coarseSeekSeconds);
+        String fineSeekText = String.format(Locale.US, "%.6f", fineSeekSeconds);
+
+        // The desktop full encode creates exact 128-frame GOP files, so keyint=128 naturally
+        // yields one IDR in every repair file. MediaCodec uses a time-based I-frame interval and
+        // can legally produce an actual hardware GOP one frame longer (for example 129 frames).
+        // Preserve the desktop 128-frame keyint for normal/short GOPs, but never let x264's
+        // periodic keyframe interval fall inside the actual replacement GOP.
+        int localKeyint = Math.max(128, frameCount);
+
+        String x264Params = "cabac=0"
+                + ":ref=1"
+                + ":bframes=0"
+                + ":weightp=0"
+                + ":keyint=" + localKeyint
+                + ":min-keyint=65"
+                + ":scenecut=0"
+                + ":slices=1"
+                + ":aq-mode=2"
+                + ":aq-strength=1.0"
+                + ":ipratio=0.50"
+                + ":vbv-maxrate=" + maxRateKbps
+                + ":vbv-bufsize=" + bufferKbps
+                + ":repeat-headers=1"
+                + ":annexb=1"
+                + ":stitchable=1";
+
+        // Seek quickly to five seconds before the actual GOP PTS, then decode/discard the short
+        // preroll accurately. This keeps long sources practical without using frame-count-derived
+        // timestamps for the source seek.
+        String[] args = new String[] {
+                "-hide_banner",
+                "-y",
+                "-loglevel", "error",
+                "-ss", coarseSeekText,
+                "-accurate_seek",
+                "-i", source.getAbsolutePath(),
+                "-ss", fineSeekText,
+                "-map", "0:v:0",
+                "-vf", "fps=" + fps + ",scale="
+                        + FaceclawG2VideoBitstream.WIDTH + ":"
+                        + FaceclawG2VideoBitstream.HEIGHT
+                        + ":flags=lanczos+accurate_rnd+full_chroma_int",
+                "-frames:v", Integer.toString(frameCount),
+                "-an",
+                "-c:v", "libx264",
+                "-preset", "slow",
+                "-crf", Integer.toString(CRF),
+                "-pix_fmt", "yuv420p",
+                "-profile:v", "baseline",
+                "-level:v", "3.0",
+                "-threads", "0",
+                "-g", Integer.toString(localKeyint),
+                "-sc_threshold", "0",
+                "-x264-params", x264Params,
+                "-f", "h264",
+                output.getAbsolutePath()
+        };
+
+        FFmpegSession session = FFmpegKit.executeWithArguments(args);
+        boolean success = ReturnCode.isSuccess(session.getReturnCode());
+        boolean cancelled = ReturnCode.isCancel(session.getReturnCode());
+        String detail = session.getOutput();
+        if (detail == null || detail.trim().isEmpty()) detail = session.getFailStackTrace();
+        if (detail == null) detail = "";
+        detail = compact(detail);
+
+        // Match the desktop repair script's behavior: frame-count and IDR-count mismatches are
+        // structural failures, not VBV failures. They must stop immediately instead of burning
+        // all 16 bitrate retries, because changing maxrate/bufsize cannot fix GOP structure.
+        if (success) {
+            try {
+                FaceclawG2LocalRepair.Audit shape =
+                        FaceclawG2LocalRepair.auditAnnexB(output, fps);
+                if (shape.frames != frameCount) {
+                    success = false;
+                    detail = String.format(Locale.US,
+                            "x264 structural repair failure: frame count %d != %d "
+                                    + "(keyint=%d ptsTarget=%.3fs frameTarget=%.3fs "
+                                    + "coarse=%.3fs fine=%.3fs)",
+                            shape.frames,
+                            frameCount,
+                            localKeyint,
+                            targetSeconds,
+                            frameDerivedSeconds,
+                            coarseSeekSeconds,
+                            fineSeekSeconds);
+                } else if (shape.idrFrames != 1) {
+                    success = false;
+                    detail = String.format(Locale.US,
+                            "x264 structural repair failure: produced %d IDRs; expected 1 "
+                                    + "(frames=%d keyint=%d ptsTarget=%.3fs frameTarget=%.3fs)",
+                            shape.idrFrames,
+                            frameCount,
+                            localKeyint,
+                            targetSeconds,
+                            frameDerivedSeconds);
+                }
+            } catch (Throwable error) {
+                success = false;
+                String message = error.getMessage();
+                detail = "x264 structural repair audit failed: "
+                        + (message != null && !message.trim().isEmpty()
+                        ? message : error.getClass().getSimpleName());
+            }
+        }
+
+        if (!success && output.exists()) output.delete();
+        return new Execution(success, cancelled, maxRateKbps, bufferKbps, detail);
+    }
+
+    public static void cancelAll() {
+        try {
+            FFmpegKit.cancel();
+        } catch (Throwable ignored) {}
+    }
+
+    private static String compact(String text) {
+        String value = text.replace('\r', ' ').replace('\n', ' ').trim();
+        while (value.contains("  ")) value = value.replace("  ", " ");
+        if (value.length() > 600) value = value.substring(value.length() - 600);
+        return value;
+    }
+}

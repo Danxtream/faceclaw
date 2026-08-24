@@ -33,6 +33,7 @@
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING"/>
 	<uses-permission android:name="android.permission.WAKE_LOCK"/>
 	<!-- Needed to resolve other apps' notification small icons (Icon TYPE_RESOURCE):
 	     package visibility filtering otherwise makes Icon.loadDrawable fail with
@@ -82,6 +83,11 @@
 			android:enabled="true"
 			android:exported="false"
 			android:foregroundServiceType="connectedDevice|microphone|location" />
+		<service
+			android:name="com.faceclaw.app.FaceclawVideoConversionService"
+			android:enabled="true"
+			android:exported="false"
+			android:foregroundServiceType="mediaProcessing" />
 		<service
 			android:name="com.faceclaw.app.FaceclawMediaNotificationListenerService"
 			android:enabled="true"

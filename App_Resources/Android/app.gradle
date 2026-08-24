@@ -5,6 +5,23 @@ dependencies {
 //  implementation 'androidx.multidex:multidex:2.0.1'
   // WebSocket transport for the g2mirror terminal-mirroring client.
   implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+
+  // Hardware-accelerated Android video transcoding. Transformer uses the
+  // platform MediaCodec decoder/encoder and GPU effects path so long G2
+  // conversions never shuttle frames through NativeScript/JavaScript.
+  // Media3 1.9.4 stays compatible with this project's compileSdk 35.
+  implementation 'androidx.media3:media3-transformer:1.9.4'
+  implementation 'androidx.media3:media3-effect:1.9.4'
+
+  // Desktop-equivalent x264 is deliberately reserved for short GOP repair only.
+  // The normal full-source conversion remains on MediaCodec hardware. This GPL
+  // package is compatible with Faceclaw's GPLv3 license and is SDK-35/arm64 ready.
+  implementation 'dev.ffmpegkit-maintained:ffmpeg-kit-min-gpl:8.1.7'
+
+  // FFmpegKit initializes through Smart Exception. NativeScript's Android
+  // packaging dropped the transitive jars on-device, so pin both explicitly.
+  implementation 'com.arthenica:smart-exception-java:0.2.1'
+  implementation 'com.arthenica:smart-exception-common:0.2.1'
 }
 
 def faceclawSherpaOnnxVersion = "1.13.0"
