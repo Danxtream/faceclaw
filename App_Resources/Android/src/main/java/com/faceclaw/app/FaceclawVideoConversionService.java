@@ -24,7 +24,7 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.audio.AudioProcessor;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.effect.FrameDropEffect;
+import androidx.media3.effect.FaceclawExactFrameDropEffect;
 import androidx.media3.effect.Presentation;
 import androidx.media3.transformer.Composition;
 import androidx.media3.transformer.EditedMediaItem;
@@ -256,15 +256,17 @@ public class FaceclawVideoConversionService extends Service {
     }
 
     private EditedMediaItem buildEditedItem(MediaItem mediaItem) {
-        Effect frameDrop = FrameDropEffect.createDefaultFrameDropEffect((float) fps);
+        Effect frameDrop = FaceclawExactFrameDropEffect.create((float) fps);
         Effect presentation = Presentation.createForWidthAndHeight(
                 FaceclawG2VideoBitstream.WIDTH,
                 FaceclawG2VideoBitstream.HEIGHT,
                 Presentation.LAYOUT_STRETCH_TO_FIT);
         List<Effect> videoEffects = new ArrayList<>();
-        // Media3 1.9.4 ignores EditedMediaItem.Builder.setFrameRate() for video sources. Use the
-        // dedicated frame-drop effect so the selected G2 FPS actually controls the encoded stream.
-        // Drop before scaling so frames that will not be encoded do not pay the resize cost.
+        // Media3 1.9.4 ignores EditedMediaItem.Builder.setFrameRate() for video sources, and its
+        // public FrameDropEffect re-anchors each decision to the last selected source timestamp.
+        // That turns 29.97 -> 10 into a permanent every-third-frame 9.99 FPS stream. Faceclaw's
+        // backport instead advances an independent exact target clock like Media3 1.10, preserving
+        // the requested long-run frame count without requiring compileSdk 36.
         videoEffects.add(frameDrop);
         videoEffects.add(presentation);
         Effects effects = new Effects(
@@ -290,11 +292,9 @@ public class FaceclawVideoConversionService extends Service {
                 throw new IllegalStateException(preflight.failure);
             }
 
-            // Do not repair transport on top of a frame-rate-invalid full encode. In Media3 1.9.4
-            // setFrameRate() is ignored for video, which previously allowed a 30 FPS source to be
-            // encoded with every frame while the encoder was merely configured as 15 FPS. That
-            // made startFrame/fps repair seeks wrong and guaranteed the final FPS-sync audit would
-            // fail. FrameDropEffect should keep this drift inside one-to-two selected-frame periods.
+            // Transport repair is only valid on top of a frame-count-valid full encode. The exact
+            // target-clock frame selector should keep duration drift inside one-to-two requested
+            // frame periods even for fractional NTSC source rates such as 29.97 fps.
             double allowedDriftMs = Math.max(100.0, 2000.0 / fps);
             if (preflight.durationUs > 0 && preflight.durationDriftMs > allowedDriftMs) {
                 throw new IllegalStateException(String.format(Locale.US,
@@ -618,15 +618,15 @@ public class FaceclawVideoConversionService extends Service {
 
     private void writeMetadata(FaceclawG2VideoBitstream.Result result) throws Exception {
         JSONObject json = new JSONObject();
-        json.put("version", 5);
+        json.put("version", 6);
         json.put("fps", fps);
         json.put("width", FaceclawG2VideoBitstream.WIDTH);
         json.put("height", FaceclawG2VideoBitstream.HEIGHT);
-        json.put("backend", "android-mediacodec-baseline+framedrop+x264-local-vbv-repair");
+        json.put("backend", "android-mediacodec-baseline+exact-clock-framedrop+x264-local-vbv-repair");
         json.put("encoderName", encoderFactory != null
                 ? encoderFactory.getSelectedEncoderName() : "");
         json.put("bitrate", VIDEO_BITRATE);
-        json.put("frameRateControl", "media3-1.9.4-FrameDropEffect");
+        json.put("frameRateControl", "media3-1.10-absolute-target-clock-backport");
         json.put("repairSeek", "hardware-gop-startUs");
         json.put("repairBackend", "libx264");
         json.put("repairCrf", FaceclawG2X264Repair.CRF);
