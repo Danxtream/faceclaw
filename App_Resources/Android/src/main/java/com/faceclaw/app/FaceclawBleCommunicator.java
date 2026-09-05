@@ -118,10 +118,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int consecutiveAckTimeouts;
     private int lastAudioControlAckMagic = 0;
 
-    // With serialized physical BLE delivery, keep six logical NALs prepared.
-    // Three reduced throughput without improving presentation gaps or lens skew.
+    // DUALCREDIT4: keep six logical NALs prepared and five generic protocol-ACK
+    // slots, but physical NAL starts are governed by the slower lens's actual
+    // decoder progress. Five undecoded frames overflowed RIGHT's four-slot
+    // snapshot queue in PACE5, so never project above four receiver-outstanding.
     private static final int H264_LOGICAL_WINDOW = 6;
-    private static final int H264_BLE_WINDOW = 3;
+    private static final int H264_BLE_WINDOW = 5;
+    private static final int H264_RECEIVER_WINDOW = 4;
     private static final boolean H264_SEND_TO_LEFT = true;
     private static final int H264_STARTUP_WINDOW = 1;
     private static final int H264_PAYLOAD_BUDGET_BYTES = 16 * 1024;
@@ -237,6 +240,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private long h264AdmissionPauseTotalMs;
     private long h264AdmissionPauseMaxMs;
     private int h264AdmissionPauseCount;
+    // DUALCREDIT4 receiver-capacity telemetry. This is separate from both the
+    // generic protocol-ACK window and firmware h264FirmwarePace* telemetry.
+    private int h264ReceiverHighestStartedSeq;
+    private int h264ReceiverMaxOutstanding;
+    private boolean h264ReceiverCreditBlocked;
+    private long h264ReceiverCreditBlockStartedAtMs;
+    private long h264ReceiverCreditBlockTotalMs;
+    private long h264ReceiverCreditBlockMaxMs;
+    private int h264ReceiverCreditBlockCount;
+    private boolean h264HostWindowBlocked;
+    private long h264HostWindowBlockStartedAtMs;
+    private long h264HostWindowBlockTotalMs;
+    private long h264HostWindowBlockMaxMs;
+    private int h264HostWindowBlockCount;
     private int h264FirmwareEmptyDeferredCallbacks;
     private int h264FirmwareBacklogDeferredCallbacks;
     private int h264FirmwarePaceScheduled;
@@ -1499,6 +1516,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             h264AdmissionPauseTotalMs = 0;
             h264AdmissionPauseMaxMs = 0;
             h264AdmissionPauseCount = 0;
+            h264ReceiverHighestStartedSeq = 0;
+            h264ReceiverMaxOutstanding = 0;
+            h264ReceiverCreditBlocked = false;
+            h264ReceiverCreditBlockStartedAtMs = 0;
+            h264ReceiverCreditBlockTotalMs = 0;
+            h264ReceiverCreditBlockMaxMs = 0;
+            h264ReceiverCreditBlockCount = 0;
+            h264HostWindowBlocked = false;
+            h264HostWindowBlockStartedAtMs = 0;
+            h264HostWindowBlockTotalMs = 0;
+            h264HostWindowBlockMaxMs = 0;
+            h264HostWindowBlockCount = 0;
             h264FirmwareEmptyDeferredCallbacks = 0;
             h264FirmwareBacklogDeferredCallbacks = 0;
             h264FirmwarePaceScheduled = 0;
@@ -1516,6 +1545,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 + " startupWindow=" + H264_STARTUP_WINDOW
                 + " decoderWindow=" + H264_LOGICAL_WINDOW
                 + " bleWindow=" + H264_BLE_WINDOW
+                + " receiverWindow=" + H264_RECEIVER_WINDOW
                 + " byteBudget=" + H264_PAYLOAD_BUDGET_BYTES);
         }
         interruptibleSleep.interrupt();
@@ -1634,6 +1664,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             double averagePresentMs = h264DisplayTimingSamples > 0
                 ? h264DisplayPresentTotalUs / 1000.0 / h264DisplayTimingSamples
                 : 0.0;
+            long summaryNowMs = SystemClock.elapsedRealtime();
+            long receiverCreditBlockTotalMs = h264ReceiverCreditBlockTotalMs
+                + (h264ReceiverCreditBlocked
+                    ? Math.max(0L, summaryNowMs - h264ReceiverCreditBlockStartedAtMs)
+                    : 0L);
+            int receiverSlowDecoded = h264SlowDecodedSeqLocked();
+            long receiverOutstanding = h264ReceiverOutstandingLocked();
+            long hostWindowBlockTotalMs = h264HostWindowBlockTotalMs
+                + (h264HostWindowBlocked
+                    ? Math.max(0L, summaryNowMs - h264HostWindowBlockStartedAtMs)
+                    : 0L);
             return "session=" + unsignedInt(h264StreamId)
                 + " queued=" + unsignedInt(h264HighestQueuedSeq)
                 + " decoded=" + unsignedInt(h264DecodedSeq)
@@ -1651,6 +1692,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 + " admissionPauses=" + h264AdmissionPauseCount
                 + " admissionPauseMs=" + h264AdmissionPauseTotalMs
                 + " admissionPauseMaxMs=" + h264AdmissionPauseMaxMs
+                + " recvWindow=" + H264_RECEIVER_WINDOW
+                + " recvHighest=" + unsignedInt(h264ReceiverHighestStartedSeq)
+                + " recvSlowDec=" + unsignedInt(receiverSlowDecoded)
+                + " recvOutstanding=" + receiverOutstanding
+                + " recvMaxOutstanding=" + h264ReceiverMaxOutstanding
+                + " recvBlocks=" + h264ReceiverCreditBlockCount
+                + " recvBlockMs=" + receiverCreditBlockTotalMs
+                + " recvBlockMaxMs=" + h264ReceiverCreditBlockMaxMs
+                + " hostWinBlocks=" + h264HostWindowBlockCount
+                + " hostWinBlockMs=" + hostWindowBlockTotalMs
+                + " hostWinBlockMaxMs=" + h264HostWindowBlockMaxMs
                 + " syncEmpty=" + h264FirmwareEmptyDeferredCallbacks
                 + " syncBacklog=" + h264FirmwareBacklogDeferredCallbacks
                 + " pace=" + h264FirmwarePaceFired
@@ -2087,7 +2139,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 reason = "presentation-skew=" + presentationSkew;
             } else if (decoderSkew > 1) {
                 reason = "decoder-skew=" + decoderSkew;
-            } else if (queueDepth >= 2) {
+            } else if (queueDepth >= 3) {
                 reason = "firmware-queue=" + queueDepth;
             }
         }
@@ -3795,6 +3847,172 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
 
+    private H264Transfer findH264TransferByIdLocked(int transferId) {
+        for (H264Transfer transfer : h264Transfers) {
+            if (transfer.id == transferId) return transfer;
+        }
+        return null;
+    }
+
+    private boolean isH264NalMessageLocked(OutboundMessage message) {
+        if (message == null || !message.h264Payload || message.cancelled) return false;
+        H264Transfer transfer = findH264TransferByIdLocked(message.h264TransferId);
+        return transfer != null
+            && !transfer.terminal
+            && transfer.sequence > 0
+            && transfer.wireGeneration == message.h264Generation;
+    }
+
+    private boolean isH264AttemptStartMessageLocked(OutboundMessage message) {
+        if (!isH264NalMessageLocked(message)) return false;
+        H264Transfer transfer = findH264TransferByIdLocked(message.h264TransferId);
+        return transfer != null && transfer.sentFragments == 0;
+    }
+
+    private int h264SlowDecodedSeqLocked() {
+        if (!h264LeftTelemetrySeen || !h264RightTelemetrySeen) return 0;
+        return Integer.compareUnsigned(h264LeftDecodedSeq, h264RightDecodedSeq) <= 0
+            ? h264LeftDecodedSeq
+            : h264RightDecodedSeq;
+    }
+
+    private long h264ReceiverOutstandingLocked() {
+        if (h264ReceiverHighestStartedSeq == 0) return 0L;
+        int slowDecoded = h264SlowDecodedSeqLocked();
+        long highest = Integer.toUnsignedLong(h264ReceiverHighestStartedSeq);
+        long slow = Integer.toUnsignedLong(slowDecoded);
+        if (highest < slow) return 0L;
+        return highest - slow;
+    }
+
+    private long h264ReceiverProjectedOutstandingLocked(OutboundMessage message) {
+        if (!isH264AttemptStartMessageLocked(message)) {
+            return h264ReceiverOutstandingLocked();
+        }
+        H264Transfer transfer = findH264TransferByIdLocked(message.h264TransferId);
+        if (transfer == null) return Long.MAX_VALUE;
+        long outstanding = h264ReceiverOutstandingLocked();
+        boolean newSequence = h264ReceiverHighestStartedSeq == 0
+            || Integer.compareUnsigned(
+                transfer.sequence,
+                h264ReceiverHighestStartedSeq
+            ) > 0;
+        return outstanding + (newSequence ? 1L : 0L);
+    }
+
+    private boolean h264ReceiverCreditReadyLocked(OutboundMessage message) {
+        if (!isH264AttemptStartMessageLocked(message)) return true;
+
+        H264Transfer transfer = findH264TransferByIdLocked(message.h264TransferId);
+        if (transfer == null) return false;
+
+        // Before both lenses have emitted normal decoder telemetry, permit only
+        // the first NAL attempt. Its telemetry establishes the dual-lens credit
+        // baseline; retries of that same sequence remain permitted.
+        if (!h264LeftTelemetrySeen || !h264RightTelemetrySeen) {
+            return h264ReceiverHighestStartedSeq == 0
+                || Integer.compareUnsigned(
+                    transfer.sequence,
+                    h264ReceiverHighestStartedSeq
+                ) <= 0;
+        }
+
+        return h264ReceiverProjectedOutstandingLocked(message)
+            <= H264_RECEIVER_WINDOW;
+    }
+
+    private void beginH264ReceiverCreditBlockLocked(
+        OutboundMessage message,
+        long nowMs
+    ) {
+        if (h264ReceiverCreditBlocked) return;
+        h264ReceiverCreditBlocked = true;
+        h264ReceiverCreditBlockStartedAtMs = nowMs;
+        h264ReceiverCreditBlockCount++;
+        H264Transfer transfer = findH264TransferByIdLocked(message.h264TransferId);
+        logLine("H264CREDIT BLOCK seq="
+            + (transfer == null ? "?" : unsignedInt(transfer.sequence))
+            + " projected=" + h264ReceiverProjectedOutstandingLocked(message)
+            + " highest=" + unsignedInt(h264ReceiverHighestStartedSeq)
+            + " slowDec=" + unsignedInt(h264SlowDecodedSeqLocked())
+            + " Ldec=" + unsignedInt(h264LeftDecodedSeq)
+            + " Rdec=" + unsignedInt(h264RightDecodedSeq)
+            + " q=" + h264LeftQueueDepth + "/" + h264RightQueueDepth);
+    }
+
+    private void finishH264ReceiverCreditBlockLocked(long nowMs) {
+        if (!h264ReceiverCreditBlocked) return;
+        long durationMs = Math.max(
+            0L,
+            nowMs - h264ReceiverCreditBlockStartedAtMs
+        );
+        h264ReceiverCreditBlockTotalMs += durationMs;
+        h264ReceiverCreditBlockMaxMs = Math.max(
+            h264ReceiverCreditBlockMaxMs,
+            durationMs
+        );
+        h264ReceiverCreditBlocked = false;
+        h264ReceiverCreditBlockStartedAtMs = 0L;
+        logLine("H264CREDIT RESUME duration=" + durationMs + "ms"
+            + " highest=" + unsignedInt(h264ReceiverHighestStartedSeq)
+            + " slowDec=" + unsignedInt(h264SlowDecodedSeqLocked())
+            + " outstanding=" + h264ReceiverOutstandingLocked()
+            + " Ldec=" + unsignedInt(h264LeftDecodedSeq)
+            + " Rdec=" + unsignedInt(h264RightDecodedSeq));
+    }
+
+    private void noteH264ReceiverStartLocked(OutboundMessage message) {
+        if (!isH264AttemptStartMessageLocked(message)) return;
+        H264Transfer transfer = findH264TransferByIdLocked(message.h264TransferId);
+        if (transfer == null) return;
+
+        boolean newSequence = h264ReceiverHighestStartedSeq == 0
+            || Integer.compareUnsigned(
+                transfer.sequence,
+                h264ReceiverHighestStartedSeq
+            ) > 0;
+        if (newSequence) {
+            h264ReceiverHighestStartedSeq = transfer.sequence;
+        }
+
+        long outstanding = h264ReceiverOutstandingLocked();
+        h264ReceiverMaxOutstanding = Math.max(
+            h264ReceiverMaxOutstanding,
+            (int)Math.min(Integer.MAX_VALUE, outstanding)
+        );
+
+        Log.i(TAG, "H264CREDIT START transfer=" + message.h264TransferId
+            + " seq=" + unsignedInt(transfer.sequence)
+            + " generation=" + message.h264Generation
+            + " new=" + newSequence
+            + " highest=" + unsignedInt(h264ReceiverHighestStartedSeq)
+            + " slowDec=" + unsignedInt(h264SlowDecodedSeqLocked())
+            + " outstanding=" + outstanding
+            + " Ldec=" + unsignedInt(h264LeftDecodedSeq)
+            + " Rdec=" + unsignedInt(h264RightDecodedSeq)
+            + " inFlight=" + inFlightMessages.size()
+            + " q=" + h264LeftQueueDepth + "/" + h264RightQueueDepth);
+    }
+
+    private void beginH264HostWindowBlockLocked(long nowMs) {
+        if (h264HostWindowBlocked) return;
+        h264HostWindowBlocked = true;
+        h264HostWindowBlockStartedAtMs = nowMs;
+        h264HostWindowBlockCount++;
+        logLine("H264CREDIT ACK_WINDOW_BLOCK begin inFlight=" + inFlightMessages.size());
+    }
+
+    private void finishH264HostWindowBlockLocked(long nowMs) {
+        if (!h264HostWindowBlocked) return;
+        long durationMs = Math.max(0L, nowMs - h264HostWindowBlockStartedAtMs);
+        h264HostWindowBlockTotalMs += durationMs;
+        h264HostWindowBlockMaxMs = Math.max(h264HostWindowBlockMaxMs, durationMs);
+        h264HostWindowBlocked = false;
+        h264HostWindowBlockStartedAtMs = 0L;
+        logLine("H264CREDIT ACK_WINDOW_BLOCK end duration=" + durationMs + "ms inFlight="
+            + inFlightMessages.size());
+    }
+
     private long driveSession() {
         //Log.d(TAG, "driveSession called (pendingMessages.size=" + pendingMessages.size() + " inFlightMessages.size=" + inFlightMessages.size() + ")");
         while (true) {
@@ -3911,14 +4129,35 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     }
 
                     // Ordinary UI traffic uses the configured transport window.
-                    // H.264 keeps its separate four-NAL logical decoder window,
-                    // but serializes physical BLE messages so completed images
-                    // reach both lenses at an even cadence instead of bursts of
-                    // three followed by a queue-drain pause.
+                    // DUALCREDIT4 separates generic protocol-ACK capacity from
+                    // receiver capacity. Five ACK slots remain available, but a
+                    // new/retried NAL attempt may physically start only when the
+                    // slower lens would remain within four undecoded sequences.
+                    // Extra fragments from an attempt already in progress bypass
+                    // this gate so one NAL is never split by decoder-credit waits.
                     int transportWindow = h264Streaming
                         ? H264_BLE_WINDOW
                         : Math.max(1, connectionOptions.WINDOW_SIZE);
                     boolean windowHasRoom = inFlightMessages.size() < transportWindow;
+                    OutboundMessage pendingHead = pendingMessages.peekFirst();
+                    boolean h264NalWaiting = h264Streaming
+                        && isH264NalMessageLocked(pendingHead);
+
+                    if (h264NalWaiting && !windowHasRoom) {
+                        beginH264HostWindowBlockLocked(now);
+                    } else {
+                        finishH264HostWindowBlockLocked(now);
+                    }
+
+                    if (h264NalWaiting && windowHasRoom) {
+                        if (!h264ReceiverCreditReadyLocked(pendingHead)) {
+                            beginH264ReceiverCreditBlockLocked(pendingHead, now);
+                            return ConnectionOptions.IDLE_SLEEP_MS;
+                        }
+                        finishH264ReceiverCreditBlockLocked(now);
+                    } else if (!h264NalWaiting) {
+                        finishH264ReceiverCreditBlockLocked(now);
+                    }
                     // A frame ready to send right now: don't inject a fresh
                     // heartbeat in front of it (the image's own ack resets the
                     // firmware heartbeat timer, so the heartbeat is redundant).
@@ -4132,6 +4371,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             message.ackDeadlineAtMs = sentAtMs + message.ackTimeoutMs;
             logImageUpdateSendLandmarkLocked(message);
             boolean current = !message.h264Payload || isCurrentH264MessageLocked(message);
+            if (result && current && message.h264Payload) {
+                noteH264ReceiverStartLocked(message);
+            }
             if (result && current && message.onSent != null) {
                 message.onSent.run();
                 lock.notifyAll();

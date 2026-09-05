@@ -30,6 +30,7 @@ const videoApp: AppDefinition = {
         iconLetter: "V",
         icon: "film",
         closeable: true,
+        heightMode: "max",
         actions: options.actions,
         baseLayer: layer,
         shouldSuppressRender: () => layer.suppressesShellRender(),

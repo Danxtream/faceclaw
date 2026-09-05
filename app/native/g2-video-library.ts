@@ -40,6 +40,11 @@ export function isG2VideoPickerFile(name: string): boolean {
   return /\.(h264|264|mp4)$/i.test(name);
 }
 
+/** True only for an MP4 that does not already have a same-name .h264/.264 output. */
+export function isUnconvertedG2Mp4(entry: DirectoryEntry): boolean {
+  return !entry.isDirectory && /\.mp4$/i.test(entry.name) && resolveG2H264Path(entry.path) === null;
+}
+
 /** Resolve the user-facing MP4/H264 selection to the elementary stream sent to the glasses. */
 export function resolveG2H264Path(selectedPath: string): string | null {
   try {
@@ -57,6 +62,33 @@ export function resolveG2H264Path(selectedPath: string): string | null {
     return null;
   } catch {
     return null;
+  }
+}
+
+export function g2ConvertedH264Path(mp4Path: string): string {
+  return mp4Path.replace(/\.mp4$/i, ".h264");
+}
+
+export function g2VideoMetadataPath(path: string): string {
+  return path.replace(/\.(mp4|h264|264)$/i, ".g2.json");
+}
+
+/** Use converter metadata when present so different-FPS videos can coexist. */
+export function g2VideoPlaybackFps(path: string, fallbackFps: number): number {
+  let scanner: any = null;
+  try {
+    const file = new java.io.File(g2VideoMetadataPath(path));
+    if (!file.isFile() || file.length() <= 0 || file.length() > 64 * 1024) return fallbackFps;
+    scanner = new java.util.Scanner(file, "UTF-8").useDelimiter("\\A");
+    const raw = scanner.hasNext() ? String(scanner.next()) : "";
+    const parsed = JSON.parse(raw);
+    const fps = Number(parsed?.fps);
+    return Number.isFinite(fps) && fps >= 1 && fps <= 60 ? fps : fallbackFps;
+  } catch (error) {
+    console.warn(`G2 video metadata read failed for ${path}: ${error}`);
+    return fallbackFps;
+  } finally {
+    try { scanner?.close(); } catch {}
   }
 }
 
